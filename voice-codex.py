@@ -1688,7 +1688,7 @@ def main():
             respond=speaker in active_codex_speakers,
         )
 
-    def handle_user_speech(partial):
+    def handle_speech(partial):
         if tts is None or tts.is_likely_echo(partial):
             return False
         tts.interrupt()
@@ -1700,7 +1700,7 @@ def main():
         "User Voice",
         submit_transcript,
         LiveSpeakerDisplay("User Voice", transcript_display),
-        on_speech=handle_user_speech,
+        on_speech=handle_speech,
     )
     user_transcriber = MicTranscriber(
         model_path=model_path,
@@ -1725,6 +1725,7 @@ def main():
                 transcript_display,
                 show_partials=True,
             ),
+            on_speech=handle_speech,
         )
         them_transcriber = PulseMonitorTranscriber(
             model_path=model_path,
