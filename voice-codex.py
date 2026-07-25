@@ -47,6 +47,13 @@ SPEAKER_COLORS = {
     "User Voice": ANSI_BRIGHT_BLUE,
     "User Text": ANSI_SOFT_BLUE,
 }
+STARTUP_CONFIG_KEYS = (
+    "microphone",
+    "tts",
+    "them_output",
+    "playback_output",
+    "codex_after",
+)
 
 CODEX_DEVELOPER_INSTRUCTIONS = """
 This conversation has three possible input sources:
@@ -65,6 +72,10 @@ to that source while using the other entries as context. Keep track of all
 sources across the conversation. If a Them transcript lacks enough context,
 say so instead of inventing context. Your visible responses are presented as
 Codex in a User Voice/User Text/Them/Codex transcript.
+
+Responses are spoken sentence-by-sentence. Start every response with a short,
+direct, complete sentence so speech can begin quickly. Keep conversational
+voice replies concise unless the user asks for detail.
 """.strip()
 
 
@@ -76,6 +87,61 @@ def terminal_reset():
     return ANSI_RESET if ANSI_ENABLED else ""
 
 
+def load_startup_config(filename):
+    """Load the flat YAML subset emitted by save_startup_config."""
+    settings = {}
+    try:
+        with open(filename, encoding="utf-8") as config_file:
+            lines = config_file.readlines()
+    except OSError as error:
+        raise RuntimeError(
+            f"Could not read startup config {filename!r}: {error}"
+        ) from error
+
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            raise RuntimeError(
+                f"Invalid startup config line {line_number}: expected key: value"
+            )
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key not in STARTUP_CONFIG_KEYS:
+            raise RuntimeError(
+                f"Unknown startup config key {key!r} on line {line_number}."
+            )
+        if not value:
+            settings[key] = None
+            continue
+        try:
+            settings[key] = json.loads(value)
+        except json.JSONDecodeError:
+            settings[key] = value
+    return settings
+
+
+def save_startup_config(filename, settings):
+    """Save prompt answers as dependency-free, human-editable YAML."""
+    lines = [
+        "# Voice Codex startup choices",
+        "# Command-line options override these values.",
+    ]
+    for key in STARTUP_CONFIG_KEYS:
+        value = settings.get(key)
+        encoded = "null" if value is None else json.dumps(value)
+        lines.append(f"{key}: {encoded}")
+    try:
+        with open(filename, "w", encoding="utf-8") as config_file:
+            config_file.write("\n".join(lines) + "\n")
+    except OSError as error:
+        raise RuntimeError(
+            f"Could not save startup config {filename!r}: {error}"
+        ) from error
+
+
 def input_devices():
     return [
         (index, device)
@@ -84,10 +150,20 @@ def input_devices():
     ]
 
 
-def choose_microphone():
+def choose_microphone(requested=None):
     devices = input_devices()
     if not devices:
         raise RuntimeError("No audio input devices were found.")
+
+    if requested is not None:
+        requested_text = str(requested)
+        for index, device in devices:
+            if requested_text in (str(index), device["name"]):
+                return index, device
+        raise RuntimeError(
+            f"Microphone {requested!r} was not found. "
+            "Remove it from the startup config to select interactively."
+        )
 
     print("Available audio input devices:")
     for number, (index, device) in enumerate(devices, start=1):
@@ -417,7 +493,20 @@ class SentenceChunker:
 
 
 class EdgeSentenceTTS:
-    """Synthesize and play queued sentences without blocking Codex streaming."""
+    """Prefetch two Edge sentences and play them in their original order."""
+
+    PREFETCH_COUNT = 2
+    REQUEST_STAGGER_SECONDS = 0.1
+    SILENCE_TRIM_FILTER = (
+        "silenceremove="
+        "start_periods=1:start_duration=0.02:start_threshold=-45dB:"
+        "start_silence=0.08,"
+        "areverse,"
+        "silenceremove="
+        "start_periods=1:start_duration=0.02:start_threshold=-45dB:"
+        "start_silence=0.22,"
+        "areverse"
+    )
 
     def __init__(self, voice, output_sink=None):
         try:
@@ -432,14 +521,23 @@ class EdgeSentenceTTS:
             raise RuntimeError(
                 "Edge TTS audio requires ffplay. Install the ffmpeg package."
             )
+        trimmer = shutil.which("ffmpeg")
+        if trimmer is None:
+            raise RuntimeError(
+                "Edge TTS audio requires ffmpeg. Install the ffmpeg package."
+            )
 
         self.edge_tts = edge_tts
         self.voice = voice
         self.player = player
+        self.trimmer = trimmer
         self.output_sink = output_sink
         self.sentences = queue.Queue()
         self.stop_item = object()
         self.shutdown_requested = threading.Event()
+        self.turn_lock = threading.Lock()
+        self.current_turn = 0
+        self.turn_cancelled = False
         self.echo_lock = threading.Lock()
         self.recent_speech = {}
         self.player_lock = threading.Lock()
@@ -451,10 +549,46 @@ class EdgeSentenceTTS:
         )
         self.worker.start()
 
+    def begin_turn(self):
+        with self.turn_lock:
+            self.current_turn += 1
+            self.turn_cancelled = False
+
+    def _turn_is_active(self, turn):
+        with self.turn_lock:
+            return turn == self.current_turn and not self.turn_cancelled
+
     def speak(self, text):
-        if text and not self.shutdown_requested.is_set():
+        with self.turn_lock:
+            turn = self.current_turn
+            turn_cancelled = self.turn_cancelled
+        if (
+            text
+            and not turn_cancelled
+            and not self.shutdown_requested.is_set()
+        ):
             self._remember_speech(text, retention=120)
-            self.sentences.put_nowait(text)
+            self.sentences.put_nowait((turn, text))
+
+    def interrupt(self):
+        """Stop the current response and discard all of its queued speech."""
+        if self.shutdown_requested.is_set():
+            return
+        with self.turn_lock:
+            self.turn_cancelled = True
+
+        while True:
+            try:
+                queued = self.sentences.get_nowait()
+            except queue.Empty:
+                break
+            if queued is self.stop_item:
+                self.sentences.put_nowait(queued)
+                break
+
+        with self.player_lock:
+            if self.active_player is not None:
+                self.active_player.terminate()
 
     @staticmethod
     def _normalize_speech(text):
@@ -514,9 +648,65 @@ class EdgeSentenceTTS:
             for spoken in recent
         )
 
-    async def _synthesize_and_play(self, text):
+    async def _synthesize(self, turn, text):
         self._remember_speech(text, retention=30, replace=True)
         communicate = self.edge_tts.Communicate(text, self.voice)
+        audio = bytearray()
+        async for chunk in communicate.stream():
+            if (
+                self.shutdown_requested.is_set()
+                or not self._turn_is_active(turn)
+            ):
+                break
+            if chunk["type"] == "audio":
+                audio.extend(chunk["data"])
+        if (
+            not audio
+            or self.shutdown_requested.is_set()
+            or not self._turn_is_active(turn)
+        ):
+            return bytes(audio)
+        return await asyncio.to_thread(self._trim_silence, bytes(audio))
+
+    def _trim_silence(self, audio):
+        try:
+            result = subprocess.run(
+                [
+                    self.trimmer,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    "pipe:0",
+                    "-af",
+                    self.SILENCE_TRIM_FILTER,
+                    "-f",
+                    "wav",
+                    "pipe:1",
+                ],
+                input=audio,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+        except subprocess.CalledProcessError as error:
+            message = error.stderr.decode(errors="replace").strip()
+            print(
+                f"\nEdge TTS silence trimming failed; playing original audio"
+                f"{': ' + message if message else '.'}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return audio
+        return result.stdout or audio
+
+    def _play(self, turn, audio):
+        if (
+            not audio
+            or self.shutdown_requested.is_set()
+            or not self._turn_is_active(turn)
+        ):
+            return
         player_environment = os.environ.copy()
         if self.output_sink is not None:
             player_environment["PULSE_SINK"] = self.output_sink
@@ -532,44 +722,94 @@ class EdgeSentenceTTS:
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=player_environment,
         )
         with self.player_lock:
             self.active_player = process
+        player_error = b""
         try:
-            async for chunk in communicate.stream():
-                if self.shutdown_requested.is_set():
-                    break
-                if chunk["type"] == "audio" and process.stdin is not None:
-                    try:
-                        process.stdin.write(chunk["data"])
-                        process.stdin.flush()
-                    except BrokenPipeError:
-                        break
-        finally:
-            if process.stdin is not None:
-                try:
-                    process.stdin.close()
-                except BrokenPipeError:
-                    pass
             try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
+                _, player_error = process.communicate(input=audio)
+            except BrokenPipeError:
+                pass
+        finally:
+            if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=3)
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
             with self.player_lock:
                 if self.active_player is process:
                     self.active_player = None
-            self._remember_speech(text, retention=12, replace=True)
+        if (
+            process.returncode
+            and not self.shutdown_requested.is_set()
+            and self._turn_is_active(turn)
+        ):
+            message = player_error.decode(errors="replace").strip()
+            print(
+                f"\nEdge TTS player exited with code {process.returncode}"
+                f"{': ' + message if message else '.'}",
+                file=sys.stderr,
+                flush=True,
+            )
 
-    def _worker(self):
+    async def _produce_synthesis_jobs(self, jobs, available_slots):
+        last_request_started = None
         while True:
-            text = self.sentences.get()
-            if text is self.stop_item or self.shutdown_requested.is_set():
+            item = await asyncio.to_thread(self.sentences.get)
+            if item is self.stop_item:
+                break
+            turn, text = item
+
+            await available_slots.acquire()
+            if (
+                self.shutdown_requested.is_set()
+                or not self._turn_is_active(turn)
+            ):
+                available_slots.release()
+                if self.shutdown_requested.is_set():
+                    break
+                continue
+
+            if last_request_started is not None:
+                elapsed = time.monotonic() - last_request_started
+                delay = self.REQUEST_STAGGER_SECONDS - elapsed
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+            if (
+                self.shutdown_requested.is_set()
+                or not self._turn_is_active(turn)
+            ):
+                available_slots.release()
+                if self.shutdown_requested.is_set():
+                    break
+                continue
+
+            last_request_started = time.monotonic()
+            synthesis = asyncio.create_task(self._synthesize(turn, text))
+            await jobs.put((turn, text, synthesis))
+
+        await jobs.put(self.stop_item)
+
+    async def _consume_synthesis_jobs(self, jobs, available_slots):
+        while True:
+            job = await jobs.get()
+            if job is self.stop_item:
                 return
+
+            turn, text, synthesis = job
             try:
-                asyncio.run(self._synthesize_and_play(text))
+                audio = await synthesis
+                if (
+                    not self.shutdown_requested.is_set()
+                    and self._turn_is_active(turn)
+                ):
+                    await asyncio.to_thread(self._play, turn, audio)
             except Exception as error:
                 if not self.shutdown_requested.is_set():
                     print(
@@ -577,6 +817,26 @@ class EdgeSentenceTTS:
                         file=sys.stderr,
                         flush=True,
                     )
+            finally:
+                self._remember_speech(text, retention=12, replace=True)
+                available_slots.release()
+
+    async def _run_pipeline(self):
+        jobs = asyncio.Queue()
+        available_slots = asyncio.Semaphore(self.PREFETCH_COUNT)
+        producer = asyncio.create_task(
+            self._produce_synthesis_jobs(jobs, available_slots)
+        )
+        try:
+            await self._consume_synthesis_jobs(jobs, available_slots)
+            await producer
+        finally:
+            if not producer.done():
+                producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
+    def _worker(self):
+        asyncio.run(self._run_pipeline())
 
     def close(self):
         self.shutdown_requested.set()
@@ -595,16 +855,19 @@ class ConversationListener(TranscriptEventListener):
         speaker,
         submit,
         display,
+        on_speech=None,
     ):
         self.confidence_threshold = confidence_threshold
         self.turn_silence = turn_silence
         self.speaker = speaker
         self.submit = submit
         self.display = display
+        self.on_speech = on_speech
         self.lock = threading.Lock()
         self.pending = []
         self.timer = None
         self.timer_generation = 0
+        self.speech_callback_triggered = False
 
     def _text(self, line):
         if line.words:
@@ -649,12 +912,19 @@ class ConversationListener(TranscriptEventListener):
         # Speech has resumed. Keep all completed lines buffered and wait for
         # this new line to finish before considering the turn complete.
         self._cancel_timer()
+        self.speech_callback_triggered = False
 
     def on_line_text_changed(self, event):
         # Partial text means this speaker is actively continuing the same turn.
         self._cancel_timer()
         partial = self._text(event.line)
         self.display.update(partial)
+        if (
+            partial
+            and self.on_speech is not None
+            and not self.speech_callback_triggered
+        ):
+            self.speech_callback_triggered = self.on_speech(partial)
 
     def on_line_completed(self, event):
         text = self._text(event.line)
@@ -967,16 +1237,14 @@ class CodexConversation:
         sandbox,
         model,
         reasoning_effort,
+        service_tier,
         transcript_display,
         tts=None,
     ):
-        self.sandbox = (
-            Sandbox.workspace_write
-            if sandbox == "workspace-write"
-            else Sandbox.read_only
-        )
+        self.sandbox = Sandbox(sandbox)
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
         self.transcript_display = transcript_display
         self.tts = tts
         self.requests = queue.Queue()
@@ -987,6 +1255,7 @@ class CodexConversation:
         self.codex = Codex()
         self.thread = self.codex.thread_start(
             model=self.model,
+            service_tier=self.service_tier,
             sandbox=self.sandbox,
             approval_mode=ApprovalMode.deny_all,
             cwd=os.getcwd(),
@@ -1016,10 +1285,6 @@ class CodexConversation:
 
     def _run_codex(self, request):
         self.transcript_display.begin_codex()
-        print(
-            f"--- Codex is working (replying to {request.reply_to}) ---",
-            flush=True,
-        )
         try:
             entries = [
                 {"source": speaker, "text": text}
@@ -1042,7 +1307,6 @@ class CodexConversation:
             print(f"\nCodex error: {error}", file=sys.stderr, flush=True)
         finally:
             self.active_turn = None
-            print("--- Codex finished ---", flush=True)
             self.transcript_display.end_codex()
 
     @staticmethod
@@ -1054,6 +1318,8 @@ class CodexConversation:
         last_usage = None
         codex_color = terminal_color(ANSI_BRIGHT_GREEN)
         color_reset = terminal_reset()
+        if self.tts is not None:
+            self.tts.begin_turn()
         sentence_chunker = (
             SentenceChunker(self.tts.speak) if self.tts is not None else None
         )
@@ -1173,6 +1439,22 @@ class CodexConversation:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--config",
+        "--load-config",
+        dest="config",
+        metavar="YAML",
+        help="Load startup prompt choices from a YAML file",
+    )
+    parser.add_argument(
+        "--save-config",
+        metavar="YAML",
+        help="Save resolved startup prompt choices to a YAML file",
+    )
+    parser.add_argument(
+        "--microphone",
+        help="Microphone device index or exact name; prompts when omitted",
+    )
+    parser.add_argument(
         "--model",
         choices=("tiny-streaming", "small-streaming", "medium-streaming"),
         default="medium-streaming",
@@ -1187,12 +1469,12 @@ def main():
     )
     parser.add_argument(
         "--sandbox",
-        choices=("read-only", "workspace-write"),
-        default="read-only",
+        choices=("read-only", "workspace-write", "full-access"),
+        default="full-access",
         help=(
-            "Codex file policy: read-only permits inspection commands but "
-            "denies file edits; workspace-write permits edits "
-            "(default: read-only)"
+            "Codex command access: full-access runs commands on the host "
+            "without sandbox restrictions or approval prompts "
+            "(default: full-access)"
         ),
     )
     parser.add_argument(
@@ -1205,6 +1487,13 @@ def main():
         choices=("low", "medium", "high"),
         default="low",
         help="Codex reasoning effort (default: low)",
+    )
+    parser.add_argument(
+        "--codex-fast",
+        action="store_true",
+        help=(
+            "Request Codex Fast mode for lower latency; consumes more credits"
+        ),
     )
     parser.add_argument(
         "--them-output",
@@ -1232,21 +1521,44 @@ def main():
     )
     parser.add_argument(
         "--tts-voice",
-        default="en-US-AriaNeural",
-        help="Edge TTS voice (default: en-US-AriaNeural)",
+        default="en-US-AndrewNeural",
+        help="Edge TTS voice (default: en-US-AndrewNeural)",
     )
     args = parser.parse_args()
+    if args.config is not None:
+        try:
+            loaded_settings = load_startup_config(args.config)
+        except RuntimeError as error:
+            parser.error(str(error))
+        for key, value in loaded_settings.items():
+            if getattr(args, key) is None:
+                setattr(args, key, value)
+        print(f"Loaded startup config: {args.config}", file=sys.stderr)
+
+    if args.tts not in (None, "on", "off"):
+        parser.error("startup config 'tts' must be 'on' or 'off'")
+    if args.codex_after not in (None, "them", "both", "user", "quiet"):
+        parser.error(
+            "startup config 'codex_after' must be "
+            "'them', 'both', 'user', or 'quiet'"
+        )
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
     if args.turn_silence <= 0:
         parser.error("--turn-silence must be greater than 0")
 
-    device_index, device = choose_microphone()
+    device_index, device = choose_microphone(args.microphone)
     tts_enabled = choose_tts(args.tts)
     them_output = choose_them_output(
         args.them_output,
         require_isolation=tts_enabled,
     )
+    if them_output is None:
+        them_output_setting = "none"
+    elif them_output.get("isolated"):
+        them_output_setting = "isolated"
+    else:
+        them_output_setting = them_output["name"]
     virtual_meeting = None
     playback_output = None
     if them_output is not None and them_output.get("isolated"):
@@ -1262,6 +1574,32 @@ def main():
             file=sys.stderr,
         )
     policy_name, codex_speakers = choose_codex_after(args.codex_after)
+    if codex_speakers == {"Them"}:
+        codex_after_setting = "them"
+    elif codex_speakers == {"User Voice", "Them"}:
+        codex_after_setting = "both"
+    elif codex_speakers == {"User Voice"}:
+        codex_after_setting = "user"
+    else:
+        codex_after_setting = "quiet"
+
+    if args.save_config is not None:
+        startup_settings = {
+            "microphone": device["name"],
+            "tts": "on" if tts_enabled else "off",
+            "them_output": them_output_setting,
+            "playback_output": (
+                playback_output["name"]
+                if playback_output is not None
+                else None
+            ),
+            "codex_after": codex_after_setting,
+        }
+        try:
+            save_startup_config(args.save_config, startup_settings)
+        except RuntimeError as error:
+            parser.error(str(error))
+        print(f"Saved startup config: {args.save_config}", file=sys.stderr)
     model_arch = getattr(ModelArch, args.model.replace("-", "_").upper())
 
     print(f"\nUser microphone: {device['name']}", file=sys.stderr)
@@ -1273,6 +1611,18 @@ def main():
             file=sys.stderr,
         )
     print(f"Codex response policy: {policy_name}", file=sys.stderr)
+    print(
+        f"Voice turn silence: {args.turn_silence:.1f}s",
+        file=sys.stderr,
+    )
+    print(
+        f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}",
+        file=sys.stderr,
+    )
+    print(
+        f"Codex command access: {args.sandbox}",
+        file=sys.stderr,
+    )
     print(
         f"Codex audio: {'Edge TTS (' + args.tts_voice + ')' if tts_enabled else 'Off'}",
         file=sys.stderr,
@@ -1315,6 +1665,7 @@ def main():
         args.sandbox,
         args.codex_model,
         args.codex_reasoning,
+        "fast" if args.codex_fast else None,
         transcript_display,
         tts,
     )
@@ -1337,17 +1688,24 @@ def main():
             respond=speaker in active_codex_speakers,
         )
 
+    def handle_user_speech(partial):
+        if tts is None or tts.is_likely_echo(partial):
+            return False
+        tts.interrupt()
+        return True
+
     user_listener = ConversationListener(
         args.confidence,
         args.turn_silence,
         "User Voice",
         submit_transcript,
         LiveSpeakerDisplay("User Voice", transcript_display),
+        on_speech=handle_user_speech,
     )
     user_transcriber = MicTranscriber(
         model_path=model_path,
         model_arch=downloaded_arch,
-        update_interval=0.5,
+        update_interval=0.25,
         device=device_index,
         samplerate=16000,
         channels=1,
@@ -1372,7 +1730,7 @@ def main():
             model_path=model_path,
             model_arch=downloaded_arch,
             monitor=them_output["monitor"],
-            update_interval=0.5,
+            update_interval=0.25,
             samplerate=16000,
         )
         them_transcriber.add_listener(them_listener)

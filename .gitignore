@@ -8,3 +8,4 @@ virtual-mic-*.wav
 virtual-out-*.mp3
 virtual-out-*.wav
 transcription/
+voice.yaml
