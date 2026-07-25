@@ -61,13 +61,24 @@ def choose_device():
 
 
 class ConversationListener(TranscriptEventListener):
-    def __init__(self, confidence_threshold, turn_silence, submit):
+    def __init__(
+        self,
+        confidence_threshold,
+        turn_silence,
+        submit,
+        can_accept,
+        display,
+    ):
         self.confidence_threshold = confidence_threshold
         self.turn_silence = turn_silence
         self.submit = submit
+        self.can_accept = can_accept
+        self.display = display
         self.lock = threading.Lock()
         self.pending = []
         self.timer = None
+        self.timer_generation = 0
+        self.ignore_line = False
 
     def _text(self, line):
         if line.words:
@@ -78,16 +89,32 @@ class ConversationListener(TranscriptEventListener):
             ).strip()
         return line.text.strip()
 
-    def _flush(self):
+    def _flush(self, generation):
         with self.lock:
+            if generation != self.timer_generation:
+                return
             text = " ".join(self.pending).strip()
             self.pending.clear()
             self.timer = None
         if text:
+            self.display.finish_turn()
             self.submit(text)
+
+    def _start_timer(self):
+        if self.timer is not None:
+            self.timer.cancel()
+        self.timer_generation += 1
+        self.timer = threading.Timer(
+            self.turn_silence,
+            self._flush,
+            args=(self.timer_generation,),
+        )
+        self.timer.daemon = True
+        self.timer.start()
 
     def _cancel_timer(self):
         with self.lock:
+            self.timer_generation += 1
             if self.timer is not None:
                 self.timer.cancel()
                 self.timer = None
@@ -95,29 +122,98 @@ class ConversationListener(TranscriptEventListener):
     def on_line_started(self, event):
         # Speech has resumed. Keep all completed lines buffered and wait for
         # this new line to finish before considering the turn complete.
+        self.ignore_line = not self.can_accept()
+        if self.ignore_line:
+            return
         self._cancel_timer()
 
     def on_line_text_changed(self, event):
         # Partial text means the user is actively continuing the same turn.
+        if not self.can_accept():
+            self.ignore_line = True
+            return
+        if self.ignore_line:
+            return
         self._cancel_timer()
+        partial = self._text(event.line)
+        self.display.update(partial)
 
     def on_line_completed(self, event):
-        text = self._text(event.line)
-        if not text:
+        if self.ignore_line or not self.can_accept():
+            self.ignore_line = False
             return
+        text = self._text(event.line)
         with self.lock:
-            self.pending.append(text)
-            if self.timer is not None:
-                self.timer.cancel()
-            self.timer = threading.Timer(self.turn_silence, self._flush)
-            self.timer.daemon = True
-            self.timer.start()
+            if text:
+                self.pending.append(text)
+                self.display.commit(text)
+            if self.pending:
+                self._start_timer()
+        self.ignore_line = False
 
     def close(self):
         with self.lock:
+            self.timer_generation += 1
             if self.timer is not None:
                 self.timer.cancel()
                 self.timer = None
+        self.display.close()
+
+
+class LiveUserDisplay:
+    """Render Moonshine's revisable transcript as one terminal line."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.rendered_length = 0
+        self.line_active = False
+        self.turn_active = False
+        self.current_prefix = ""
+
+    def update(self, text):
+        if not text:
+            return
+        with self.lock:
+            if not self.line_active:
+                self.current_prefix = "User: " if not self.turn_active else "      "
+            rendered = f"{self.current_prefix}{text}"
+            padding = " " * max(0, self.rendered_length - len(rendered))
+            print(f"\r{rendered}{padding}", end="", flush=True)
+            self.rendered_length = len(rendered)
+            self.line_active = True
+            self.turn_active = True
+
+    def commit(self, text):
+        with self.lock:
+            if not self.line_active:
+                self.current_prefix = "User: " if not self.turn_active else "      "
+            rendered = f"{self.current_prefix}{text}"
+            padding = " " * max(0, self.rendered_length - len(rendered))
+            print(f"\r{rendered}{padding}\n", flush=True)
+            self.rendered_length = 0
+            self.line_active = False
+            self.turn_active = True
+            self.current_prefix = ""
+
+    def finish_turn(self):
+        with self.lock:
+            if self.line_active:
+                print()
+            if self.turn_active:
+                print()
+            self.rendered_length = 0
+            self.line_active = False
+            self.turn_active = False
+            self.current_prefix = ""
+
+    def close(self):
+        with self.lock:
+            if self.line_active:
+                print()
+            self.rendered_length = 0
+            self.line_active = False
+            self.turn_active = False
+            self.current_prefix = ""
 
 
 class CodexConversation:
@@ -156,8 +252,11 @@ class CodexConversation:
         except queue.Full:
             self.accepting = True
 
+    def can_accept(self):
+        return self.accepting and not self.shutdown_requested.is_set()
+
     def _run_codex(self, text):
-        print("\n--- Codex is working ---", flush=True)
+        print("--- Codex is working ---", flush=True)
         try:
             self.active_turn = self.thread.turn(
                 text,
@@ -329,6 +428,8 @@ def main():
         args.confidence,
         args.turn_silence,
         conversation.submit,
+        conversation.can_accept,
+        LiveUserDisplay(),
     )
     transcriber = MicTranscriber(
         model_path=model_path,
@@ -342,7 +443,7 @@ def main():
 
     print("\nListening continuously.", flush=True)
     print("Speak normally; a completed utterance is sent to Codex.", flush=True)
-    print("Press Ctrl+C to stop. Spoken text is not displayed.", flush=True)
+    print("Press Ctrl+C to stop.", flush=True)
     try:
         transcriber.start()
         while True:
