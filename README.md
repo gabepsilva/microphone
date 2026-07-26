@@ -2,8 +2,7 @@
 
 Voice Codex is a Linux desktop assistant that continuously transcribes a
 microphone and an optional PipeWire/PulseAudio output, then presents the
-conversation to Codex. `voice-codex-tui.py` provides a separate Textual UI
-surface.
+conversation to Codex through its Textual interface.
 
 ## Reproducible setup
 
@@ -24,6 +23,25 @@ machine.
 Some runtime features also require operating-system tools: PipeWire/PulseAudio
 (`pactl` and `parec`) for output capture, and `ffmpeg`/`ffplay` for spoken
 responses. They are runtime integrations, not Python packages.
+
+## Running and presentation
+
+```bash
+uv run voice-codex.py
+```
+
+`uv run voice-codex-tui.py` is an equivalent compatibility command. Both
+commands load `voice.yaml`, initialize User Voice transcription, and also
+transcribe Them when `them_output` is configured.
+
+The Textual TUI is the only presentation surface. It is still under active
+development; model selection remains a startup option because the Codex SDK
+binds it when the conversation thread is created.
+
+The executable scripts are deliberately small compatibility entry points. The
+importable `voice_codex` package separates pure configuration and transcript
+domain logic from presentation and runtime integrations, so hardware and SDK
+boundaries can be tested with deterministic fakes.
 
 ## Quality gate
 
