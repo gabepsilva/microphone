@@ -1571,6 +1571,8 @@ def main():
         ),
         on_policy=set_response_policy,
     )
+    if virtual_meeting is not None:
+        tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
     tts = (
         EdgeSentenceTTS(

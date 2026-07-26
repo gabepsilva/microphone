@@ -22,15 +22,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ClassVar
 
-# These must precede Textual imports. Keep Ctrl-C as a terminal SIGINT rather
-# than a Textual copy key, including in terminals that support Kitty keyboard
-# protocol (such as Ghostty).
-os.environ["TEXTUAL_ALLOW_SIGNALS"] = "1"
-os.environ["TEXTUAL_DISABLE_KITTY_KEY"] = "1"
+# These must precede Textual imports. Textual needs Ctrl-C as an application
+# key so it can clear typed text before closing the app. The Kitty keyboard
+# protocol keeps Ctrl-Shift-C distinct for table-copy.
+os.environ.pop("TEXTUAL_ALLOW_SIGNALS", None)
+os.environ.pop("TEXTUAL_DISABLE_KITTY_KEY", None)
 
 from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -527,7 +528,7 @@ class VoiceCodexApp(App):
     #input-hint { width: auto; color: #5a6068; }
 
     #keys {
-        height: 4;
+        height: 5;
         padding: 1 1 0 1;
         color: #6f757e;
         border-top: solid #23272b;
@@ -566,6 +567,13 @@ class VoiceCodexApp(App):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+q", "quit_app", "quit", priority=True),
+        Binding("ctrl+c", "clear_input_or_quit", "clear or quit", priority=True),
+        Binding(
+            "ctrl+shift+c",
+            "copy_selected_transcript",
+            "copy",
+            priority=True,
+        ),
         Binding("ctrl+p", "cycle_policy", "policy", priority=True),
         Binding("ctrl+k", "toggle_mute", "mute mic", priority=True),
         Binding("ctrl+t", "toggle_tts", "tts", priority=True),
@@ -624,6 +632,15 @@ class VoiceCodexApp(App):
         keys.append("\n")
         keys.append("^S", style="#9aa3ad")
         keys.append(" save transcript")
+        keys.append("  ")
+        keys.append("^Q", style="#9aa3ad")
+        keys.append(" quit")
+        keys.append("\n")
+        keys.append("^⇧C", style="#9aa3ad")
+        keys.append(" copy")
+        keys.append("  ")
+        keys.append("^V", style="#9aa3ad")
+        keys.append(" paste")
         return keys
 
     def _sync_partial(self) -> None:
@@ -666,7 +683,33 @@ class VoiceCodexApp(App):
         transcript.scroll_end(animate=False)
         return row
 
+    def _selected_transcript_entries(self) -> list[Entry]:
+        selections = self.screen.selections
+        return [
+            row.entry
+            for row in self.query(EntryRow)
+            if row in selections or any(child in selections for child in row.query("*"))
+        ]
+
+    def action_copy_selected_transcript(self) -> None:
+        """Copy selected transcript rows as timestamp, author, and content columns."""
+        entries = self._selected_transcript_entries()
+        if not entries:
+            raise SkipAction()
+        rows = [
+            "\t".join((entry.stamp, entry.source or "System", entry.text))
+            for entry in entries
+        ]
+        self.copy_to_clipboard("\n".join(rows))
+
     # -- actions -----------------------------------------------------------
+
+    def action_clear_input_or_quit(self) -> None:
+        input_widget = self.query_one("#input", Input)
+        if input_widget.value:
+            input_widget.value = ""
+            return
+        self.action_quit_app()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
