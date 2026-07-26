@@ -54,6 +54,10 @@ STARTUP_CONFIG_KEYS = (
     "playback_output",
     "codex_after",
 )
+DEFAULT_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "voice.yaml",
+)
 
 CODEX_DEVELOPER_INSTRUCTIONS = """
 This conversation has three possible input sources:
@@ -1443,7 +1447,8 @@ def main():
         "--load-config",
         dest="config",
         metavar="YAML",
-        help="Load startup prompt choices from a YAML file",
+        default=DEFAULT_CONFIG_FILE,
+        help=f"Load startup prompt choices from a YAML file (default: {DEFAULT_CONFIG_FILE})",
     )
     parser.add_argument(
         "--save-config",
