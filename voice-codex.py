@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 import numpy as np
-from moonshine_voice import MicTranscriber, get_model_for_language
+from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 from moonshine_voice.transcriber import Transcriber, TranscriptEventListener
 from openai_codex import ApprovalMode, Codex, Sandbox
@@ -1411,6 +1411,8 @@ class CodexConversation:
 
 
 def main():
+    from moonshine_voice import MicTranscriber
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
