@@ -30,6 +30,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Input, Select, Static
 
 # --------------------------------------------------------------------------
@@ -576,7 +577,8 @@ class VoiceCodexApp(App):
 
     def _tick(self) -> None:
         # The clock and the live indicator sit in the sidebar's top panel.
-        self.query_one("#sidebar", Sidebar).sync_clock()
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_clock()
 
     def refresh_sidebar(self) -> None:
         self.query_one("#sidebar", Sidebar).sync()

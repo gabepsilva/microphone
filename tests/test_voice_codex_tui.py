@@ -42,6 +42,7 @@ def test_textual_app_accepts_typed_input_and_records_a_transcript_entry(tui) -> 
             await pilot.press("enter")
 
     asyncio.run(exercise())
+    app._tick()
 
     assert received == ["hello from test"]
     assert [(entry.source, entry.text) for entry in app.entries] == [

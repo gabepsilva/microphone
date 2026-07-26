@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 import numpy as np
-import sounddevice as sd
 from moonshine_voice import MicTranscriber, get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 from moonshine_voice.transcriber import Transcriber, TranscriptEventListener
@@ -148,6 +147,12 @@ def save_startup_config(filename, settings):
 
 
 def input_devices():
+    try:
+        import sounddevice as sd
+    except OSError as error:
+        raise RuntimeError(
+            "Audio device discovery requires the PortAudio system library."
+        ) from error
     return [
         (index, device)
         for index, device in enumerate(sd.query_devices())
