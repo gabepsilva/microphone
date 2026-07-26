@@ -1,6 +1,8 @@
 .DEFAULT_GOAL := ci
 
-.PHONY: format format-check lint types test test-coverage security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
+SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
+
+.PHONY: format format-check lint types test test-coverage semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
 
 format:
 	uv run ruff format .
@@ -20,7 +22,11 @@ test:
 test-coverage:
 	uv run pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
 
-security-static:
+semgrep:
+	mkdir -p reports
+	docker run --rm --network none --env SEMGREP_ENABLE_VERSION_CHECK=0 --env SEMGREP_SEND_METRICS=off --volume "$(CURDIR):/src:ro" --volume "$(CURDIR)/reports:/reports" --workdir /src "$(SEMGREP_IMAGE)" semgrep scan --config semgrep.yml --error --metrics=off --json-output /reports/semgrep.json
+
+security-static: semgrep
 	mkdir -p reports
 	uv run bandit --configfile pyproject.toml --format json --output reports/bandit.json --exit-zero voice-codex.py voice-codex-tui.py
 	uv run bandit --configfile pyproject.toml --severity-level medium --confidence-level medium voice-codex.py voice-codex-tui.py
