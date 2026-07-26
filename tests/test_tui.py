@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 from textual.widgets import Input, Select, Static
 
 
@@ -155,21 +154,14 @@ def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("key", ["ctrl+c", "ctrl+w"])
-def test_control_c_and_control_w_quit_the_app(tui, key: str) -> None:
-    quit_calls: list[None] = []
-    app = tui.VoiceCodexApp(
-        tui.SessionState(),
-        tui.TuiHooks(on_quit=lambda: quit_calls.append(None)),
-    )
+def test_tui_preserves_native_terminal_interrupts(tui, monkeypatch) -> None:
+    facade = tui.VoiceCodexTUI()
+    monkeypatch.delenv("TEXTUAL_ALLOW_SIGNALS", raising=False)
+    monkeypatch.setattr(facade.app, "run", lambda: None)
 
-    async def exercise() -> None:
-        async with app.run_test() as pilot:
-            await pilot.press(key)
+    facade.run()
 
-    asyncio.run(exercise())
-
-    assert quit_calls == [None]
+    assert tui.os.environ["TEXTUAL_ALLOW_SIGNALS"] == "1"
 
 
 def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:

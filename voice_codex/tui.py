@@ -14,6 +14,7 @@ Run it directly to open an empty session:
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable
 from contextlib import suppress
@@ -558,8 +559,6 @@ class VoiceCodexApp(App):
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("ctrl+c", "quit_app", "quit", priority=True),
-        Binding("ctrl+w", "quit_app", "quit", priority=True),
         Binding("ctrl+q", "quit_app", "quit", priority=True),
         Binding("ctrl+p", "cycle_policy", "policy", priority=True),
         Binding("ctrl+k", "toggle_mute", "mute mic", priority=True),
@@ -605,8 +604,6 @@ class VoiceCodexApp(App):
     def _keys_text(self) -> Text:
         keys = Text()
         pairs = [
-            ("^C", "quit"),
-            ("^W", "quit"),
             ("^P", "policy"),
             ("^K", "mute mic"),
             ("^T", "tts"),
@@ -766,6 +763,9 @@ class VoiceCodexTUI:
     # -- lifecycle ---------------------------------------------------------
 
     def run(self) -> None:
+        # Textual otherwise puts the terminal in a mode where Ctrl-C is just
+        # a key event. Preserve the terminal's native SIGINT behavior.
+        os.environ.setdefault("TEXTUAL_ALLOW_SIGNALS", "1")
         self._app_thread = threading.get_ident()
         self.app.call_later(self._ready.set)
         self.app.run()
