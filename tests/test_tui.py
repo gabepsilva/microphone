@@ -136,6 +136,75 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
     asyncio.run(exercise())
 
 
+def test_keyboard_shortcut_legend_includes_copy_paste_and_quit(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    assert app._keys_text().plain.endswith(
+        "^S save transcript  ^Q quit\n^⇧C copy  ^V paste"
+    )
+
+
+def test_ctrl_c_clears_text_before_quitting_the_application(tui) -> None:
+    cleaned_up: list[bool] = []
+    app = tui.VoiceCodexApp(
+        tui.SessionState(),
+        tui.TuiHooks(on_quit=lambda: cleaned_up.append(True)),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#input", Input)
+            input_widget.value = "start over"
+            await pilot.press("ctrl+c")
+
+            assert input_widget.value == ""
+            assert app._exit is False
+            assert cleaned_up == []
+
+            await pilot.press("ctrl+c")
+            assert app._exit is True
+            assert cleaned_up == [True]
+
+    asyncio.run(exercise())
+
+
+def test_ctrl_shift_c_copies_selected_transcript_rows_as_tabular_text(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            row = app.add_entry(
+                tui.Entry(
+                    kind="speech",
+                    source=tui.USER_VOICE,
+                    text="copy this",
+                    stamp="13:40:46",
+                )
+            )
+            await pilot.pause()
+            app.screen._select_all_in_widget(row)
+            await pilot.press("ctrl+shift+c")
+            assert app.clipboard == "13:40:46\tUser Voice\tcopy this"
+
+            await pilot.press("ctrl+v")
+            assert app.query_one("#input", Input).value == app.clipboard
+
+    asyncio.run(exercise())
+
+
+def test_ctrl_v_pastes_clipboard_text_into_the_input(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.copy_to_clipboard("pasted text")
+            await pilot.press("ctrl+v")
+
+            assert app.query_one("#input", Input).value == "pasted text"
+
+    asyncio.run(exercise())
+
+
 def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
 
@@ -157,7 +226,7 @@ def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:
     asyncio.run(exercise())
 
 
-def test_tui_enables_native_terminal_interrupts_before_textual_import() -> None:
+def test_tui_disables_native_interrupts_before_textual_import() -> None:
     environment = os.environ | {
         "TEXTUAL_ALLOW_SIGNALS": "",
         "TEXTUAL_DISABLE_KITTY_KEY": "",
@@ -169,8 +238,8 @@ def test_tui_enables_native_terminal_interrupts_before_textual_import() -> None:
             (
                 "import os; from voice_codex import tui; "
                 "from textual import constants; "
-                "print(os.environ['TEXTUAL_ALLOW_SIGNALS']); "
-                "print(os.environ['TEXTUAL_DISABLE_KITTY_KEY']); "
+                "print(os.environ.get('TEXTUAL_ALLOW_SIGNALS')); "
+                "print(os.environ.get('TEXTUAL_DISABLE_KITTY_KEY')); "
                 "print(constants.DISABLE_KITTY_KEY)"
             ),
         ],
@@ -180,7 +249,7 @@ def test_tui_enables_native_terminal_interrupts_before_textual_import() -> None:
         text=True,
     )
 
-    assert result.stdout.splitlines() == ["1", "1", "True"]
+    assert result.stdout.splitlines() == ["None", "None", "False"]
 
 
 def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:

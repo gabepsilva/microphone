@@ -96,6 +96,31 @@ def test_audio_outputs_parses_pactl_json(voice, monkeypatch) -> None:
     ]
 
 
+def test_virtual_meeting_output_unloads_its_loopback_and_sink(
+    voice, monkeypatch
+) -> None:
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(voice.shutil, "which", lambda name: "/usr/bin/pactl")
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "load-module":
+            return SimpleNamespace(stdout=str(len(commands)))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(voice.subprocess, "run", run)
+    meeting = voice.VirtualMeetingOutput({"name": "headphones"})
+
+    meeting.close()
+    meeting.close()
+
+    assert commands[-2:] == [
+        ["pactl", "unload-module", "2"],
+        ["pactl", "unload-module", "1"],
+    ]
+
+
 def test_audio_level_reporter_publishes_normalized_rms_levels(voice) -> None:
     levels: list[tuple[str, float]] = []
     display = SimpleNamespace(
