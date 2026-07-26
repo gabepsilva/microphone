@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := ci
 
 SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
+PYTHON_SOURCES := voice-codex.py voice-codex-tui.py voice_codex
 
 .PHONY: format format-check lint types test test-coverage semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
 
@@ -28,8 +29,8 @@ semgrep:
 
 security-static: semgrep
 	mkdir -p reports
-	uv run bandit --configfile pyproject.toml --format json --output reports/bandit.json --exit-zero voice-codex.py voice-codex-tui.py
-	uv run bandit --configfile pyproject.toml --severity-level medium --confidence-level medium voice-codex.py voice-codex-tui.py
+	uv run bandit --recursive --configfile pyproject.toml --format json --output reports/bandit.json --exit-zero $(PYTHON_SOURCES)
+	uv run bandit --recursive --configfile pyproject.toml --severity-level medium --confidence-level medium $(PYTHON_SOURCES)
 	uv run pip-audit --strict
 
 secrets:
