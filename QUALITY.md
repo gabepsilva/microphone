@@ -28,6 +28,7 @@ environment. Run `make hook-check` after changing hook configuration.
 | Tests | `make test-coverage` | Deterministic unit and Textual interaction behavior. |
 | Shell syntax | `make shellcheck` | Parse the privileged setup script before it is run. |
 | Workflow integrity | `make workflows` | Validate GitHub Actions syntax and expressions. |
+| Static policy/SAST | `make semgrep` | Blocks committed rules for dangerous APIs and project security policy. |
 | Static security | `make security-static` | Blocks Bandit medium/high findings and known dependency vulnerabilities. |
 | Secret detection | `make secrets` | Scans the complete Git history with Gitleaks. |
 
@@ -54,6 +55,16 @@ its argument provenance.
 `pip-audit` is a merge gate. Its vulnerability feed changes over time, so an
 unchanged lockfile can legitimately fail after a newly published advisory.
 Gitleaks is also a merge gate and scans history, not only changed files.
+
+Semgrep is a serverless merge gate. `make semgrep` runs the official
+digest-pinned Semgrep CLI container with networking and its version check
+disabled, then mounts the repository read-only. It never downloads a remote
+rule pack: the only rules are the repository's committed `semgrep.yml`. The
+rules reject dynamic code execution, unsafe deserialization, disabled TLS
+verification, string-based process commands, and shell-based process
+invocation. Its JSON evidence is written to `reports/semgrep.json`. Use
+`make semgrep` for immediate file-and-line feedback; `make ci` and the hosted
+quality job run it through `make security-static`.
 
 Generated coverage and security evidence is ignored by Git. GitHub Actions
 uploads it on both success and failure. Local `voice.yaml`, transcripts, and

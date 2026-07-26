@@ -11,6 +11,8 @@ Read [QUALITY.md](QUALITY.md) before changing this repository.
 - Do not lower coverage thresholds, remove tests, add skips/xfails, weaken
   lint/type rules, disable a scanner, or add suppressions merely to make a
   gate pass.
+- Keep Semgrep rules local in `semgrep.yml`; do not replace them with a remote
+  rule pack or bypass a finding without a narrow, reviewed rule change.
 - Do not add `# noqa`, `# type: ignore`, or `# nosec` without a finding ID,
   a narrow justification, and a regression test or direct evidence that the
   finding is not exploitable.

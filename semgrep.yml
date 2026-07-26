@@ -1,0 +1,73 @@
+rules:
+  - id: python-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Use argument-list subprocess calls; shell=True permits command injection.
+    metadata:
+      category: security
+      technology: [python]
+    pattern: subprocess.$FUNCTION(..., shell=True, ...)
+
+  - id: python-subprocess-string-command
+    languages: [python]
+    severity: ERROR
+    message: Pass an argument list to subprocess; string commands are not permitted.
+    metadata:
+      category: security
+      technology: [python]
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run($COMMAND, ...)
+          - pattern: subprocess.Popen($COMMAND, ...)
+          - pattern: subprocess.call($COMMAND, ...)
+          - pattern: subprocess.check_call($COMMAND, ...)
+          - pattern: subprocess.check_output($COMMAND, ...)
+      - metavariable-regex:
+          metavariable: $COMMAND
+          regex: ^[bBrRfFuU]*(?:"|').*
+
+  - id: python-os-shell-command
+    languages: [python]
+    severity: ERROR
+    message: Do not invoke a shell directly; use a reviewed argument-list subprocess call.
+    metadata:
+      category: security
+      technology: [python]
+    pattern-either:
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+
+  - id: python-dynamic-code-execution
+    languages: [python]
+    severity: ERROR
+    message: Do not execute dynamically supplied Python code.
+    metadata:
+      category: security
+      technology: [python]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: python-unsafe-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Do not deserialize untrusted data with pickle or yaml.load.
+    metadata:
+      category: security
+      technology: [python]
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: yaml.load(...)
+
+  - id: python-insecure-tls-verification
+    languages: [python]
+    severity: ERROR
+    message: TLS certificate verification must remain enabled.
+    metadata:
+      category: security
+      technology: [python]
+    pattern-either:
+      - pattern: requests.$FUNCTION(..., verify=False, ...)
+      - pattern: httpx.$FUNCTION(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)
