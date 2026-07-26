@@ -1,0 +1,7 @@
+# Copy this file to voice.yaml for a valid interactive first-run configuration.
+# Command-line options override these values.
+microphone: null
+tts: null
+them_output: null
+playback_output: null
+codex_after: null

@@ -1,0 +1,64 @@
+[project]
+name = "voice-codex"
+version = "0.1.0"
+description = "Always-listening User/Them/Codex conversation assistant"
+readme = "features.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "edge-tts==7.2.8",
+    "moonshine-voice==0.0.73",
+    "numpy==2.5.1",
+    "openai-codex==0.144.4",
+    "rich==15.0.0",
+    "sounddevice==0.5.5",
+    "textual==8.2.8",
+]
+
+[dependency-groups]
+dev = [
+    "actionlint-py==1.7.12.24",
+    "bandit>=1.9,<2",
+    "pip-audit>=2.10,<3",
+    "pre-commit>=4.0,<5",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.14,<0.15",
+    "ty>=0.0.14,<0.1",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = [".venv-moonshine"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--tb=short",
+    "--cov-fail-under=30",
+]
+testpaths = ["tests"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = [".venv/*", ".venv-moonshine/*", "tests/*"]
+
+[tool.coverage.report]
+fail_under = 30
+show_missing = true
+skip_empty = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv-moonshine"]
+
+[tool.ty.environment]
+python-version = "3.12"

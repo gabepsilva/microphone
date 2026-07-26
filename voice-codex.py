@@ -4,7 +4,6 @@
 import argparse
 import asyncio
 import atexit
-from difflib import SequenceMatcher
 import json
 import os
 import queue
@@ -14,7 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 import numpy as np
 import sounddevice as sd
@@ -261,9 +262,7 @@ def choose_them_output(requested=None, require_isolation=False):
 
     print()
     while True:
-        answer = input(
-            f"Select an audio output (0-{len(outputs) + 1}): "
-        ).strip()
+        answer = input(f"Select an audio output (0-{len(outputs) + 1}): ").strip()
         try:
             selected = int(answer)
         except ValueError:
@@ -326,11 +325,7 @@ class VirtualMeetingOutput:
             self.sink_module = self._load_module(
                 "module-null-sink",
                 f"sink_name={self.sink_name}",
-                (
-                    'sink_properties="'
-                    f"device.description='{self.DESCRIPTION}'"
-                    '"'
-                ),
+                (f"sink_properties=\"device.description='{self.DESCRIPTION}'\""),
             )
             self.loopback_module = self._load_module(
                 "module-loopback",
@@ -441,7 +436,9 @@ def choose_tts(requested=None):
 class SentenceChunker:
     """Turn streamed text into sentence-sized chunks with a hard size cap."""
 
-    SENTENCE_END = re.compile(r'(?<=[.!?])(?:["”’\')\]]*)\s+')
+    SENTENCE_END = re.compile(
+        r'(?<=[.!?])(?:["”\N{RIGHT SINGLE QUOTATION MARK}\')\]]*)\s+'
+    )
 
     def __init__(self, emit, max_chars=400):
         self.emit = emit
@@ -517,8 +514,8 @@ class EdgeSentenceTTS:
             import edge_tts
         except ImportError as error:
             raise RuntimeError(
-                "Edge TTS audio requires the edge-tts package. Install it with "
-                "'.venv-moonshine/bin/pip install -r requirements-tts.txt'."
+                "Edge TTS audio requires the edge-tts package. Install the "
+                "locked project dependencies with 'uv sync --locked'."
             ) from error
         player = shutil.which("ffplay")
         if player is None:
@@ -566,11 +563,7 @@ class EdgeSentenceTTS:
         with self.turn_lock:
             turn = self.current_turn
             turn_cancelled = self.turn_cancelled
-        if (
-            text
-            and not turn_cancelled
-            and not self.shutdown_requested.is_set()
-        ):
+        if text and not turn_cancelled and not self.shutdown_requested.is_set():
             self._remember_speech(text, retention=120)
             self.sentences.put_nowait((turn, text))
 
@@ -647,20 +640,14 @@ class EdgeSentenceTTS:
             for spoken in expired:
                 del self.recent_speech[spoken]
             recent = tuple(self.recent_speech)
-        return any(
-            self._speech_matches(transcript, spoken)
-            for spoken in recent
-        )
+        return any(self._speech_matches(transcript, spoken) for spoken in recent)
 
     async def _synthesize(self, turn, text):
         self._remember_speech(text, retention=30, replace=True)
         communicate = self.edge_tts.Communicate(text, self.voice)
         audio = bytearray()
         async for chunk in communicate.stream():
-            if (
-                self.shutdown_requested.is_set()
-                or not self._turn_is_active(turn)
-            ):
+            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
                 break
             if chunk["type"] == "audio":
                 audio.extend(chunk["data"])
@@ -689,8 +676,7 @@ class EdgeSentenceTTS:
                     "pipe:1",
                 ],
                 input=audio,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=True,
             )
         except subprocess.CalledProcessError as error:
@@ -733,10 +719,8 @@ class EdgeSentenceTTS:
             self.active_player = process
         player_error = b""
         try:
-            try:
+            with suppress(BrokenPipeError):
                 _, player_error = process.communicate(input=audio)
-            except BrokenPipeError:
-                pass
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -770,10 +754,7 @@ class EdgeSentenceTTS:
             turn, text = item
 
             await available_slots.acquire()
-            if (
-                self.shutdown_requested.is_set()
-                or not self._turn_is_active(turn)
-            ):
+            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
                 available_slots.release()
                 if self.shutdown_requested.is_set():
                     break
@@ -785,10 +766,7 @@ class EdgeSentenceTTS:
                 if delay > 0:
                     await asyncio.sleep(delay)
 
-            if (
-                self.shutdown_requested.is_set()
-                or not self._turn_is_active(turn)
-            ):
+            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
                 available_slots.release()
                 if self.shutdown_requested.is_set():
                     break
@@ -809,10 +787,7 @@ class EdgeSentenceTTS:
             turn, text, synthesis = job
             try:
                 audio = await synthesis
-                if (
-                    not self.shutdown_requested.is_set()
-                    and self._turn_is_active(turn)
-                ):
+                if not self.shutdown_requested.is_set() and self._turn_is_active(turn):
                     await asyncio.to_thread(self._play, turn, audio)
             except Exception as error:
                 if not self.shutdown_requested.is_set():
@@ -971,10 +946,7 @@ class TranscriptDisplay:
         width = max(20, shutil.get_terminal_size((120, 24)).columns - 2)
         available = max(1, width - len(prefix))
         if len(text) > available:
-            if available == 1:
-                text = "…"
-            else:
-                text = f"…{text[-(available - 1):]}"
+            text = "…" if available == 1 else f"…{text[-(available - 1) :]}"
         return text
 
     def update(self, speaker, text):
@@ -1107,9 +1079,7 @@ class PulseMonitorTranscriber:
         blocksize=4096,
     ):
         if shutil.which("parec") is None:
-            raise RuntimeError(
-                "parec is required to capture an audio-output monitor."
-            )
+            raise RuntimeError("parec is required to capture an audio-output monitor.")
         self.transcriber = Transcriber(model_path, model_arch)
         self.stream = self.transcriber.create_stream(update_interval)
         self.monitor = monitor
@@ -1127,8 +1097,10 @@ class PulseMonitorTranscriber:
 
     def _read_audio(self):
         try:
-            while self.process is not None:
-                chunk = self.process.stdout.read(self.blocksize * 2)
+            while (process := self.process) is not None:
+                if process.stdout is None:
+                    break
+                chunk = process.stdout.read(self.blocksize * 2)
                 if not chunk:
                     break
                 self.audio_queue.put(chunk)
@@ -1155,7 +1127,7 @@ class PulseMonitorTranscriber:
             audio = np.frombuffer(raw_audio, dtype="<i2").astype(np.float32)
             audio /= 32768.0
             try:
-                self.stream.add_audio(audio, self.samplerate)
+                self.stream.add_audio(audio.tolist(), self.samplerate)
             except Exception as error:
                 print(
                     f"Them transcription error: {error}",
@@ -1291,8 +1263,7 @@ class CodexConversation:
         self.transcript_display.begin_codex()
         try:
             entries = [
-                {"source": speaker, "text": text}
-                for speaker, text in request.entries
+                {"source": speaker, "text": text} for speaker, text in request.entries
             ]
             prompt = (
                 "Transcript entries since the previous queued reply:\n"
@@ -1336,8 +1307,7 @@ class CodexConversation:
                 if isinstance(item, AgentMessageThreadItem):
                     if not agent_message_open:
                         print(
-                            f"\n{codex_color}"
-                            f"Codex (replying to {reply_to}): ",
+                            f"\n{codex_color}Codex (replying to {reply_to}): ",
                             end="",
                             flush=True,
                         )
@@ -1361,8 +1331,7 @@ class CodexConversation:
             if isinstance(payload, AgentMessageDeltaNotification):
                 if not agent_message_open:
                     print(
-                        f"\n{codex_color}"
-                        f"Codex (replying to {reply_to}): ",
+                        f"\n{codex_color}Codex (replying to {reply_to}): ",
                         end="",
                         flush=True,
                     )
@@ -1426,14 +1395,10 @@ class CodexConversation:
     def close(self):
         self.shutdown_requested.set()
         if self.active_turn is not None:
-            try:
+            with suppress(Exception):
                 self.active_turn.interrupt()
-            except Exception:
-                pass
-        try:
+        with suppress(queue.Full):
             self.requests.put_nowait(None)
-        except queue.Full:
-            pass
         self.worker.join(timeout=3)
         self.codex.close()
         if self.tts is not None:
@@ -1496,9 +1461,7 @@ def main():
     parser.add_argument(
         "--codex-fast",
         action="store_true",
-        help=(
-            "Request Codex Fast mode for lower latency; consumes more credits"
-        ),
+        help=("Request Codex Fast mode for lower latency; consumes more credits"),
     )
     parser.add_argument(
         "--them-output",
@@ -1509,10 +1472,7 @@ def main():
     )
     parser.add_argument(
         "--playback-output",
-        help=(
-            "Physical output used with --them-output isolated; prompts when "
-            "omitted"
-        ),
+        help=("Physical output used with --them-output isolated; prompts when omitted"),
     )
     parser.add_argument(
         "--codex-after",
@@ -1544,8 +1504,7 @@ def main():
         parser.error("startup config 'tts' must be 'on' or 'off'")
     if args.codex_after not in (None, "them", "both", "user", "quiet"):
         parser.error(
-            "startup config 'codex_after' must be "
-            "'them', 'both', 'user', or 'quiet'"
+            "startup config 'codex_after' must be 'them', 'both', 'user', or 'quiet'"
         )
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
@@ -1594,9 +1553,7 @@ def main():
             "tts": "on" if tts_enabled else "off",
             "them_output": them_output_setting,
             "playback_output": (
-                playback_output["name"]
-                if playback_output is not None
-                else None
+                playback_output["name"] if playback_output is not None else None
             ),
             "codex_after": codex_after_setting,
         }
@@ -1658,9 +1615,7 @@ def main():
         EdgeSentenceTTS(
             args.tts_voice,
             output_sink=(
-                playback_output["name"]
-                if playback_output is not None
-                else None
+                playback_output["name"] if playback_output is not None else None
             ),
         )
         if tts_enabled

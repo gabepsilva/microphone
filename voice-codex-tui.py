@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import argparse
 import threading
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import ClassVar
 
 from rich.console import Group, RenderableType
 from rich.table import Table
@@ -40,10 +42,10 @@ THEM = "Them"
 CODEX = "Codex"
 
 SOURCE_STYLES = {
-    USER_VOICE: "bold #6ba7ff",   # bright blue
-    USER_TEXT: "bold #7f9bd1",    # softer blue
-    THEM: "bold #d7b562",         # bright yellow — untrusted context
-    CODEX: "bold #6cc06c",        # bright green
+    USER_VOICE: "bold #6ba7ff",  # bright blue
+    USER_TEXT: "bold #7f9bd1",  # softer blue
+    THEM: "bold #d7b562",  # bright yellow — untrusted context
+    CODEX: "bold #6cc06c",  # bright green
 }
 BODY_STYLE = "#cdd6e4"
 
@@ -71,7 +73,7 @@ class Entry:
     reply_to: str = ""  # not rendered; carried for the on_save export
     interrupted: bool = False
     output: list[str] = field(default_factory=list)
-    exit_code: Optional[int] = None
+    exit_code: int | None = None
     streaming: bool = False
 
 
@@ -131,15 +133,15 @@ class SessionState:
 class TuiHooks:
     """Callbacks the host script supplies. Every one is optional."""
 
-    on_user_text: Optional[Callable[[str], None]] = None
-    on_model: Optional[Callable[[str], None]] = None
-    on_command: Optional[Callable[[str], None]] = None
-    on_policy: Optional[Callable[[str], None]] = None
-    on_mute: Optional[Callable[[bool], None]] = None
-    on_tts: Optional[Callable[[bool], None]] = None
-    on_interrupt: Optional[Callable[[], None]] = None
-    on_save: Optional[Callable[[list[Entry]], None]] = None
-    on_quit: Optional[Callable[[], None]] = None
+    on_user_text: Callable[[str], None] | None = None
+    on_model: Callable[[str], None] | None = None
+    on_command: Callable[[str], None] | None = None
+    on_policy: Callable[[str], None] | None = None
+    on_mute: Callable[[bool], None] | None = None
+    on_tts: Callable[[bool], None] | None = None
+    on_interrupt: Callable[[], None] | None = None
+    on_save: Callable[[list[Entry]], None] | None = None
+    on_quit: Callable[[], None] | None = None
 
 
 # --------------------------------------------------------------------------
@@ -180,7 +182,7 @@ def render_entry(entry: Entry) -> RenderableType:
 
 
 def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
-    filled = max(0, min(width, int(round(level * width))))
+    filled = max(0, min(width, round(level * width)))
     bar = Text()
     bar.append("■" * filled, style=style)
     bar.append("□" * (width - filled), style="#2f343b")
@@ -254,15 +256,15 @@ class Sidebar(Vertical):
         self.query_one("#panel-top", Static).update(Group(*self._top()))
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
         self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
-        self._sync_select("#model-select", self.state.codex_models, self.state.codex_model)
+        self._sync_select(
+            "#model-select", self.state.codex_models, self.state.codex_model
+        )
         self._sync_select("#policy-select", list(POLICIES), self.state.policy)
 
     def _sync_select(self, selector: str, values: list[str], current: str) -> None:
         """Push host-driven changes into a picker without re-firing its hook."""
         select = self.query_one(selector, Select)
-        listed = [
-            value for _, value in select._options if value is not Select.BLANK
-        ]
+        listed = [value for _, value in select._options if value is not Select.BLANK]
         if listed != values:
             select.set_options([(self._option_label(selector, v), v) for v in values])
         if select.value != current:
@@ -281,11 +283,10 @@ class Sidebar(Vertical):
                 self.state.policy = value
                 if self.hooks.on_policy:
                     self.hooks.on_policy(value)
-        elif event.select.id == "model-select":
-            if value != self.state.codex_model:
-                self.state.codex_model = value
-                if self.hooks.on_model:
-                    self.hooks.on_model(value)
+        elif event.select.id == "model-select" and value != self.state.codex_model:
+            self.state.codex_model = value
+            if self.hooks.on_model:
+                self.hooks.on_model(value)
 
     def sync_clock(self) -> None:
         """Cheap per-tick repaint — only the panel holding the session clock."""
@@ -374,7 +375,13 @@ class Sidebar(Vertical):
         )
         if state.tts_queue:
             for line in state.tts_queue[:3]:
-                blocks.append(Text(f"› {line}", style="#6f757e", overflow="ellipsis"))
+                blocks.append(
+                    Text(
+                        f"\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} {line}",
+                        style="#6f757e",
+                        overflow="ellipsis",
+                    )
+                )
         else:
             blocks.append(Text("— empty —", style="#5a6068"))
         blocks.append(Text())
@@ -383,7 +390,10 @@ class Sidebar(Vertical):
         blocks.append(
             _kv(
                 [
-                    ("turn silence", Text(f"{state.turn_silence:.1f}s", style="#9aa3ad")),
+                    (
+                        "turn silence",
+                        Text(f"{state.turn_silence:.1f}s", style="#9aa3ad"),
+                    ),
                     ("confidence", Text(f"{state.confidence:.2f}", style="#9aa3ad")),
                     ("language", Text(state.language, style="#9aa3ad")),
                     ("moonshine", Text(state.moonshine, style="#9aa3ad")),
@@ -486,7 +496,7 @@ class VoiceCodexApp(App):
     """
 
     # priority=True so the focused Input does not swallow the control keys.
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+c", "quit_app", "quit", priority=True),
         Binding("ctrl+p", "cycle_policy", "policy", priority=True),
         Binding("ctrl+k", "toggle_mute", "mute mic", priority=True),
@@ -500,8 +510,8 @@ class VoiceCodexApp(App):
         self.state = state
         self.hooks = hooks
         self.entries: list[Entry] = []
-        self._streaming: Optional[EntryRow] = None
-        self._command_row: Optional[EntryRow] = None
+        self._streaming: EntryRow | None = None
+        self._command_row: EntryRow | None = None
 
     # -- layout ------------------------------------------------------------
 
@@ -512,7 +522,10 @@ class VoiceCodexApp(App):
                 yield VerticalScroll(id="transcript")
                 yield Static(id="partial")
                 with Horizontal(id="promptbar"):
-                    yield Static("›", id="prompt-mark")
+                    yield Static(
+                        "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}",
+                        id="prompt-mark",
+                    )
                     yield Input(id="input")
                     yield Static("User Text always gets a reply", id="input-hint")
                 yield Static(id="keys")
@@ -550,9 +563,10 @@ class VoiceCodexApp(App):
         state = self.state
         if state.partial_text:
             line = Text("◌ ", style="#5a6068")
-            line.append(f"{state.partial_source}  ", style=SOURCE_STYLES.get(
-                state.partial_source, "#6f757e"
-            ))
+            line.append(
+                f"{state.partial_source}  ",
+                style=SOURCE_STYLES.get(state.partial_source, "#6f757e"),
+            )
             line.append(state.partial_text, style="#8a929c")
         elif state.mic.muted:
             line = Text("◌ mic muted — Them still transcribing", style="#6f757e")
@@ -672,12 +686,12 @@ class VoiceCodexTUI:
     app are applied to the state object and appear once the UI mounts.
     """
 
-    def __init__(self, state: Optional[SessionState] = None, **hooks) -> None:
+    def __init__(self, state: SessionState | None = None, **hooks) -> None:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
         self.app = VoiceCodexApp(self.state, self.hooks)
         self._ready = threading.Event()
-        self._app_thread: Optional[int] = None
+        self._app_thread: int | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -698,10 +712,8 @@ class VoiceCodexTUI:
         if threading.get_ident() == self._app_thread:
             fn(*args)
         else:
-            try:
+            with suppress(RuntimeError):
                 self.app.call_from_thread(fn, *args)
-            except RuntimeError:
-                pass  # app shut down mid-call
 
     # -- transcript --------------------------------------------------------
 
@@ -747,6 +759,8 @@ class VoiceCodexTUI:
         if row is None:
             self._codex_begin_impl(USER_VOICE)
             row = self.app._streaming
+        if row is None:
+            raise RuntimeError("Could not create a streaming Codex transcript row.")
         row.entry.text += delta
         row.sync()
         self.app.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
@@ -770,9 +784,7 @@ class VoiceCodexTUI:
 
     def _command_impl(self, command: str) -> None:
         self.app._streaming = None
-        self.app._command_row = self.app.add_entry(
-            Entry(kind="command", text=command)
-        )
+        self.app._command_row = self.app.add_entry(Entry(kind="command", text=command))
         self.app.refresh_sidebar()
 
     def command_output(self, line: str) -> None:
@@ -803,8 +815,8 @@ class VoiceCodexTUI:
     def set_audio(
         self,
         channel: str,
-        device: Optional[str] = None,
-        level: Optional[float] = None,
+        device: str | None = None,
+        level: float | None = None,
     ) -> None:
         target = {"mic": self.state.mic, "them": self.state.them}.get(channel)
         if target is None:
