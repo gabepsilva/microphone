@@ -22,6 +22,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import ClassVar
 
+# These must precede Textual imports. Keep Ctrl-C as a terminal SIGINT rather
+# than a Textual copy key, including in terminals that support Kitty keyboard
+# protocol (such as Ghostty).
+os.environ["TEXTUAL_ALLOW_SIGNALS"] = "1"
+os.environ["TEXTUAL_DISABLE_KITTY_KEY"] = "1"
+
 from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
@@ -763,9 +769,6 @@ class VoiceCodexTUI:
     # -- lifecycle ---------------------------------------------------------
 
     def run(self) -> None:
-        # Textual otherwise puts the terminal in a mode where Ctrl-C is just
-        # a key event. Preserve the terminal's native SIGINT behavior.
-        os.environ.setdefault("TEXTUAL_ALLOW_SIGNALS", "1")
         self._app_thread = threading.get_ident()
         self.app.call_later(self._ready.set)
         self.app.run()

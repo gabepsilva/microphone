@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 
 from textual.widgets import Input, Select, Static
 
@@ -154,14 +157,30 @@ def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:
     asyncio.run(exercise())
 
 
-def test_tui_preserves_native_terminal_interrupts(tui, monkeypatch) -> None:
-    facade = tui.VoiceCodexTUI()
-    monkeypatch.delenv("TEXTUAL_ALLOW_SIGNALS", raising=False)
-    monkeypatch.setattr(facade.app, "run", lambda: None)
+def test_tui_enables_native_terminal_interrupts_before_textual_import() -> None:
+    environment = os.environ | {
+        "TEXTUAL_ALLOW_SIGNALS": "",
+        "TEXTUAL_DISABLE_KITTY_KEY": "",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; from voice_codex import tui; "
+                "from textual import constants; "
+                "print(os.environ['TEXTUAL_ALLOW_SIGNALS']); "
+                "print(os.environ['TEXTUAL_DISABLE_KITTY_KEY']); "
+                "print(constants.DISABLE_KITTY_KEY)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
 
-    facade.run()
-
-    assert tui.os.environ["TEXTUAL_ALLOW_SIGNALS"] == "1"
+    assert result.stdout.splitlines() == ["1", "1", "True"]
 
 
 def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:
