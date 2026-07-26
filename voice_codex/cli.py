@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import cast
 
 import numpy as np
-from moonshine_voice import MicTranscriber, get_model_for_language
+from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 from moonshine_voice.transcriber import Transcriber, TranscriptEventListener
 from openai_codex import ApprovalMode, Codex, Sandbox
@@ -939,19 +939,25 @@ class AudioLevelReporter:
         self.display.set_audio(self.channel, level=audio_level(samples))
 
 
-class MeteredMicTranscriber(MicTranscriber):
-    """Add a non-blocking level tap to Moonshine Voice microphone capture."""
+def metered_mic_transcriber(*args, level_reporter: AudioLevelReporter, **kwargs):
+    """Create microphone capture only when the audio runtime is starting."""
+    from moonshine_voice import MicTranscriber
 
-    def __init__(self, *args, level_reporter: AudioLevelReporter, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.level_reporter = level_reporter
+    class MeteredMicTranscriber(MicTranscriber):
+        """Add a non-blocking level tap to Moonshine Voice microphone capture."""
 
-    def _open_input_stream(self, samplerate, callback):
-        def metered_callback(in_data, frames, time_info, status):
-            self.level_reporter.update(in_data)
-            callback(in_data, frames, time_info, status)
+        def __init__(self, *args, level_reporter: AudioLevelReporter, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.level_reporter = level_reporter
 
-        return super()._open_input_stream(samplerate, metered_callback)
+        def _open_input_stream(self, samplerate, callback):
+            def metered_callback(in_data, frames, time_info, status):
+                self.level_reporter.update(in_data)
+                callback(in_data, frames, time_info, status)
+
+            return super()._open_input_stream(samplerate, metered_callback)
+
+    return MeteredMicTranscriber(*args, level_reporter=level_reporter, **kwargs)
 
 
 class PulseMonitorTranscriber:
@@ -1627,7 +1633,7 @@ def main():
         transcript_display,
         on_speech=handle_speech,
     )
-    user_transcriber = MeteredMicTranscriber(
+    user_transcriber = metered_mic_transcriber(
         model_path=model_path,
         model_arch=downloaded_arch,
         update_interval=0.25,
