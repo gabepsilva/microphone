@@ -1,0 +1,338 @@
+"""PCM decoding, level metering, and the monitor capture lifecycle.
+
+``parec`` and the Moonshine transcriber are faked at their boundaries; the
+real reader and worker threads run.
+"""
+
+from __future__ import annotations
+
+import queue
+import struct
+import threading
+
+import numpy as np
+import pytest
+
+WAIT_SECONDS = 10
+
+
+def pcm(*samples):
+    """Encode samples as the little-endian signed 16-bit PCM parec emits."""
+    return struct.pack(f"<{len(samples)}h", *samples)
+
+
+class FakeStream:
+    """Stand in for a Moonshine transcription stream."""
+
+    def __init__(self):
+        self.audio: list[tuple[list[float], int]] = []
+        self.listeners: list[object] = []
+        self.events: list[str] = []
+        self.received = threading.Event()
+        self.failure = None
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+
+    def add_audio(self, samples, samplerate):
+        if self.failure is not None:
+            raise self.failure
+        self.audio.append((samples, samplerate))
+        self.received.set()
+
+    def start(self):
+        self.events.append("start")
+
+    def stop(self):
+        self.events.append("stop")
+
+    def close(self):
+        self.events.append("close")
+
+
+class FakeTranscriber:
+    def __init__(self, model_path, model_arch):
+        self.model_path = model_path
+        self.model_arch = model_arch
+        self.stream = FakeStream()
+        self.closed = False
+        self.update_interval = None
+
+    def create_stream(self, update_interval):
+        self.update_interval = update_interval
+        return self.stream
+
+    def close(self):
+        self.closed = True
+
+
+class FakeParec:
+    """Stand in for the parec process, serving a fixed script of reads."""
+
+    def __init__(self, reads, exit_code=None):
+        self.stdout = FakePipe(reads)
+        self._exit_code = exit_code
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return self._exit_code
+
+    def terminate(self):
+        self.terminated = True
+        self._exit_code = -15
+        self.stdout.unblock()
+
+    def kill(self):
+        self.killed = True
+        self._exit_code = -9
+        self.stdout.unblock()
+
+    def wait(self, timeout=None):  # noqa: ARG002 - matches Popen.wait
+        return self._exit_code
+
+
+class FakePipe:
+    def __init__(self, reads):
+        self.reads = list(reads)
+        self.closed = False
+
+    def read(self, size):  # noqa: ARG002 - matches BufferedReader.read
+        if self.reads:
+            return self.reads.pop(0)
+        return b""
+
+    def unblock(self):
+        self.reads = []
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def capture(voice, monkeypatch):
+    """Build a monitor transcriber with parec and Moonshine faked."""
+    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(voice, "Transcriber", FakeTranscriber)
+    monkeypatch.setattr(voice.PulseMonitorTranscriber, "STARTUP_GRACE_SECONDS", 0)
+
+    def build(reads=(), exit_code=None, **kwargs):
+        process = FakeParec(list(reads), exit_code)
+        monkeypatch.setattr(voice.subprocess, "Popen", lambda *a, **k: process)
+        monitor = voice.PulseMonitorTranscriber(
+            "model", "arch", "sink.monitor", **kwargs
+        )
+        monitor.fake_process = process
+        return monitor
+
+    return build
+
+
+def test_silence_reports_no_level(voice) -> None:
+    assert voice.audio_level(np.zeros(0, dtype=np.float32)) == 0.0
+    assert voice.audio_level(np.zeros(64, dtype=np.float32)) == 0.0
+
+
+def test_a_louder_signal_reports_a_higher_level(voice) -> None:
+    quiet = voice.audio_level(np.full(64, 0.02, dtype=np.float32))
+    loud = voice.audio_level(np.full(64, 0.15, dtype=np.float32))
+
+    assert 0.0 < quiet < loud < 1.0
+
+
+def test_the_level_is_clipped_to_one(voice) -> None:
+    assert voice.audio_level(np.full(64, 0.9, dtype=np.float32)) == 1.0
+
+
+def test_level_updates_are_rate_limited(voice) -> None:
+    levels: list[float] = []
+    display = type(
+        "Display",
+        (),
+        {"set_audio": staticmethod(lambda channel, level: levels.append(level))},
+    )()
+    reporter = voice.AudioLevelReporter(display, "them", interval=1000.0)
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))
+    reporter.update(np.full(64, 0.1, dtype=np.float32))
+    reporter.update(np.full(64, 0.1, dtype=np.float32))
+
+    assert len(levels) == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (pcm(0), [0.0]),
+        (pcm(16384), [0.5]),
+        (pcm(-16384), [-0.5]),
+        (pcm(-32768), [-1.0]),
+        (pcm(0, 8192, -8192), [0.0, 0.25, -0.25]),
+        (b"", []),
+    ],
+)
+def test_pcm_decodes_to_normalized_samples(voice, raw, expected) -> None:
+    assert voice.decode_pcm(raw).tolist() == pytest.approx(expected)
+
+
+def test_decoded_samples_stay_within_the_normalized_range(voice) -> None:
+    decoded = voice.decode_pcm(pcm(32767, -32768, 0, 12345))
+
+    assert decoded.dtype == np.float32
+    assert decoded.min() >= -1.0
+    assert decoded.max() <= 1.0
+
+
+def test_a_backlog_is_coalesced_into_one_buffer(voice) -> None:
+    audio_queue = queue.Queue()
+    stop = object()
+    audio_queue.put(b"second")
+    audio_queue.put(b"third")
+
+    raw, stop_requested = voice.drain_audio_queue(audio_queue, stop, b"first")
+
+    assert raw == b"firstsecondthird"
+    assert stop_requested is False
+
+
+def test_a_stop_item_ends_the_backlog_and_is_reported(voice) -> None:
+    audio_queue = queue.Queue()
+    stop = object()
+    audio_queue.put(b"second")
+    audio_queue.put(stop)
+    audio_queue.put(b"never read")
+
+    raw, stop_requested = voice.drain_audio_queue(audio_queue, stop, b"first")
+
+    assert raw == b"firstsecond"
+    assert stop_requested is True
+
+
+def test_an_empty_queue_yields_only_the_first_chunk(voice) -> None:
+    raw, stop_requested = voice.drain_audio_queue(queue.Queue(), object(), b"only")
+
+    assert (raw, stop_requested) == (b"only", False)
+
+
+def test_the_parec_command_requests_raw_mono_pcm(voice) -> None:
+    command = voice.parec_command("sink.monitor", 16000)
+
+    assert command[0] == "parec"
+    assert "--device=sink.monitor" in command
+    assert "--rate=16000" in command
+    assert "--format=s16le" in command
+    assert "--channels=1" in command
+
+
+def test_capture_requires_parec(voice, monkeypatch) -> None:
+    monkeypatch.setattr(voice.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="parec is required"):
+        voice.PulseMonitorTranscriber("model", "arch", "sink.monitor")
+
+
+def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
+    monitor = capture(reads=[pcm(16384, -16384)])
+    monitor.start()
+    try:
+        assert monitor.stream.received.wait(WAIT_SECONDS)
+        samples, samplerate = monitor.stream.audio[0]
+
+        assert samples == pytest.approx([0.5, -0.5])
+        assert samplerate == 16000
+    finally:
+        monitor.stop()
+
+
+def test_a_capture_level_is_reported_while_transcribing(capture) -> None:
+    levels: list[float] = []
+    reporter = type("Reporter", (), {"update": staticmethod(levels.append)})()
+    monitor = capture(reads=[pcm(16384, -16384)], level_reporter=reporter)
+    monitor.start()
+    try:
+        assert monitor.stream.received.wait(WAIT_SECONDS)
+        assert len(levels) == 1
+    finally:
+        monitor.stop()
+
+
+def test_a_parec_that_exits_immediately_is_reported(capture) -> None:
+    monitor = capture(exit_code=1)
+
+    with pytest.raises(RuntimeError, match="Could not capture audio-output monitor"):
+        monitor.start()
+
+    assert monitor.stream.events == ["start", "stop"]
+
+
+def test_starting_twice_does_not_start_a_second_capture(capture) -> None:
+    monitor = capture(reads=[pcm(0)])
+    monitor.start()
+    try:
+        monitor.start()
+
+        assert monitor.stream.events == ["start"]
+    finally:
+        monitor.stop()
+
+
+def test_stopping_before_starting_does_nothing(capture) -> None:
+    monitor = capture()
+
+    monitor.stop()
+
+    assert monitor.stream.events == []
+
+
+def test_stopping_terminates_parec_and_stops_the_stream(capture) -> None:
+    monitor = capture(reads=[pcm(0)], exit_code=None)
+    monitor.start()
+
+    monitor.stop()
+
+    assert monitor.fake_process.terminated
+    assert monitor.stream.events == ["start", "stop"]
+
+
+def test_closing_releases_the_pipe_the_stream_and_the_model(capture) -> None:
+    monitor = capture(reads=[pcm(0)])
+    monitor.start()
+
+    monitor.close()
+
+    assert monitor.fake_process.stdout.closed
+    assert monitor.stream.events == ["start", "stop", "close"]
+    assert monitor.transcriber.closed
+
+
+def test_a_transcription_failure_is_reported_without_ending_capture(
+    capture, capsys
+) -> None:
+    monitor = capture(reads=[pcm(0, 1)])
+    monitor.stream.failure = RuntimeError("model is busy")
+    monitor.start()
+    try:
+        monitor.stop()
+
+        assert "Them transcription error: model is busy" in capsys.readouterr().err
+    finally:
+        monitor.close()
+
+
+def test_a_listener_is_registered_with_the_stream(capture) -> None:
+    monitor = capture()
+    listener = object()
+
+    monitor.add_listener(listener)
+
+    assert monitor.stream.listeners == [listener]
+
+
+def test_capture_settings_reach_the_stream_and_the_reader(capture, voice) -> None:
+    monitor = capture(
+        capture=voice.CaptureSettings(samplerate=8000, blocksize=256, update_interval=1)
+    )
+
+    assert monitor.transcriber.update_interval == 1
+    assert monitor.capture.samplerate == 8000
+    assert monitor.capture.blocksize == 256

@@ -73,8 +73,18 @@ and prints what to do when it fails. This is the map, not the manual.
   are the one thing that must not.
 
 Recorded only here: per-file floors are set at the value each file had when the
-gate was added and ratchet upward only, and the global floor follows toward 60%
-and then 80% as adapters are isolated from the runtime.
+gate was added and ratchet upward only. The 80% goal was reached by isolating
+the adapters from the runtime, one class per pull request, and the global floor
+now simply follows what the suite achieves.
+
+What is still uncovered is deliberate and worth naming, because it is what a
+future floor cannot reach without a different kind of test: the body of
+`main()`, which is process-lifetime wiring — it builds the TUI, the Codex
+client, the TTS engine, and the transcribers, then hands control to
+`run_session`. Every collaborator it wires is covered on its own. Executing
+`main` itself would require a fake for each of them at once, which asserts the
+shape of the wiring rather than any behavior. Coverage there would be a number,
+not evidence, so it is left alone.
 
 ## Security policy
 

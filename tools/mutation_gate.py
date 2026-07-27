@@ -8,6 +8,26 @@ test written only to pass cannot fake, so it is a merge gate rather than a
 report.
 
 Raise MUTATION_SCORE_FLOOR as survivors are killed. Never lower it.
+
+The reachable ceiling is not 100%. Thirteen survivors are equivalent mutants —
+they cannot change behavior, so no test can detect them:
+
+  * `rfind(x, None, n)` is `rfind(x, 0, n)`; None is the documented default.
+  * `rfind(x, 1, n)` differs only when the break is at index 0, and it never
+    is: `_emit_bounded` is called with stripped text, and the buffer keeps
+    being lstripped as it is consumed.
+  * `encoding="UTF-8"` is `encoding="utf-8"`; codec names are normalized.
+  * `encoding=None` falls back to the locale encoding, which is UTF-8 wherever
+    this runs, so it is only distinguishable by changing the environment.
+
+Two more time out rather than dying: mutating `split_at` to None makes the
+chunking loop consume nothing and spin forever. A timeout is not a kill, so
+they count against the score.
+
+That puts the ceiling at 253/268, which is what the floor now sits just below.
+Do not chase the difference, and do not silence it with `# pragma: no mutate`
+either — an equivalent mutant is evidence the code is precise, not evidence a
+test is missing.
 """
 
 from __future__ import annotations
@@ -16,7 +36,7 @@ import json
 import sys
 from pathlib import Path
 
-MUTATION_SCORE_FLOOR = 42.0
+MUTATION_SCORE_FLOOR = 94.0
 STATS_PATH = Path("mutants/mutmut-cicd-stats.json")
 
 

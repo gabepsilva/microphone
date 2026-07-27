@@ -1,8 +1,15 @@
-"""Pure transcript, response-policy, and speech-matching logic."""
+"""Transcript, response-policy, speech-matching, and turn-state logic.
+
+Nothing here opens a device, spawns a process, or makes a network call. The
+locks and the injected clock exist so that this logic can be shared with the
+threads in the runtime, not because it talks to anything.
+"""
 
 from __future__ import annotations
 
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -122,6 +129,113 @@ class EchoMatcher:
             return True
         longest_match = max(matcher.get_matching_blocks(), key=lambda block: block.size)
         return longest_match.size >= 3 and longest_match.size / shorter_length >= 0.70
+
+
+class TurnGate:
+    """Track which response turn is current and whether it may still speak.
+
+    Speech is produced across several threads and an event loop, so a sentence
+    can finish synthesizing after the turn that requested it was interrupted.
+    Every stage therefore re-checks its own turn number rather than trusting
+    that it is still wanted.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.current_turn = 0
+        self.cancelled = False
+        self.enabled = True
+
+    def begin_turn(self) -> None:
+        with self._lock:
+            self.current_turn += 1
+            self.cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+
+    def set_enabled(self, enabled: bool) -> bool:
+        """Set the enabled flag; report whether speech must now be stopped."""
+        with self._lock:
+            self.enabled = enabled
+        return not enabled
+
+    def is_active(self, turn: int) -> bool:
+        with self._lock:
+            return turn == self.current_turn and not self.cancelled
+
+    def accepting_turn(self) -> tuple[int, bool]:
+        """Return the current turn and whether new speech may join it."""
+        with self._lock:
+            return self.current_turn, self.enabled and not self.cancelled
+
+
+class EchoMemory:
+    """Remember recently spoken text so the microphones can ignore it.
+
+    Retention is a deadline rather than a queue length: a sentence stays
+    recognizable for as long as it could still be heard, and entries are
+    expired lazily on the next lookup rather than by a timer thread.
+    """
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._expiry: dict[str, float] = {}
+
+    def remember(self, text: str, retention: float, replace: bool = False) -> None:
+        """Record text as spoken.
+
+        ``replace`` shortens an existing deadline; without it a deadline only
+        ever moves later, so re-queuing a sentence cannot make it expire sooner.
+        """
+        normalized = EchoMatcher.normalize(text)
+        if not normalized:
+            return
+        expires_at = self._clock() + retention
+        with self._lock:
+            if replace:
+                self._expiry[normalized] = expires_at
+            else:
+                self._expiry[normalized] = max(
+                    expires_at, self._expiry.get(normalized, 0)
+                )
+
+    def matches(self, text: str) -> bool:
+        """Return True when a transcript resembles something recently spoken."""
+        transcript = EchoMatcher.normalize(text)
+        if not transcript:
+            return False
+        now = self._clock()
+        with self._lock:
+            for spoken in [
+                spoken
+                for spoken, expires_at in self._expiry.items()
+                if expires_at <= now
+            ]:
+                del self._expiry[spoken]
+            recent = tuple(self._expiry)
+        return any(EchoMatcher.matches(transcript, spoken) for spoken in recent)
+
+
+class SpeakerGate:
+    """Decide which completed turns trigger a reply, as the policy changes.
+
+    A policy names speakers that may not exist in this session: selecting
+    "both" with no Them output must not make Them replies possible. The gate
+    therefore intersects every policy with the speakers actually available.
+    """
+
+    def __init__(self, speakers, available):
+        self.available = frozenset(available)
+        self.active = frozenset(speakers) & self.available
+
+    def set_policy(self, policy_name: str) -> None:
+        self.active = resolve_response_policy(policy_name).speakers & self.available
+
+    def should_respond(self, speaker: str) -> bool:
+        return speaker in self.active
 
 
 @dataclass(frozen=True)
