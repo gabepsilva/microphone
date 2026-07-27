@@ -26,6 +26,7 @@ from .choosers import (
 )
 from .config import load_startup_config
 from .domain import POLICY_NAMES, ResponsePolicy
+from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -111,12 +112,16 @@ def build_parser():
     parser.add_argument(
         "--tts",
         choices=("on", "off"),
-        help="Speak Codex responses with Edge TTS; prompts when omitted",
+        help="Speak Codex responses; prompts when omitted",
+    )
+    parser.add_argument(
+        "--tts-provider",
+        choices=PROVIDERS,
+        help=(f"Speech synthesizer for Codex responses (default: {DEFAULT_PROVIDER})"),
     )
     parser.add_argument(
         "--tts-voice",
-        default="en-US-AndrewNeural",
-        help="Edge TTS voice (default: en-US-AndrewNeural)",
+        help="Voice name; defaults to the chosen provider's own default voice",
     )
     return parser
 
@@ -135,10 +140,25 @@ def _apply_startup_config(parser, args):
     print(f"Loaded startup config: {args.config}", file=sys.stderr)
 
 
+def _resolve_speech_defaults(args):
+    """Settle the provider, then the voice that provider speaks with.
+
+    The voice default cannot be an argparse default because it depends on the
+    provider, which the config file may have supplied after parsing.
+    """
+    if args.tts_provider is None:
+        args.tts_provider = DEFAULT_PROVIDER
+    if args.tts_voice is None:
+        args.tts_voice = default_voice(args.tts_provider)
+
+
 def _validate_startup_args(parser, args):
     """Reject values argparse cannot constrain, including config-file values."""
     if args.tts not in (None, "on", "off"):
         parser.error("startup config 'tts' must be 'on' or 'off'")
+    if args.tts_provider is not None and args.tts_provider not in PROVIDERS:
+        allowed = ", ".join(repr(name) for name in PROVIDERS)
+        parser.error(f"startup config 'tts_provider' must be one of {allowed}")
     if args.codex_after is not None and args.codex_after not in POLICY_NAMES:
         allowed = ", ".join(repr(name) for name in POLICY_NAMES)
         parser.error(f"startup config 'codex_after' must be one of {allowed}")
@@ -154,6 +174,7 @@ def parse_startup_args(argv=None):
     args = parser.parse_args(argv)
     _apply_startup_config(parser, args)
     _validate_startup_args(parser, args)
+    _resolve_speech_defaults(args)
     return parser, args
 
 
@@ -164,6 +185,7 @@ class StartupSelection:
     device_index: int
     device: dict
     tts_enabled: bool
+    tts_provider: str
     them_output: dict | None
     them_output_setting: str
     playback_output: dict | None
@@ -184,6 +206,7 @@ def startup_settings(selection):
     return {
         "microphone": selection.device["name"],
         "tts": "on" if selection.tts_enabled else "off",
+        "tts_provider": selection.tts_provider,
         "them_output": selection.them_output_setting,
         "playback_output": (
             selection.playback_output["name"]
@@ -207,11 +230,11 @@ def print_startup_summary(args, selection, stream=sys.stderr):
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
     print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
     print(f"Codex command access: {args.sandbox}", file=stream)
-    print(
-        f"Codex audio: "
-        f"{'Edge TTS (' + args.tts_voice + ')' if selection.tts_enabled else 'Off'}",
-        file=stream,
-    )
+    if selection.tts_enabled:
+        engine = PROVIDER_LABELS[selection.tts_provider]
+        print(f"Codex audio: {engine} ({args.tts_voice})", file=stream)
+    else:
+        print("Codex audio: Off", file=stream)
     if playback_output is not None:
         print(
             f"Meeting and TTS playback: {playback_output['description']}", file=stream
@@ -250,6 +273,7 @@ def resolve_startup_selection(args):
             device_index=device_index,
             device=device,
             tts_enabled=tts_enabled,
+            tts_provider=args.tts_provider,
             them_output=them_output,
             them_output_setting=them_output_setting,
             playback_output=playback_output,
@@ -266,6 +290,7 @@ def build_session_state(args, selection):
     return SessionState(
         policy=selection.policy.name,
         tts_enabled=selection.tts_enabled,
+        tts_provider=selection.tts_provider,
         tts_voice=args.tts_voice,
         turn_silence=args.turn_silence,
         confidence=args.confidence,

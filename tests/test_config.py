@@ -9,6 +9,7 @@ def test_startup_config_round_trip(tmp_path) -> None:
     settings = {
         "microphone": "USB microphone",
         "tts": "on",
+        "tts_provider": "piper",
         "them_output": "meeting-monitor",
         "playback_output": None,
         "codex_after": "both",
@@ -84,6 +85,7 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
     settings = {
         "microphone": "Blue Yeti",
         "tts": "on",
+        "tts_provider": "edge",
         "them_output": "isolated",
         "playback_output": None,
         "codex_after": "both",

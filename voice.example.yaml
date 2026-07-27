@@ -2,6 +2,9 @@
 # Command-line options override these values.
 microphone: null
 tts: null
+# "piper" synthesizes locally and reaches the first word fastest; "edge" uses
+# Microsoft's online voices. Null keeps the default, piper.
+tts_provider: null
 them_output: null
 playback_output: null
 codex_after: null

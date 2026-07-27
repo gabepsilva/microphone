@@ -9,6 +9,7 @@ dependencies = [
     "moonshine-voice==0.0.73",
     "numpy==2.5.1",
     "openai-codex==0.144.4",
+    "piper-tts==1.6.0",
     "rich==15.0.0",
     "sounddevice==0.5.5",
     "textual==8.2.8",

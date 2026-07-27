@@ -49,7 +49,14 @@ FLOORS = {
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 97.0,
     "voice_codex/listener.py": 99.0,
+    # Recorded 2026-07-27 with the speech-provider split. Each measured the
+    # same figure across three consecutive runs, so none of these carries the
+    # thread-interleaving slack the tts.py note below describes: piper_tts.py
+    # 95.73, playback.py 98.41, speech.py 100.00.
+    "voice_codex/piper_tts.py": 95.0,
+    "voice_codex/playback.py": 98.0,
     "voice_codex/presentation.py": 100.0,
+    "voice_codex/speech.py": 100.0,
     "voice_codex/startup.py": 98.0,
     # This floor sat at 80 while the measurement moved between runs: five runs
     # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the

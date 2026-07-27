@@ -41,6 +41,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Input, Select, Static
 
 from .domain import CODEX, RESPONSE_POLICIES, THEM, USER_TEXT, USER_VOICE
+from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, default_voice
 
 # --------------------------------------------------------------------------
 # Sources and palette
@@ -114,8 +115,8 @@ class SessionState:
     codex_default_effort_by_model: dict[str, str] = field(default_factory=dict)
 
     tts_enabled: bool = True
-    tts_voice: str = "en-US-AndrewNeural"
-    tts_prefetch: int = 2
+    tts_provider: str = DEFAULT_PROVIDER
+    tts_voice: str = default_voice(DEFAULT_PROVIDER)
     tts_queue: list[str] = field(default_factory=list)
 
     turn_silence: float = 3.0
@@ -140,6 +141,7 @@ class TuiHooks:
     on_codex_effort: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
+    on_tts_provider: Callable[[str], bool | None] | None = None
     on_interrupt: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
     on_quit: Callable[[], None] | None = None
@@ -259,6 +261,9 @@ class Sidebar(Vertical):
     def _effort_options(self) -> list[tuple[str, str]]:
         return [(effort, effort) for effort in self.state.codex_efforts]
 
+    def _speech_options(self) -> list[tuple[str, str]]:
+        return [(label, name) for name, label in PROVIDER_LABELS.items()]
+
     def _picker(
         self, widget_id: str, options: list[tuple[str, str]], current: str
     ) -> Select:
@@ -291,6 +296,11 @@ class Sidebar(Vertical):
                 "reasoning-select", self._effort_options(), self.state.codex_effort
             )
         yield Static(id="panel-codex")
+        with Vertical(id="speech-row"):
+            yield Static("speech engine", id="speech-label")
+            yield self._picker(
+                "speech-select", self._speech_options(), self.state.tts_provider
+            )
         yield Static(id="panel-bottom")
 
     def on_mount(self) -> None:
@@ -307,6 +317,9 @@ class Sidebar(Vertical):
         )
         self._sync_select(
             "#reasoning-select", self._effort_options(), self.state.codex_effort
+        )
+        self._sync_select(
+            "#speech-select", self._speech_options(), self.state.tts_provider
         )
 
     def sync_audio(self) -> None:
@@ -364,6 +377,7 @@ class Sidebar(Vertical):
             "policy-select": self._policy_selected,
             "model-select": self._model_selected,
             "reasoning-select": self._effort_selected,
+            "speech-select": self._provider_selected,
         }.get(event.select.id)
         if handler is not None:
             handler(str(event.value))
@@ -374,6 +388,22 @@ class Sidebar(Vertical):
         self.state.policy = value
         if self.hooks.on_policy:
             self.hooks.on_policy(value)
+
+    def _provider_selected(self, value: str) -> None:
+        """Ask the host to switch engines, and show the voice that comes with it.
+
+        The picker only moves if the host accepts the switch, so a session
+        started without speech shows the engine it is actually not using
+        rather than one it never built.
+        """
+        if value == self.state.tts_provider:
+            return
+        if not (self.hooks.on_tts_provider and self.hooks.on_tts_provider(value)):
+            self.sync()
+            return
+        self.state.tts_provider = value
+        self.state.tts_voice = default_voice(value)
+        self.sync()
 
     def _adopt_efforts_for(self, model: str) -> None:
         """Offer the efforts the newly selected model supports."""
@@ -496,7 +526,7 @@ class Sidebar(Vertical):
         head.add_row(
             Text("TTS QUEUE", style="#5a6068"),
             Text(
-                f"prefetch {state.tts_prefetch}" if state.tts_enabled else "off",
+                PROVIDER_LABELS[state.tts_provider] if state.tts_enabled else "off",
                 style="#5a6068",
             ),
         )
@@ -621,10 +651,11 @@ class VoiceCodexApp(App):
     }
     #sidebar Static { height: auto; }
     #panel-clock { margin-bottom: 1; }
-    #model-row, #reasoning-row { height: auto; margin-bottom: 1; }
+    #model-row, #reasoning-row, #speech-row { height: auto; margin-bottom: 1; }
     #policy-row { height: auto; margin-bottom: 1; }
     #model-label { width: 6; color: #6f757e; }
     #reasoning-label { color: #6f757e; }
+    #speech-label { color: #6f757e; }
     #policy-label { color: #6f757e; }
     #sidebar Select {
         width: 1fr;
