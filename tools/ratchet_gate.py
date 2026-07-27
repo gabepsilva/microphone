@@ -114,25 +114,48 @@ def _check_mutation_floor(base: str, failures: list[str]) -> None:
         failures.append(f"MUTATION_SCORE_FLOOR lowered {was:g} -> {now:g}.")
 
 
+def _added_budget_raises(base_source: str, now_source: str) -> set[tuple]:
+    """Return the (file, was, now) raises this change records for the first time.
+
+    An entry carried over from the base is a receipt for a decision already
+    taken, so reusing it would let the next raise ride on the last one's
+    justification. Only an entry added here counts, and only with a reason.
+    """
+    already = {
+        tuple(entry[:3]) for entry in (_constant(base_source, "BUDGET_RAISES") or [])
+    }
+    return {
+        tuple(entry[:3])
+        for entry in (_constant(now_source, "BUDGET_RAISES") or [])
+        if tuple(entry[:3]) not in already and len(entry) > 3 and str(entry[3]).strip()
+    }
+
+
 def _check_context_budget(base: str, failures: list[str]) -> None:
     """A cap that can be raised on demand is not a cap.
 
-    Raising it is the reflex the budget exists to interrupt, so it needs the
-    same deliberate review as lowering a coverage floor.
+    Raising it is the reflex the budget exists to interrupt, so it costs a
+    recorded decision: the same standard AGENTS.md sets for a `# noqa`, which
+    needs a rule id and a justification rather than bare permission.
     """
     base_source = _read_base(base, CONTEXT_BUDGET)
     if base_source is None:
         return
+    now_source = Path(CONTEXT_BUDGET).read_text(encoding="utf-8")
     was = _constant(base_source, "BUDGETS") or {}
-    now = _constant(Path(CONTEXT_BUDGET).read_text(encoding="utf-8"), "BUDGETS") or {}
+    now = _constant(now_source, "BUDGETS") or {}
+    recorded = _added_budget_raises(base_source, now_source)
 
     for name, budget in was.items():
         if name not in now:
             failures.append(f"{name}: context budget removed.")
-        elif now[name] > budget:
+        elif now[name] > budget and (name, budget, now[name]) not in recorded:
             failures.append(
-                f"{name}: context budget raised {budget} -> {now[name]}. "
-                "Move a rule into a gate message, a config comment, or a test."
+                f"{name}: context budget raised {budget} -> {now[name]} with no "
+                f"BUDGET_RAISES entry recording why. Move a rule into a gate "
+                f"message, a config comment, or a test — or add "
+                f'("{name}", {budget}, {now[name]}, "<reason>") to '
+                f"{CONTEXT_BUDGET}."
             )
 
 

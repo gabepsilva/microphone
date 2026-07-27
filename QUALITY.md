@@ -70,7 +70,10 @@ and prints what to do when it fails. This is the map, not the manual.
   every gate, because a gate that matches nothing still reports green.
 - **Context budget** (`tools/context_budget.py`) caps `AGENTS.md`, the only
   file loaded on every task. Everything else here ratchets upward; instructions
-  are the one thing that must not.
+  are the one thing that must not. The cap is raisable, but only against a
+  recorded `BUDGET_RAISES` entry — a threshold nobody can move gets deleted
+  rather than respected, so the goal is to make moving it deliberate and
+  permanently visible, not impossible.
 
 Recorded only here: per-file floors are set at the value each file had when the
 gate was added and ratchet upward only. The 80% goal was reached by isolating

@@ -260,7 +260,10 @@ def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
 
 BASE_COVERAGE_GATE = 'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n'
 BASE_MUTATION_GATE = "MUTATION_SCORE_FLOOR = 42.0\n"
-BASE_CONTEXT_BUDGET = 'BUDGETS = {"AGENTS.md": 400}\n'
+BASE_CONTEXT_BUDGET = (
+    'BUDGETS = {"AGENTS.md": 400}\n'
+    'BUDGET_RAISES = [("AGENTS.md", 300, 400, "an earlier, already-spent raise")]\n'
+)
 BASE_PYPROJECT = """
 [tool.coverage.report]
 fail_under = 46
@@ -317,9 +320,28 @@ BASE_FILES = {
             "rules:\n  - id: something-else\n",
         ),
         (
-            "raised context budget",
+            "raised context budget with no recorded reason",
             "tools/context_budget.py",
-            'BUDGETS = {"AGENTS.md": 4000}\n',
+            'BUDGETS = {"AGENTS.md": 4000}\nBUDGET_RAISES = []\n',
+        ),
+        (
+            "raised context budget on an empty reason",
+            "tools/context_budget.py",
+            'BUDGETS = {"AGENTS.md": 4000}\n'
+            'BUDGET_RAISES = [("AGENTS.md", 400, 4000, "   ")]\n',
+        ),
+        (
+            "raised context budget reusing the previous raise as cover",
+            "tools/context_budget.py",
+            'BUDGETS = {"AGENTS.md": 4000}\n'
+            'BUDGET_RAISES = [("AGENTS.md", 300, 400, "an earlier, '
+            'already-spent raise")]\n',
+        ),
+        (
+            "raised context budget recording a different jump than it made",
+            "tools/context_budget.py",
+            'BUDGETS = {"AGENTS.md": 4000}\n'
+            'BUDGET_RAISES = [("AGENTS.md", 400, 450, "understated")]\n',
         ),
         (
             "removed context budget",
@@ -389,6 +411,25 @@ def test_ratchet_allows_a_threshold_that_did_not_exist_before(
     monkeypatch.chdir(repo)
 
     assert gate.main(["ratchet_gate.py", "HEAD"]) == 0, f"ratchet blocked {label}"
+
+
+def test_ratchet_allows_a_budget_raise_that_records_its_reason(
+    tmp_path, monkeypatch
+) -> None:
+    """The cap must be raisable, or a deliberate decision has nowhere to go."""
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "tools/context_budget.py").write_text(
+        'BUDGETS = {"AGENTS.md": 533}\n'
+        "BUDGET_RAISES = [\n"
+        '    ("AGENTS.md", 300, 400, "an earlier, already-spent raise"),\n'
+        '    ("AGENTS.md", 400, 533, "owner asked for headroom"),\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
 
 
 def test_ratchet_fails_loudly_when_the_base_ref_is_missing(
