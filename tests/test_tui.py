@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 
 from rich.console import Console
 from textual.widgets import Input, Select, Static
@@ -334,6 +335,43 @@ def test_ctrl_v_pastes_clipboard_text_into_the_input(tui) -> None:
             assert app.query_one("#input", Input).value == "pasted text"
 
     asyncio.run(exercise())
+
+
+def test_session_clock_computes_elapsed_from_timezone_aware_timestamps(tui) -> None:
+    """The clock subtracts two datetimes, so both sides must carry a timezone.
+
+    A naive ``datetime.now()`` on either side raises TypeError against an aware
+    one, and the session panel is repainted on every tick.
+    """
+    assert tui.SessionState().started.tzinfo is not None
+
+    started = datetime.now(UTC) - timedelta(hours=1, minutes=2, seconds=3)
+    app = tui.VoiceCodexApp(tui.SessionState(started=started), tui.TuiHooks())
+    rendered: list[str] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app.query_one("#sidebar", tui.Sidebar).sync_clock()
+
+            panel = app.query_one("#panel-clock", Static)
+            rendered.extend(panel.render_line(y).text for y in range(panel.size.height))
+
+    asyncio.run(exercise())
+
+    assert any("01:02:03" in line for line in rendered), rendered
+
+
+def test_transcript_stamp_uses_local_wall_clock_time(tui) -> None:
+    """Timestamps are read by a person watching the session, not stored as UTC."""
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    now = datetime.now(UTC).astimezone()
+    # Accept a second of drift so a rollover between the two reads cannot flake.
+    acceptable = {
+        (now + timedelta(seconds=offset)).strftime("%H:%M:%S") for offset in (-1, 0, 1)
+    }
+
+    assert app._stamp() in acceptable
 
 
 def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:

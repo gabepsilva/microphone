@@ -87,7 +87,7 @@ class CodexModelOption:
     default_effort: str
 
 
-def _parse_codex_model_catalog(payload: object) -> list[CodexModelOption]:
+def _parse_codex_model_catalog(payload: object) -> list[CodexModelOption]:  # noqa: C901,PLR0912 - pre-existing: Codex catalog shapes vary by version
     if not isinstance(payload, dict):
         return []
     catalog = cast(dict[str, object], payload)
@@ -260,7 +260,7 @@ def audio_outputs():
     return outputs
 
 
-def choose_them_output(requested=None, require_isolation=False):
+def choose_them_output(requested=None, require_isolation=False):  # noqa: C901,PLR0912 - pre-existing: PipeWire device selection fallbacks
     """Choose an optional playback sink whose monitor is transcribed as Them."""
     outputs = audio_outputs()
 
@@ -796,7 +796,7 @@ class EdgeSentenceTTS:
 
 
 class ConversationListener(TranscriptEventListener):
-    def __init__(
+    def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
         self,
         confidence_threshold,
         turn_silence,
@@ -872,7 +872,7 @@ class ConversationListener(TranscriptEventListener):
                 self.timer.cancel()
                 self.timer = None
 
-    def on_line_started(self, event):
+    def on_line_started(self, event):  # noqa: ARG002 - Textual/Codex callback signature is fixed
         # Speech has resumed. Keep all completed lines buffered and wait for
         # this new line to finish before considering the turn complete.
         if self._is_muted():
@@ -963,7 +963,7 @@ def metered_mic_transcriber(*args, level_reporter: AudioLevelReporter, **kwargs)
 class PulseMonitorTranscriber:
     """Feed a PulseAudio/PipeWire sink monitor into a Moonshine stream."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
         self,
         model_path,
         model_arch,
@@ -1100,7 +1100,7 @@ class PulseMonitorTranscriber:
 
 
 class CodexConversation:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
         self,
         sandbox,
         model,
@@ -1232,7 +1232,7 @@ class CodexConversation:
     def _item_root(item):
         return item.root if hasattr(item, "root") else item
 
-    def _stream_turn(self, turn, reply_to):
+    def _stream_turn(self, turn, reply_to):  # noqa: C901,PLR0912,PLR0915 - pre-existing: streaming turn state machine
         agent_message_open = False
         last_usage = None
         if self.tts is not None:
@@ -1342,7 +1342,7 @@ class CodexConversation:
             self.tts.interrupt()
 
 
-def main():
+def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",

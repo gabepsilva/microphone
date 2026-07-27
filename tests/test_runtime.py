@@ -103,7 +103,7 @@ def test_virtual_meeting_output_unloads_its_loopback_and_sink(
 
     monkeypatch.setattr(voice.shutil, "which", lambda name: "/usr/bin/pactl")
 
-    def run(command, **kwargs):
+    def run(command, **kwargs):  # noqa: ARG001 - fake mirrors subprocess.run signature
         commands.append(command)
         if command[1] == "load-module":
             return SimpleNamespace(stdout=str(len(commands)))

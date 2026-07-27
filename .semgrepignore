@@ -1,0 +1,8 @@
+# Semgrep's built-in ignore list excludes tests/, which would silently disable
+# the test-integrity rule that forbids faking the unit under test. Declaring
+# this file replaces those defaults, so test code is scanned like any other
+# source. Only generated and vendored trees are excluded here.
+.venv/
+.venv-moonshine/
+mutants/
+reports/

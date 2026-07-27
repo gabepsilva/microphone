@@ -4,7 +4,10 @@ __pycache__/
 .coverage
 .pytest_cache/
 coverage.xml
+coverage.json
 reports/
+mutants/
+.mutmut-cache
 
 # Generated audio and transcription output
 virtual-mic-*.mp3

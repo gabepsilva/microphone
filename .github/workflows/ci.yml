@@ -42,6 +42,16 @@ jobs:
 
       - name: Run quality and security gate
         run: make ci-hosted
+        env:
+          # Compare thresholds against the branch this change targets, not a
+          # hardcoded master, so the ratchet is correct on stacked branches.
+          RATCHET_BASE: origin/${{ github.base_ref || github.ref_name }}
+
+      # Per-file floors hold the line where it already is; this holds new work
+      # to a higher bar than the legacy files it lands in.
+      - name: Check coverage of changed lines
+        if: github.event_name == 'pull_request'
+        run: make diff-coverage DIFF_BASE=origin/${{ github.base_ref }}
 
       - name: Upload quality and security reports
         if: always()

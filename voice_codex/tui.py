@@ -20,7 +20,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import ClassVar
 
 # These must precede Textual imports. Textual needs Ctrl-C as an application
@@ -97,7 +97,7 @@ class SessionState:
     status: str = "listening"
     live: bool = True
     policy: str = "both"
-    started: datetime = field(default_factory=datetime.now)
+    started: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     mic: Channel = field(default_factory=lambda: Channel("mic"))
     them: Channel = field(default_factory=lambda: Channel("speaker"))
@@ -353,7 +353,7 @@ class Sidebar(Vertical):
         echoes.clear()
         return False
 
-    def on_select_changed(self, event: Select.Changed) -> None:
+    def on_select_changed(self, event: Select.Changed) -> None:  # noqa: C901 - pre-existing: one branch per sidebar picker
         if self._is_echo(event) or event.value is Select.NULL:
             return
         value = str(event.value)
@@ -400,7 +400,7 @@ class Sidebar(Vertical):
     def sync_clock(self) -> None:
         """Cheap per-tick repaint — only the panel holding the session clock."""
         state = self.state
-        elapsed = int((datetime.now() - state.started).total_seconds())
+        elapsed = int((datetime.now(UTC) - state.started).total_seconds())
         clock = f"{elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}"
         live = Text("◉ ", style="#6cc06c" if state.live else "#c96a5c")
         live.append(state.status, style="#9aa3ad")
@@ -726,7 +726,7 @@ class VoiceCodexApp(App):
     # -- transcript --------------------------------------------------------
 
     def _stamp(self) -> str:
-        return datetime.now().strftime("%H:%M:%S")
+        return datetime.now(UTC).astimezone().strftime("%H:%M:%S")
 
     def add_entry(self, entry: Entry) -> EntryRow:
         entry.stamp = entry.stamp or self._stamp()

@@ -71,3 +71,28 @@ rules:
       - pattern: requests.$FUNCTION(..., verify=False, ...)
       - pattern: httpx.$FUNCTION(..., verify=False, ...)
       - pattern: ssl._create_unverified_context(...)
+
+  - id: python-test-fakes-the-unit-under-test
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not fake voice_codex.domain in tests. It is pure logic with no audio,
+      process, or network boundary, so replacing it makes the test assert on
+      the fake instead of on behavior. Fake adapters, never the subject.
+    metadata:
+      category: test-integrity
+      technology: [python, pytest]
+    paths:
+      include:
+        - tests/
+    patterns:
+      - pattern-either:
+          - pattern: monkeypatch.setattr($TARGET, ...)
+          - pattern: monkeypatch.delattr($TARGET, ...)
+          - pattern: mock.patch($TARGET, ...)
+          - pattern: mock.patch.object($TARGET, ...)
+          - pattern: patch($TARGET, ...)
+          - pattern: patch.object($TARGET, ...)
+      - metavariable-regex:
+          metavariable: $TARGET
+          regex: ^(["\']voice_codex\.domain[.\\'"]|voice_codex\.domain\b|domain\.[A-Za-z_]+$)

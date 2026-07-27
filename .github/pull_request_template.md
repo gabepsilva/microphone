@@ -7,7 +7,11 @@ What user-visible or runtime behavior changes? Link the acceptance criteria.
 - [ ] Added or updated focused tests for changed behavior.
 - [ ] Ran `make ci` (or explain the unavailable prerequisite and list the
   targets that did run).
-- [ ] Reviewed coverage and security reports where relevant.
+- [ ] Bug fixes only: ran `make verify-regression TEST=...` and the test
+  failed without the fix.
+- [ ] Reviewed coverage, mutation, and security reports where relevant.
+- [ ] Raised any per-file coverage floor or the mutation floor that this
+  change improved.
 
 ## Quality-policy changes
 
