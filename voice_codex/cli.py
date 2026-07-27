@@ -1159,20 +1159,117 @@ class PulseMonitorTranscriber:
         self.transcriber.close()
 
 
+def item_root(item):
+    """Unwrap the discriminated-union wrapper the Codex SDK may return."""
+    return item.root if hasattr(item, "root") else item
+
+
+class CodexTurnRenderer:
+    """Render one streamed Codex turn into the transcript and into speech.
+
+    Codex interleaves assistant text with command and tool activity. An open
+    assistant message is closed before any of that appears, and the sentence
+    chunker is flushed at the same point, so a spoken sentence never spans a
+    command boundary.
+    """
+
+    def __init__(self, transcript_display, reply_to, sentence_chunker=None):
+        self.display = transcript_display
+        self.reply_to = reply_to
+        self.chunker = sentence_chunker
+        self.message_open = False
+        self.last_usage = None
+
+    def render(self, events):
+        for event in events:
+            self.handle(event.payload)
+
+    def handle(self, payload):
+        if isinstance(payload, ItemStartedNotification):
+            self._item_started(item_root(payload.item))
+        elif isinstance(payload, AgentMessageDeltaNotification):
+            self._delta(payload.delta)
+        elif isinstance(payload, CommandExecutionOutputDeltaNotification):
+            self.display.command_output(payload.delta)
+        elif isinstance(payload, ItemCompletedNotification):
+            self._item_completed(item_root(payload.item))
+        elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
+            self.last_usage = payload.token_usage.last
+        elif isinstance(payload, ErrorNotification):
+            self.display.error(payload.error.message)
+        elif isinstance(payload, TurnCompletedNotification):
+            self._turn_completed()
+
+    def _flush_speech(self):
+        if self.chunker is not None:
+            self.chunker.flush()
+
+    def _open_message(self):
+        if not self.message_open:
+            self.display.codex_message_open(self.reply_to)
+            self.message_open = True
+
+    def _close_message(self):
+        if not self.message_open:
+            return
+        self.display.codex_message_close()
+        self.message_open = False
+        self._flush_speech()
+
+    def _item_started(self, item):
+        if isinstance(item, AgentMessageThreadItem):
+            self._open_message()
+        elif isinstance(item, CommandExecutionThreadItem):
+            self._close_message()
+            self.display.command_started(item.command)
+        elif isinstance(item, McpToolCallThreadItem):
+            self._close_message()
+            self.display.tool_called(item.server, item.tool)
+
+    def _delta(self, delta):
+        self._open_message()
+        self.display.codex_delta(delta)
+        if self.chunker is not None:
+            self.chunker.feed(delta)
+
+    def _item_completed(self, item):
+        if isinstance(item, AgentMessageThreadItem):
+            self._close_message()
+        elif isinstance(item, CommandExecutionThreadItem):
+            self.display.command_completed(item.exit_code)
+        elif isinstance(item, McpToolCallThreadItem):
+            self.display.tool_completed(item.status)
+
+    def _turn_completed(self):
+        if self.message_open:
+            self.display.codex_message_close()
+            self.message_open = False
+        self._flush_speech()
+        if self.last_usage is not None:
+            self.display.token_usage(self.last_usage.total_tokens)
+
+
+@dataclass(frozen=True)
+class CodexSettings:
+    """The Codex thread settings chosen at startup."""
+
+    sandbox: str
+    model: str
+    reasoning_effort: str
+    service_tier: str | None = None
+
+
 class CodexConversation:
-    def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
+    def __init__(
         self,
-        sandbox,
-        model,
-        reasoning_effort,
-        service_tier,
+        settings: CodexSettings,
         transcript_display: TranscriptPresentation,
         tts=None,
     ):
-        self.sandbox = Sandbox(sandbox)
-        self.model = model
-        self.reasoning_effort = reasoning_effort
-        self.service_tier = service_tier
+        self.sandbox = Sandbox(settings.sandbox)
+        self.model = settings.model
+        self.reasoning_effort = settings.reasoning_effort
+        self.service_tier = settings.service_tier
         self.transcript_display = transcript_display
         self.tts = tts
         self.requests = queue.Queue()
@@ -1288,86 +1385,15 @@ class CodexConversation:
             self.active_turn = None
             self.transcript_display.end_codex()
 
-    @staticmethod
-    def _item_root(item):
-        return item.root if hasattr(item, "root") else item
-
-    def _stream_turn(self, turn, reply_to):  # noqa: C901,PLR0912,PLR0915 - pre-existing: streaming turn state machine
-        agent_message_open = False
-        last_usage = None
+    def _stream_turn(self, turn, reply_to):
         if self.tts is not None:
             self.tts.begin_turn()
         sentence_chunker = (
             SentenceChunker(self.tts.speak) if self.tts is not None else None
         )
-
-        for event in turn.stream():
-            payload = event.payload
-
-            if isinstance(payload, ItemStartedNotification):
-                item = self._item_root(payload.item)
-                if isinstance(item, AgentMessageThreadItem):
-                    if not agent_message_open:
-                        self.transcript_display.codex_message_open(reply_to)
-                        agent_message_open = True
-                elif isinstance(item, CommandExecutionThreadItem):
-                    if agent_message_open:
-                        self.transcript_display.codex_message_close()
-                        agent_message_open = False
-                        if sentence_chunker is not None:
-                            sentence_chunker.flush()
-                    self.transcript_display.command_started(item.command)
-                elif isinstance(item, McpToolCallThreadItem):
-                    if agent_message_open:
-                        self.transcript_display.codex_message_close()
-                        agent_message_open = False
-                        if sentence_chunker is not None:
-                            sentence_chunker.flush()
-                    self.transcript_display.tool_called(item.server, item.tool)
-                continue
-
-            if isinstance(payload, AgentMessageDeltaNotification):
-                if not agent_message_open:
-                    self.transcript_display.codex_message_open(reply_to)
-                self.transcript_display.codex_delta(payload.delta)
-                if sentence_chunker is not None:
-                    sentence_chunker.feed(payload.delta)
-                agent_message_open = True
-                continue
-
-            if isinstance(payload, CommandExecutionOutputDeltaNotification):
-                self.transcript_display.command_output(payload.delta)
-                continue
-
-            if isinstance(payload, ItemCompletedNotification):
-                item = self._item_root(payload.item)
-                if isinstance(item, AgentMessageThreadItem) and agent_message_open:
-                    self.transcript_display.codex_message_close()
-                    agent_message_open = False
-                    if sentence_chunker is not None:
-                        sentence_chunker.flush()
-                elif isinstance(item, CommandExecutionThreadItem):
-                    self.transcript_display.command_completed(item.exit_code)
-                elif isinstance(item, McpToolCallThreadItem):
-                    self.transcript_display.tool_completed(item.status)
-                continue
-
-            if isinstance(payload, ThreadTokenUsageUpdatedNotification):
-                last_usage = payload.token_usage.last
-                continue
-
-            if isinstance(payload, ErrorNotification):
-                self.transcript_display.error(payload.error.message)
-                continue
-
-            if isinstance(payload, TurnCompletedNotification):
-                if agent_message_open:
-                    self.transcript_display.codex_message_close()
-                    agent_message_open = False
-                if sentence_chunker is not None:
-                    sentence_chunker.flush()
-                if last_usage is not None:
-                    self.transcript_display.token_usage(last_usage.total_tokens)
+        CodexTurnRenderer(self.transcript_display, reply_to, sentence_chunker).render(
+            turn.stream()
+        )
 
     def _worker(self):
         while not self.shutdown_requested.is_set():
@@ -1773,10 +1799,12 @@ def main():
         else None
     )
     conversation = CodexConversation(
-        args.sandbox,
-        args.codex_model,
-        args.codex_reasoning,
-        "fast" if args.codex_fast else None,
+        CodexSettings(
+            sandbox=args.sandbox,
+            model=args.codex_model,
+            reasoning_effort=args.codex_reasoning,
+            service_tier="fast" if args.codex_fast else None,
+        ),
         transcript_display,
         tts,
     )

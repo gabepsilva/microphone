@@ -33,7 +33,7 @@ FLOORS = {
     "voice-codex.py": 0.0,
     "voice-codex-tui.py": 53.0,
     "voice_codex/__init__.py": 100.0,
-    "voice_codex/cli.py": 67.0,
+    "voice_codex/cli.py": 81.0,
     "voice_codex/config.py": 86.0,
     "voice_codex/domain.py": 88.0,
     "voice_codex/presentation.py": 100.0,
