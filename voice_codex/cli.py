@@ -34,8 +34,8 @@ from .capture import (
     metered_mic_transcriber,
 )
 from .codex import CodexConversation, CodexSettings
-from .config import save_startup_config
-from .domain import SpeakerGate
+from .config import StartupConfigFile, save_startup_config
+from .domain import SpeakerGate, TurnSilence, TurnSilenceClock
 from .listener import ConversationListener, TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -59,16 +59,59 @@ def build_speech(selection, args, playback_output):
     )
 
 
-def attach_conversation_hooks(tui, conversation, tts):
-    """Point the interface's controls at the conversation and its speech."""
+def remembering(hook, config, key, encode=lambda value: value):
+    """Wrap a sidebar hook so an accepted change is written to the config file.
+
+    Only an accepted change is recorded. A hook that refuses — a model the
+    session cannot switch to, a speech engine it does not have — has changed
+    nothing, and saving it would make the next session start somewhere this
+    one never went.
+    """
+
+    def apply(value):
+        accepted = hook(value)
+        if accepted is not False:
+            config.record(key, encode(value))
+        return accepted
+
+    return apply
+
+
+def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
+    """Point the interface's controls at the conversation, its speech, and disk."""
     tui.hooks.on_user_text = lambda text: conversation.ingest(
         "User Text", text, respond=True
     )
     tui.hooks.on_interrupt = conversation.interrupt
-    tui.hooks.on_codex_model = conversation.request_model
-    tui.hooks.on_codex_effort = conversation.request_reasoning_effort
-    tui.hooks.on_tts = tts_switch(tts)
-    tui.hooks.on_tts_provider = provider_switch(tts)
+    tui.hooks.on_codex_model = remembering(
+        conversation.request_model, config, "codex_model"
+    )
+    tui.hooks.on_codex_effort = remembering(
+        conversation.request_reasoning_effort, config, "codex_reasoning"
+    )
+    tui.hooks.on_tts = remembering(
+        tts_switch(tts), config, "tts", encode=lambda on: "on" if on else "off"
+    )
+    tui.hooks.on_tts_provider = remembering(
+        provider_switch(tts), config, "tts_provider"
+    )
+    tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
+
+
+def remembering_turn_silence(turn_silence, config):
+    """Adopt a typed window and record the value actually applied.
+
+    The applied value is what is saved, not the typed one: the two differ
+    whenever the setting clamps, and the file has to describe the session that
+    ran rather than the request that produced it.
+    """
+
+    def apply(seconds):
+        applied = turn_silence.set(seconds)
+        config.record("turn_silence", applied)
+        return applied
+
+    return apply
 
 
 def main():
@@ -77,12 +120,16 @@ def main():
     them_output = selection.them_output
     playback_output = selection.playback_output
 
+    settings = startup_settings(selection, args)
     if args.save_config is not None:
         try:
-            save_startup_config(args.save_config, startup_settings(selection))
+            save_startup_config(args.save_config, settings)
         except RuntimeError as error:
             parser.error(str(error))
         print(f"Saved startup config: {args.save_config}", file=sys.stderr)
+    # Sidebar changes are written back to the file the session started from,
+    # so the next run opens where this one left off.
+    config = StartupConfigFile(args.config, settings)
     model_arch = getattr(ModelArch, args.model.replace("-", "_").upper())
 
     print_startup_summary(args, selection)
@@ -98,11 +145,18 @@ def main():
 
     from .tui import VoiceCodexTUI
 
-    tui = VoiceCodexTUI(build_session_state(args, selection), on_policy=gate.set_policy)
+    turn_silence = TurnSilence(args.turn_silence)
+    countdown = TurnSilenceClock(turn_silence)
+    tts = build_speech(selection, args, playback_output)
+    tui = VoiceCodexTUI(
+        build_session_state(args, selection),
+        countdown=countdown,
+        speech=tts,
+        on_policy=remembering(gate.set_policy, config, "codex_after"),
+    )
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
-    tts = build_speech(selection, args, playback_output)
     conversation = CodexConversation(
         CodexSettings(
             sandbox=args.sandbox,
@@ -114,16 +168,17 @@ def main():
         tts,
     )
 
-    attach_conversation_hooks(tui, conversation, tts)
+    attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
     submitter = TranscriptSubmitter(conversation, gate, tts)
 
     user_listener = ConversationListener(
         args.confidence,
-        args.turn_silence,
+        turn_silence,
         "User Voice",
         submitter.submit,
         transcript_display,
         on_speech=submitter.handle_speech,
+        countdown=countdown,
     )
     user_transcriber = metered_mic_transcriber(
         model_path=model_path,
@@ -147,11 +202,12 @@ def main():
     if them_output is not None:
         them_listener = ConversationListener(
             args.confidence,
-            args.turn_silence,
+            turn_silence,
             "Them",
             submitter.submit,
             transcript_display,
             on_speech=submitter.handle_speech,
+            countdown=countdown,
         )
         them_transcriber = PulseMonitorTranscriber(
             model_path=model_path,

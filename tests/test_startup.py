@@ -49,6 +49,18 @@ BASE_SELECTION = StartupSelection(
 )
 
 
+def saved_args(**overrides):
+    """The parsed options ``startup_settings`` reads alongside a selection."""
+    return SimpleNamespace(
+        **{
+            "turn_silence": 3.0,
+            "codex_model": "gpt-5.6-luna",
+            "codex_reasoning": "low",
+            **overrides,
+        }
+    )
+
+
 def selection(**overrides):
     """A resolved selection: a plain User-Voice-only session unless overridden."""
     return replace(BASE_SELECTION, **overrides)
@@ -135,18 +147,21 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         policy=RESPONSE_POLICIES["both"],
     )
 
-    assert startup_settings(chosen) == {
+    assert startup_settings(chosen, saved_args()) == {
         "microphone": "Yeti",
         "tts": "on",
         "tts_provider": "piper",
         "them_output": "isolated",
         "playback_output": "alsa_output.pci",
         "codex_after": "both",
+        "turn_silence": 3.0,
+        "codex_model": "gpt-5.6-luna",
+        "codex_reasoning": "low",
     }
 
 
 def test_saved_settings_record_no_playback_output_when_none_was_chosen() -> None:
-    assert startup_settings(selection())["playback_output"] is None
+    assert startup_settings(selection(), saved_args())["playback_output"] is None
 
 
 def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
@@ -482,7 +497,7 @@ def test_a_bad_config_policy_is_rejected_by_naming_every_real_one(
 
 def test_every_policy_round_trips_through_a_saved_config() -> None:
     for name, policy in RESPONSE_POLICIES.items():
-        saved = startup_settings(selection(policy=policy))
+        saved = startup_settings(selection(policy=policy), saved_args())
 
         assert saved["codex_after"] == name
         # A saved name has to be a name the command line will take back.
@@ -519,3 +534,75 @@ def test_the_startup_summary_reports_a_session_without_speech(tmp_path) -> None:
     print_startup_summary(args, selection(tts_enabled=False), stream=stream)
 
     assert "Codex audio: Off" in stream.getvalue()
+
+
+@pytest.mark.parametrize("seconds", ["0.1", "31", "0"])
+def test_a_turn_silence_outside_the_editable_range_is_rejected(
+    tmp_path, seconds
+) -> None:
+    """The command line and the sidebar field enforce one range, not two."""
+    with pytest.raises(SystemExit, match="2"):
+        parse_startup_args(
+            ["--config", empty_config(tmp_path), "--turn-silence", seconds]
+        )
+
+
+@pytest.mark.parametrize("seconds", ["0.25", "30", "1.5"])
+def test_a_turn_silence_inside_the_editable_range_is_accepted(
+    tmp_path, seconds
+) -> None:
+    _, args = parse_startup_args(
+        ["--config", empty_config(tmp_path), "--turn-silence", seconds]
+    )
+
+    assert args.turn_silence == float(seconds)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'codex_reasoning: "sometimes"\n',
+        'turn_silence: "three"\n',
+        "turn_silence: true\n",
+    ],
+)
+def test_a_config_value_the_session_cannot_use_is_rejected(tmp_path, body) -> None:
+    """These arrive from a file the interface writes, so they are not typed."""
+    config = write_config(tmp_path, body)
+
+    with pytest.raises(SystemExit, match="2"):
+        parse_startup_args(["--config", config])
+
+
+def test_saved_codex_choices_are_loaded_back(tmp_path) -> None:
+    config = write_config(
+        tmp_path,
+        'codex_model: "gpt-5.6-sol"\ncodex_reasoning: "high"\nturn_silence: 1.25\n',
+    )
+
+    _, args = parse_startup_args(["--config", config])
+
+    assert (args.codex_model, args.codex_reasoning, args.turn_silence) == (
+        "gpt-5.6-sol",
+        "high",
+        1.25,
+    )
+
+
+def test_the_command_line_still_outranks_a_saved_codex_choice(tmp_path) -> None:
+    config = write_config(tmp_path, 'codex_model: "gpt-5.6-sol"\nturn_silence: 1.25\n')
+
+    _, args = parse_startup_args(
+        ["--config", config, "--codex-model", "gpt-5.6-luna", "--turn-silence", "2"]
+    )
+
+    assert (args.codex_model, args.turn_silence) == ("gpt-5.6-luna", 2.0)
+
+
+def test_an_empty_config_resolves_every_default_from_the_code(tmp_path) -> None:
+    _, args = parse_startup_args(["--config", empty_config(tmp_path)])
+
+    assert args.turn_silence == 3.0
+    assert args.codex_model == "gpt-5.6-luna"
+    assert args.codex_reasoning == "low"
+    assert args.tts_provider == "piper"

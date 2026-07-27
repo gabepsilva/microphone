@@ -555,3 +555,68 @@ def test_interrupting_after_closing_does_nothing(piper) -> None:
     piper.interrupt()
 
     assert piper.worker.is_alive() is False
+
+
+def test_an_engine_with_nothing_to_say_is_not_speaking(piper) -> None:
+    assert piper.is_speaking() is False
+
+
+def test_an_engine_is_speaking_from_the_moment_a_sentence_is_accepted(piper) -> None:
+    """Not from the moment audio starts: synthesis is part of the answer."""
+    piper.begin_turn()
+    piper.speak("Hello there.")
+
+    assert piper.is_speaking() is True
+
+
+def test_an_engine_falls_quiet_once_the_last_sentence_has_played(
+    piper, playback
+) -> None:
+    piper.begin_turn()
+    piper.speak("Hello there.")
+    assert playback.wait_for(1)
+
+    assert wait_until(lambda: piper.is_speaking() is False)
+
+
+def test_speech_spans_the_gap_between_two_sentences(monkeypatch, playback) -> None:
+    """A poll landing between sentences must not read as silence."""
+    playback.gate = threading.Event()
+    piper = start_engine(monkeypatch, playback, FakeVoice())
+    try:
+        piper.begin_turn()
+        piper.speak("First.")
+        piper.speak("Second.")
+        assert playback.wait_for(1)
+
+        assert piper.is_speaking() is True
+    finally:
+        piper.close()
+
+
+def test_an_interrupted_engine_stops_reporting_speech(monkeypatch, playback) -> None:
+    playback.gate = threading.Event()
+    piper = start_engine(monkeypatch, playback, FakeVoice())
+    try:
+        piper.begin_turn()
+        piper.speak("First.")
+        piper.speak("Second.")
+        assert playback.wait_for(1)
+
+        piper.interrupt()
+
+        assert piper.is_speaking() is False
+    finally:
+        piper.close()
+
+
+def test_a_closed_engine_stops_reporting_speech(monkeypatch, playback) -> None:
+    playback.gate = threading.Event()
+    piper = start_engine(monkeypatch, playback, FakeVoice())
+    piper.begin_turn()
+    piper.speak("First.")
+    assert playback.wait_for(1)
+
+    piper.close()
+
+    assert piper.is_speaking() is False

@@ -238,6 +238,146 @@ class EchoMemory:
         return any(EchoMatcher.matches(transcript, spoken) for spoken in recent)
 
 
+class SpeechActivity:
+    """Count the sentences a speech engine still owes the listener.
+
+    Asking the player whether a process is alive is not enough to answer "is
+    Codex still speaking": between two sentences the player has exited and the
+    next one is still being synthesized, so a poll lands in the gap and reads
+    silence. At ten frames a second that gap is visible as a flicker.
+
+    A count spans the gaps. It rises when a sentence is accepted and falls
+    only once that sentence has been played or abandoned.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending = 0
+
+    def queued(self) -> None:
+        with self._lock:
+            self._pending += 1
+
+    def finished(self) -> None:
+        with self._lock:
+            # Floored rather than allowed negative: an engine that reports one
+            # extra completion would otherwise go quiet for the next sentence.
+            self._pending = max(0, self._pending - 1)
+
+    def silenced(self) -> None:
+        """Drop everything outstanding, as an interrupt or a shutdown does."""
+        with self._lock:
+            self._pending = 0
+
+    @property
+    def speaking(self) -> bool:
+        with self._lock:
+            return self._pending > 0
+
+
+class TurnSilence:
+    """The quiet a finished turn waits out before it is sent.
+
+    One object rather than a number copied into each listener, the countdown,
+    and the sidebar: the value is editable while the session runs, and four
+    copies of it would be four chances to change three of them.
+
+    A change lands on the next turn. Re-arming a timer that is already running
+    would either cut short a wait the speaker is relying on or extend one they
+    have already stopped talking through, and neither is what typing a new
+    number asks for.
+    """
+
+    MINIMUM = 0.25
+    MAXIMUM = 30.0
+
+    def __init__(self, seconds: float) -> None:
+        self._lock = threading.Lock()
+        self._seconds = self.clamp(seconds)
+
+    @classmethod
+    def clamp(cls, seconds: float) -> float:
+        return max(cls.MINIMUM, min(cls.MAXIMUM, seconds))
+
+    @property
+    def seconds(self) -> float:
+        with self._lock:
+            return self._seconds
+
+    def set(self, seconds: float) -> float:
+        """Adopt a new window, and report the value actually in force."""
+        applied = self.clamp(seconds)
+        with self._lock:
+            self._seconds = applied
+        return applied
+
+
+def parse_turn_silence(text: str) -> float | None:
+    """Read a typed turn-silence value, or None when it is not one.
+
+    The trailing unit is accepted because the field displays one, so the
+    obvious thing to type back is what was already shown. Out-of-range values
+    are refused rather than clamped: silently turning a typed 60 into 30 would
+    look like the field ignored the keystrokes.
+    """
+    try:
+        seconds = float(text.strip().removesuffix("s").strip())
+    except ValueError:
+        return None
+    # Rejects NaN too, which compares false against everything.
+    if not TurnSilence.MINIMUM <= seconds <= TurnSilence.MAXIMUM:
+        return None
+    return seconds
+
+
+class TurnSilenceClock:
+    """Track how long each speaker's turn has left before it is submitted.
+
+    The listeners own the silence timers; this only records when each one is
+    due, so the interface can show the wait without a transcription thread
+    driving the display. Reads are a poll rather than a callback on purpose: a
+    countdown repaints ten times a second, and pushing that would cross
+    threads ten times a second mostly to report that nothing has changed.
+
+    A due deadline is dropped on the next read rather than by a timer of its
+    own. The listener clears its own entry when a turn is submitted, so this
+    only matters if that ever fails to happen — and a countdown wedged at zero
+    would be a worse failure than one that simply disappears.
+    """
+
+    def __init__(self, window: TurnSilence, clock=time.monotonic) -> None:
+        self.window = window
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._deadlines: dict[str, float] = {}
+
+    def started(self, speaker: str) -> None:
+        """Record that a speaker's silence timer has just begun."""
+        due_at = self._clock() + self.window.seconds
+        with self._lock:
+            self._deadlines[speaker] = due_at
+
+    def cleared(self, speaker: str) -> None:
+        """Record that a speaker is no longer waiting to be submitted."""
+        with self._lock:
+            self._deadlines.pop(speaker, None)
+
+    def remaining(self) -> float | None:
+        """Seconds until the soonest pending turn fires, or None if none is.
+
+        The soonest wins because it is the one about to interrupt the silence;
+        a later speaker's timer is not what the session is waiting on.
+        """
+        now = self._clock()
+        with self._lock:
+            for speaker in [
+                speaker for speaker, due_at in self._deadlines.items() if due_at <= now
+            ]:
+                del self._deadlines[speaker]
+            due = min(self._deadlines.values(), default=None)
+        return None if due is None else due - now
+
+
 class SpeakerGate:
     """Decide which completed turns trigger a reply, as the policy changes.
 

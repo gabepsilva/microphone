@@ -7,8 +7,12 @@ from voice_codex.domain import (
     EchoMemory,
     SentenceChunker,
     SpeakerGate,
+    SpeechActivity,
     TranscriptRouter,
     TurnGate,
+    TurnSilence,
+    TurnSilenceClock,
+    parse_turn_silence,
     resolve_response_policy,
 )
 
@@ -410,3 +414,256 @@ def test_transcript_router_keeps_context_until_a_reply_is_requested() -> None:
         ("User Voice", "Yes", "2026-07-26T12:00:03-04:00"),
     ]
     assert router.pending_context == []
+
+
+def silence_clock(window=3.0):
+    clock = FakeClock()
+    return TurnSilenceClock(TurnSilence(window), clock=clock), clock
+
+
+def test_nothing_is_counting_down_before_a_turn_starts() -> None:
+    countdown, _ = silence_clock()
+
+    assert countdown.remaining() is None
+
+
+def test_a_started_turn_counts_down_the_full_window() -> None:
+    countdown, _ = silence_clock(3.0)
+
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == 3.0
+
+
+def test_the_countdown_shrinks_as_the_silence_runs() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(1.2)
+
+    assert countdown.remaining() == pytest.approx(1.8)
+
+
+def test_a_cleared_turn_stops_counting_down() -> None:
+    countdown, _ = silence_clock()
+    countdown.started("User Voice")
+
+    countdown.cleared("User Voice")
+
+    assert countdown.remaining() is None
+
+
+def test_clearing_a_speaker_that_never_started_is_harmless() -> None:
+    countdown, _ = silence_clock()
+
+    countdown.cleared("Them")
+
+    assert countdown.remaining() is None
+
+
+def test_restarting_a_turn_resets_its_window() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+    clock.advance(2.5)
+
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == 3.0
+
+
+def test_the_soonest_speaker_is_the_one_being_waited_on() -> None:
+    """A later timer is not what the session is about to act on."""
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == pytest.approx(1.0)
+
+
+def test_clearing_the_soonest_speaker_falls_back_to_the_other() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    countdown.cleared("Them")
+
+    assert countdown.remaining() == pytest.approx(3.0)
+
+
+def test_a_turn_that_already_fired_stops_being_shown() -> None:
+    """A countdown wedged at zero would be worse than one that disappears."""
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(3.0)
+
+    assert countdown.remaining() is None
+
+
+def test_an_overdue_turn_is_dropped_rather_than_going_negative() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(30.0)
+
+    assert countdown.remaining() is None
+    assert countdown.remaining() is None
+
+
+def test_a_speaker_still_waiting_survives_another_one_expiring() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    clock.advance(1.5)
+
+    assert countdown.remaining() == pytest.approx(1.5)
+
+
+def test_a_window_starts_at_the_value_it_was_given() -> None:
+    assert TurnSilence(2.5).seconds == 2.5
+
+
+def test_a_window_can_be_changed_while_the_session_runs() -> None:
+    silence = TurnSilence(3.0)
+
+    assert silence.set(1.5) == 1.5
+    assert silence.seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (0.0, TurnSilence.MINIMUM),
+        (-5.0, TurnSilence.MINIMUM),
+        (1000.0, TurnSilence.MAXIMUM),
+        (TurnSilence.MINIMUM, TurnSilence.MINIMUM),
+        (TurnSilence.MAXIMUM, TurnSilence.MAXIMUM),
+    ],
+)
+def test_a_window_is_held_inside_its_bounds(requested, expected) -> None:
+    assert TurnSilence(requested).seconds == expected
+    assert TurnSilence(3.0).set(requested) == expected
+
+
+def test_the_countdown_adopts_a_window_changed_between_turns() -> None:
+    """A new window applies to the next turn, not the one already waiting."""
+    silence = TurnSilence(3.0)
+    clock = FakeClock()
+    countdown = TurnSilenceClock(silence, clock=clock)
+    countdown.started("User Voice")
+
+    silence.set(1.0)
+
+    assert countdown.remaining() == 3.0
+    countdown.started("User Voice")
+    assert countdown.remaining() == 1.0
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("2.5", 2.5),
+        ("  2.5  ", 2.5),
+        ("2.5s", 2.5),
+        ("2.5 s", 2.5),
+        ("3", 3.0),
+        (str(TurnSilence.MINIMUM), TurnSilence.MINIMUM),
+        (str(TurnSilence.MAXIMUM), TurnSilence.MAXIMUM),
+    ],
+)
+def test_a_typed_window_is_read_back(typed, expected) -> None:
+    assert parse_turn_silence(typed) == expected
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "",
+        "   ",
+        "abc",
+        "s",
+        "2.5.1",
+        "--2",
+        "1e",
+        "nan",
+        "inf",
+        "-inf",
+        "0",
+        "-1",
+        "0.1",
+        "31",
+        "1000",
+    ],
+)
+def test_a_value_the_field_cannot_use_is_refused(typed) -> None:
+    """Refused rather than clamped: a silent correction looks like a dropped key."""
+    assert parse_turn_silence(typed) is None
+
+
+def test_an_engine_with_nothing_queued_is_not_speaking() -> None:
+    assert SpeechActivity().speaking is False
+
+
+def test_a_queued_sentence_counts_as_speaking() -> None:
+    activity = SpeechActivity()
+
+    activity.queued()
+
+    assert activity.speaking is True
+
+
+def test_speech_continues_across_the_gap_between_sentences() -> None:
+    """The gap between two sentences must not read as silence."""
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.finished()
+
+    assert activity.speaking is True
+
+
+def test_speech_ends_once_every_sentence_has_been_delivered() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.finished()
+    activity.finished()
+
+    assert activity.speaking is False
+
+
+def test_an_extra_completion_cannot_mute_the_next_sentence() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.finished()
+    activity.finished()
+
+    activity.queued()
+
+    assert activity.speaking is True
+
+
+def test_being_silenced_drops_everything_outstanding() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.silenced()
+
+    assert activity.speaking is False
+
+
+def test_speech_can_start_again_after_being_silenced() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.silenced()
+
+    activity.queued()
+
+    assert activity.speaking is True

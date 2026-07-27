@@ -7,6 +7,7 @@ import sys
 import threading
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from rich.console import Console
 from textual.widgets import Input, Select, Static
 
@@ -526,3 +527,409 @@ def test_a_session_without_a_speech_hook_cannot_switch_provider(tui) -> None:
     asyncio.run(exercise())
 
     assert state.tts_provider == "piper"
+
+
+def test_the_countdown_bar_drains_as_the_silence_runs_out(tui) -> None:
+    full = tui.countdown_bar(3.0, 3.0)
+    half = tui.countdown_bar(1.5, 3.0)
+    gone = tui.countdown_bar(0.0, 3.0)
+
+    assert full.plain == "■■■■■■■■■■ 3.0s"
+    assert half.plain == "■■■■■□□□□□ 1.5s"
+    assert gone.plain == "□□□□□□□□□□ 0.0s"
+
+
+def test_the_countdown_turns_amber_as_the_turn_is_about_to_be_sent(tui) -> None:
+    # The colour is the warning: speaking now still cancels the turn.
+    assert tui.countdown_bar(3.0, 3.0).spans[0].style == "#6cc06c"
+    assert tui.countdown_bar(0.6, 3.0).spans[0].style == "#d7b562"
+
+
+def test_a_countdown_longer_than_its_window_cannot_overfill(tui) -> None:
+    assert tui.countdown_bar(9.0, 3.0).plain == "■■■■■■■■■■ 9.0s"
+
+
+def test_a_zero_window_cannot_divide_by_itself(tui) -> None:
+    assert tui.countdown_bar(0.0, 0.0).plain == "□□□□□□□□□□ 0.0s"
+
+
+def test_the_sidebar_shows_no_countdown_when_no_turn_is_pending(tui) -> None:
+    sidebar = tui.Sidebar(tui.SessionState(turn_silence=2.5), tui.TuiHooks())
+
+    assert sidebar._countdown().plain == ""
+
+
+def test_the_sidebar_shows_the_countdown_while_a_turn_waits(tui) -> None:
+    state = tui.SessionState(turn_silence=3.0, turn_countdown=1.8)
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._countdown().plain == "■■■■■■□□□□ 1.8s"
+
+
+class FakeCountdown:
+    """A silence clock a test drives directly."""
+
+    def __init__(self, remaining=None):
+        self.value = remaining
+        self.reads = 0
+
+    def remaining(self):
+        self.reads += 1
+        return self.value
+
+
+def test_the_countdown_ticks_into_the_session_state(tui) -> None:
+    countdown = FakeCountdown(2.4)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown == 2.4
+
+
+def test_an_idle_session_repaints_nothing_for_the_countdown(tui) -> None:
+    """Ten frames a second of nothing is the cost this check exists to avoid."""
+    countdown = FakeCountdown(None)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_countdown = lambda: painted.append(True)
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    # The mounted app runs its own countdown interval, so the poll count is
+    # not this test's to predict. That it polls at all, and repaints nothing
+    # when the answer is "no turn pending", is the whole property.
+    assert countdown.reads >= 1
+    assert painted == []
+    assert state.turn_countdown is None
+
+
+def test_the_end_of_a_countdown_is_painted_once_to_clear_it(tui) -> None:
+    countdown = FakeCountdown(None)
+    state = tui.SessionState(turn_countdown=0.2)
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_countdown = lambda: painted.append(True)
+            # Re-armed here rather than only in the constructor: the mounted
+            # app runs its own countdown interval, which may already have
+            # cleared the state before this test installed its recorder.
+            state.turn_countdown = 0.2
+            app._tick_countdown()
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown is None
+    assert painted == [True]
+
+
+def test_a_session_without_a_countdown_clock_never_shows_one(tui) -> None:
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown is None
+
+
+ACCEPTS = object()
+
+
+def silence_app(tui, seconds=3.0, applied=ACCEPTS):
+    """An app whose turn-silence field reports to a recording hook.
+
+    ``applied`` is what the host claims to have adopted. ACCEPTS echoes the
+    typed value back; an explicit None is a host that refused it, which is a
+    different answer and must not be spelled the same way.
+    """
+    received: list[float] = []
+
+    def on_turn_silence(value):
+        received.append(value)
+        return value if applied is ACCEPTS else applied
+
+    app = tui.VoiceCodexApp(
+        tui.SessionState(turn_silence=seconds),
+        tui.TuiHooks(on_turn_silence=on_turn_silence),
+    )
+    return app, received
+
+
+def submit_silence(app, typed, then=None):
+    """Type a window into the field, submit it, and report what it holds."""
+    seen: dict[str, object] = {}
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            field = app.query_one("#silence-input", Input)
+            field.focus()
+            field.value = typed
+            await pilot.press("enter")
+            await pilot.pause()
+            if then is not None:
+                await then(app, pilot)
+            seen["value"] = app.query_one("#silence-input", Input).value
+            seen["invalid"] = app.query_one("#silence-input", Input).has_class(
+                "invalid"
+            )
+            seen["focused"] = app.focused.id if app.focused else None
+
+    asyncio.run(exercise())
+    return seen
+
+
+def test_the_field_starts_showing_the_window_in_force(tui) -> None:
+    app, _ = silence_app(tui, 2.5)
+    seen: dict[str, str] = {}
+
+    async def exercise() -> None:
+        async with app.run_test():
+            seen["value"] = app.query_one("#silence-input", Input).value
+
+    asyncio.run(exercise())
+
+    assert seen["value"] == "2.5"
+
+
+def test_a_typed_window_is_applied_and_normalized(tui) -> None:
+    app, received = silence_app(tui, 3.0)
+
+    seen = submit_silence(app, "1.5")
+
+    assert received == [1.5]
+    assert app.state.turn_silence == 1.5
+    assert seen["value"] == "1.5"
+    assert seen["invalid"] is False
+
+
+def test_applying_a_window_hands_typing_back_to_the_transcript(tui) -> None:
+    app, _ = silence_app(tui, 3.0)
+
+    seen = submit_silence(app, "1.5")
+
+    assert seen["focused"] == "input"
+
+
+def test_a_window_typed_with_its_unit_is_accepted(tui) -> None:
+    app, received = silence_app(tui, 3.0)
+
+    submit_silence(app, "2s")
+
+    assert received == [2.0]
+
+
+@pytest.mark.parametrize("typed", ["abc", "", "0", "99"])
+def test_a_value_the_field_cannot_use_is_marked_and_left_alone(tui, typed) -> None:
+    """The typist is mid-correction; replacing their text loses the keystrokes."""
+    app, received = silence_app(tui, 3.0)
+
+    seen = submit_silence(app, typed)
+
+    assert received == []
+    assert app.state.turn_silence == 3.0
+    assert seen["value"] == typed
+    assert seen["invalid"] is True
+
+
+def test_a_window_the_host_refuses_leaves_the_field_marked(tui) -> None:
+    app, received = silence_app(tui, 3.0, applied=None)
+
+    seen = submit_silence(app, "1.5")
+
+    assert received == [1.5]
+    assert app.state.turn_silence == 3.0
+    assert seen["invalid"] is True
+
+
+def test_the_field_shows_the_window_the_host_actually_adopted(tui) -> None:
+    """A host that clamps must not leave the field claiming the typed value."""
+    app, _ = silence_app(tui, 3.0, applied=0.25)
+
+    seen = submit_silence(app, "1.5")
+
+    assert app.state.turn_silence == 0.25
+    assert seen["value"] == "0.25"
+
+
+def test_escape_puts_the_field_back_to_the_window_in_force(tui) -> None:
+    app, received = silence_app(tui, 3.0)
+
+    async def revert(app, pilot):
+        field = app.query_one("#silence-input", Input)
+        field.focus()
+        field.value = "nonsense"
+        await pilot.press("escape")
+        await pilot.pause()
+
+    seen = submit_silence(app, "1.5", then=revert)
+
+    assert received == [1.5]
+    assert seen["value"] == "1.5"
+    assert seen["invalid"] is False
+    assert seen["focused"] == "input"
+
+
+def test_a_session_with_no_turn_silence_hook_refuses_the_edit(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(turn_silence=3.0), tui.TuiHooks())
+    seen: dict[str, object] = {}
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            field = app.query_one("#silence-input", Input)
+            field.focus()
+            field.value = "1.5"
+            await pilot.press("enter")
+            await pilot.pause()
+            seen["invalid"] = app.query_one("#silence-input", Input).has_class(
+                "invalid"
+            )
+
+    asyncio.run(exercise())
+
+    assert seen["invalid"] is True
+    assert app.state.turn_silence == 3.0
+
+
+def test_escape_outside_the_field_does_not_steal_the_key(tui) -> None:
+    """Escape belongs to whatever has focus when the field does not."""
+    app, _ = silence_app(tui, 3.0)
+    seen: dict[str, object] = {}
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#input", Input).value = "half typed"
+            app.query_one("#input", Input).focus()
+            await pilot.press("escape")
+            await pilot.pause()
+            seen["text"] = app.query_one("#input", Input).value
+
+    asyncio.run(exercise())
+
+    assert seen["text"] == "half typed"
+
+
+@pytest.mark.parametrize(
+    ("stream_state", "speaking", "expected"),
+    [
+        ("idle", False, "idle"),
+        ("idle", True, "speaking"),
+        # The stream state is the more specific of the two, and both are true
+        # at once while sentences play against an answer still arriving.
+        ("replying to User Voice", True, "replying to User Voice"),
+        ("replying to User Voice", False, "replying to User Voice"),
+        ("running command", True, "running command"),
+    ],
+)
+def test_codex_activity_counts_speech_as_doing_something(
+    tui, stream_state, speaking, expected
+) -> None:
+    assert tui.codex_activity(stream_state, speaking) == expected
+
+
+def test_the_sidebar_says_speaking_after_the_stream_has_ended(tui) -> None:
+    """The tail of a turn: text finished, audio still playing."""
+    state = tui.SessionState(codex_state="idle", codex_speaking=True)
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._activity().plain == "speaking"
+
+
+def test_the_sidebar_dims_only_a_genuinely_idle_codex(tui) -> None:
+    idle = tui.Sidebar(tui.SessionState(), tui.TuiHooks())._activity()
+    speaking = tui.Sidebar(
+        tui.SessionState(codex_speaking=True), tui.TuiHooks()
+    )._activity()
+
+    assert idle.style == "#9aa3ad"
+    assert speaking.style == "#6cc06c"
+
+
+class FakeSpeech:
+    """A speech engine a test switches between talking and quiet."""
+
+    def __init__(self, speaking=False):
+        self.value = speaking
+
+    def is_speaking(self):
+        return self.value
+
+
+def test_speech_starting_is_picked_up_by_the_tick(tui) -> None:
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is True
+
+
+def test_speech_ending_is_picked_up_by_the_tick(tui) -> None:
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+            speech.value = False
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is False
+
+
+def test_an_unchanged_speech_state_repaints_nothing(tui) -> None:
+    """Ten frames a second of an unchanged word is the cost this avoids."""
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState(codex_speaking=True)
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_codex = lambda: painted.append(True)
+            state.codex_speaking = True
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert painted == []
+
+
+def test_a_silent_session_never_claims_to_be_speaking(tui) -> None:
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is False

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy
 
-from .domain import EchoMemory, TurnGate
+from .domain import EchoMemory, SpeechActivity, TurnGate
 from .playback import AudioPlayer, raw_pcm_args
 
 DEFAULT_MODEL_HOME = (
@@ -128,6 +128,7 @@ class PiperSentenceTTS:
         self.shutdown_requested = threading.Event()
         self.turns = TurnGate()
         self.echo = EchoMemory()
+        self.activity = SpeechActivity()
         self.model = None
         self.model_error = None
         self.model_ready = threading.Event()
@@ -174,6 +175,7 @@ class PiperSentenceTTS:
         turn, accepting = self.turns.accepting_turn()
         if text and accepting and not self.shutdown_requested.is_set():
             self.echo.remember(text, retention=self.QUEUED_RETENTION_SECONDS)
+            self.activity.queued()
             self.sentences.put_nowait((turn, text))
 
     def interrupt(self):
@@ -191,6 +193,7 @@ class PiperSentenceTTS:
                 self.sentences.put_nowait(queued)
                 break
 
+        self.activity.silenced()
         self.playback.stop()
 
     def is_likely_echo(self, text):
@@ -240,9 +243,15 @@ class PiperSentenceTTS:
                 self.echo.remember(
                     text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True
                 )
+                self.activity.finished()
+
+    def is_speaking(self):
+        """Report whether this engine still has speech to deliver."""
+        return self.activity.speaking
 
     def close(self):
         self.shutdown_requested.set()
+        self.activity.silenced()
         self.playback.stop()
         self.sentences.put_nowait(self.stop_item)
         self.worker.join(timeout=3)

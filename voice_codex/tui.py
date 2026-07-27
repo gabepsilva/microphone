@@ -40,7 +40,14 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, Select, Static
 
-from .domain import CODEX, RESPONSE_POLICIES, THEM, USER_TEXT, USER_VOICE
+from .domain import (
+    CODEX,
+    RESPONSE_POLICIES,
+    THEM,
+    USER_TEXT,
+    USER_VOICE,
+    parse_turn_silence,
+)
 from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, default_voice
 
 # --------------------------------------------------------------------------
@@ -107,6 +114,10 @@ class SessionState:
     codex_sandbox: str = "full-access"
     codex_thread: str = "—"
     codex_state: str = "idle"
+    # Whether speech is still coming out of the speakers. Tracked apart from
+    # codex_state because the two end at different moments: the text stream
+    # finishes seconds before the audio it produced has finished playing.
+    codex_speaking: bool = False
     codex_models: list[tuple[str, str]] = field(
         default_factory=lambda: [("gpt-5.6-luna", "gpt-5.6-luna")]
     )
@@ -120,6 +131,8 @@ class SessionState:
     tts_queue: list[str] = field(default_factory=list)
 
     turn_silence: float = 3.0
+    # Seconds until the pending turn is submitted, or None when none is.
+    turn_countdown: float | None = None
     confidence: float = 0.60
     language: str = "en"
     moonshine: str = "medium-streaming"
@@ -142,6 +155,7 @@ class TuiHooks:
     on_mute: Callable[[bool], None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
     on_tts_provider: Callable[[str], bool | None] | None = None
+    on_turn_silence: Callable[[float], float | None] | None = None
     on_interrupt: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
     on_quit: Callable[[], None] | None = None
@@ -179,6 +193,45 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
     bar = Text()
     bar.append("■" * filled, style=style)
     bar.append("□" * (width - filled), style="#2f343b")
+    return bar
+
+
+IDLE = "idle"
+SPEAKING = "speaking"
+
+
+def codex_activity(stream_state: str, speaking: bool) -> str:
+    """Say what Codex is doing, counting speech as doing something.
+
+    The stream state wins while there is one, because "replying to Them" says
+    more than "speaking" and both are true at once — sentences play while the
+    rest of the answer is still arriving. What this fixes is the tail: the
+    stream ends when the last token lands, and for several seconds after that
+    Codex is still talking. That used to read as idle.
+    """
+    if stream_state != IDLE:
+        return stream_state
+    return SPEAKING if speaking else IDLE
+
+
+def format_seconds(seconds: float) -> str:
+    """Render a turn-silence window the way the field accepts it back."""
+    return f"{seconds:.2f}".rstrip("0").rstrip(".")
+
+
+def countdown_bar(remaining: float, window: float, width: int = 10) -> Text:
+    """Draw the silence a turn has left to wait, draining as it runs out.
+
+    Colour is the message: the wait is green until it is nearly over, then
+    amber, because the last moments are when the turn is about to be sent and
+    speaking again would still stop it.
+    """
+    left = 0.0 if window <= 0 else max(0.0, min(1.0, remaining / window))
+    filled = max(0, min(width, round(left * width)))
+    bar = Text()
+    bar.append("■" * filled, style="#6cc06c" if left > 0.25 else "#d7b562")
+    bar.append("□" * (width - filled), style="#2f343b")
+    bar.append(f" {remaining:.1f}s", style="#9aa3ad")
     return bar
 
 
@@ -302,6 +355,16 @@ class Sidebar(Vertical):
                 "speech-select", self._speech_options(), self.state.tts_provider
             )
         yield Static(id="panel-bottom")
+        with Horizontal(id="silence-row"):
+            yield Static("turn silence", id="silence-label")
+            yield Input(
+                value=format_seconds(self.state.turn_silence),
+                id="silence-input",
+                compact=True,
+            )
+            yield Static("s", id="silence-unit")
+        yield Static(id="panel-countdown")
+        yield Static(id="panel-session")
 
     def on_mount(self) -> None:
         self.sync()
@@ -311,6 +374,8 @@ class Sidebar(Vertical):
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
         self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
+        self.query_one("#panel-session", Static).update(Group(*self._session()))
+        self.sync_countdown()
         self._sync_select("#policy-select", self._policy_options(), self.state.policy)
         self._sync_select(
             "#model-select", self.state.codex_models, self.state.codex_model
@@ -324,6 +389,14 @@ class Sidebar(Vertical):
 
     def sync_audio(self) -> None:
         self.query_one("#panel-top", Static).update(Group(*self._top()))
+
+    def sync_codex(self) -> None:
+        """Cheap per-frame repaint — only the panel naming what Codex is doing."""
+        self.query_one("#panel-codex", Static).update(Group(*self._codex()))
+
+    def sync_countdown(self) -> None:
+        """Cheap per-frame repaint — only the one line the countdown occupies."""
+        self.query_one("#panel-countdown", Static).update(self._countdown())
 
     def _sync_select(
         self,
@@ -502,19 +575,26 @@ class Sidebar(Vertical):
                     ),
                     ("sandbox", sandbox),
                     ("thread", Text(state.codex_thread, style="#9aa3ad")),
-                    (
-                        "state",
-                        Text(
-                            state.codex_state,
-                            style="#6cc06c"
-                            if state.codex_state != "idle"
-                            else "#9aa3ad",
-                        ),
-                    ),
+                    ("state", self._activity()),
                 ]
             )
         )
         return blocks
+
+    def _activity(self) -> Text:
+        """Name what Codex is doing, speech included."""
+        activity = codex_activity(self.state.codex_state, self.state.codex_speaking)
+        return Text(
+            activity,
+            style="#9aa3ad" if activity == IDLE else "#6cc06c",
+        )
+
+    def _countdown(self) -> Text:
+        """Show the silence still to wait, or nothing when none is running."""
+        state = self.state
+        if state.turn_countdown is None:
+            return Text()
+        return countdown_bar(state.turn_countdown, state.turn_silence)
 
     def _bottom(self) -> list[RenderableType]:
         state = self.state
@@ -551,13 +631,13 @@ class Sidebar(Vertical):
         blocks.append(Text())
 
         blocks.append(Text("SESSION", style="#5a6068"))
-        blocks.append(
+        return blocks
+
+    def _session(self) -> list[RenderableType]:
+        state = self.state
+        return [
             _kv(
                 [
-                    (
-                        "turn silence",
-                        Text(f"{state.turn_silence:.1f}s", style="#9aa3ad"),
-                    ),
                     ("confidence", Text(f"{state.confidence:.2f}", style="#9aa3ad")),
                     ("language", Text(state.language, style="#9aa3ad")),
                     ("moonshine", Text(state.moonshine, style="#9aa3ad")),
@@ -565,8 +645,7 @@ class Sidebar(Vertical):
                     ("echoes cut", Text(str(state.echoes_cut), style="#9aa3ad")),
                 ]
             )
-        )
-        return blocks
+        ]
 
 
 # --------------------------------------------------------------------------
@@ -635,6 +714,18 @@ class VoiceCodexApp(App):
     }
     #input:focus { border: none; background: #0f1113; }
     #input-hint { width: auto; color: #5a6068; }
+    #silence-row { height: auto; margin-bottom: 1; }
+    #silence-label { width: 13; color: #6f757e; }
+    #silence-input {
+        width: 8;
+        border: none;
+        padding: 0;
+        background: #14171a;
+        color: #cdd6e4;
+    }
+    #silence-input:focus { background: #0f1113; }
+    #silence-input.invalid { color: #c96a5c; background: #2a1a1a; }
+    #silence-unit { width: auto; color: #6f757e; }
 
     #keys {
         height: 5;
@@ -689,12 +780,24 @@ class VoiceCodexApp(App):
         Binding("ctrl+t", "toggle_tts", "tts", priority=True),
         Binding("ctrl+x", "interrupt", "interrupt codex", priority=True),
         Binding("ctrl+s", "save", "save transcript", priority=True),
+        Binding("escape", "revert_turn_silence", "revert turn silence", show=False),
     ]
 
-    def __init__(self, state: SessionState, hooks: TuiHooks) -> None:
+    # The countdown redraws ten times a second. A 20-cell bar over a 3s window
+    # only has 150ms of resolution per cell, so anything faster repaints the
+    # same picture; anything slower is visibly steppy.
+    COUNTDOWN_INTERVAL_SECONDS = 0.1
+
+    def __init__(
+        self, state: SessionState, hooks: TuiHooks, countdown=None, speech=None
+    ) -> None:
         super().__init__()
         self.state = state
         self.hooks = hooks
+        self.countdown = countdown
+        # The session's speech, polled for whether it is still talking. Absent
+        # when the session was started silent.
+        self.speech = speech
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
@@ -721,6 +824,8 @@ class VoiceCodexApp(App):
         self.query_one("#keys", Static).update(self._keys_text())
         self._sync_partial()
         self.set_interval(0.25, self._tick)
+        self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
+        self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.query_one("#input", Input).focus()
 
     # -- chrome ------------------------------------------------------------
@@ -773,6 +878,29 @@ class VoiceCodexApp(App):
         with suppress(NoMatches):
             self.query_one("#sidebar", Sidebar).sync_clock()
 
+    def _tick_countdown(self) -> None:
+        """Redraw the silence countdown, and only while there is one.
+
+        An idle session does no work at all here. The one repaint after the
+        countdown ends is what restores the configured window in its place,
+        so the check is against the state as well as the clock.
+        """
+        remaining = None if self.countdown is None else self.countdown.remaining()
+        if remaining is None and self.state.turn_countdown is None:
+            return
+        self.state.turn_countdown = remaining
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_countdown()
+
+    def _tick_speaking(self) -> None:
+        """Repaint only when speech starts or stops, not on every frame."""
+        speaking = self.speech is not None and self.speech.is_speaking()
+        if speaking == self.state.codex_speaking:
+            return
+        self.state.codex_speaking = speaking
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_codex()
+
     def refresh_sidebar(self) -> None:
         self.query_one("#sidebar", Sidebar).sync()
 
@@ -821,7 +949,42 @@ class VoiceCodexApp(App):
             return
         self.action_quit_app()
 
+    def _apply_turn_silence(self, text: str) -> None:
+        """Adopt a typed window, or mark the field as holding a bad value.
+
+        A rejected value is left in place rather than overwritten. The typist
+        is mid-correction, and replacing their text with the old number would
+        discard the keystrokes that were nearly right.
+        """
+        field = self.query_one("#silence-input", Input)
+        seconds = parse_turn_silence(text)
+        applied = (
+            None
+            if seconds is None or self.hooks.on_turn_silence is None
+            else self.hooks.on_turn_silence(seconds)
+        )
+        if applied is None:
+            field.add_class("invalid")
+            return
+        field.remove_class("invalid")
+        self.state.turn_silence = applied
+        field.value = format_seconds(applied)
+        self.refresh_sidebar()
+        self.query_one("#input", Input).focus()
+
+    def action_revert_turn_silence(self) -> None:
+        """Put the field back to the window in force, and leave it."""
+        field = self.query_one("#silence-input", Input)
+        if not field.has_focus:
+            raise SkipAction
+        field.remove_class("invalid")
+        field.value = format_seconds(self.state.turn_silence)
+        self.query_one("#input", Input).focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "silence-input":
+            self._apply_turn_silence(event.value)
+            return
         text = event.value.strip()
         event.input.value = ""
         if not text:
@@ -912,10 +1075,16 @@ class VoiceCodexTUI:
     app are applied to the state object and appear once the UI mounts.
     """
 
-    def __init__(self, state: SessionState | None = None, **hooks) -> None:
+    def __init__(
+        self,
+        state: SessionState | None = None,
+        countdown=None,
+        speech=None,
+        **hooks,
+    ) -> None:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
-        self.app = VoiceCodexApp(self.state, self.hooks)
+        self.app = VoiceCodexApp(self.state, self.hooks, countdown, speech)
         self._ready = threading.Event()
         self._app_thread: int | None = None
 
