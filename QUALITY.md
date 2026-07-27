@@ -120,6 +120,13 @@ disabled, and these required checks:
 - `Quality and security`
 - `Secret scan`
 
+Also enable **Do not allow bypassing the above settings**. Without it the rules
+apply to everyone except the account most likely to be driving an agent, and
+"do not use `--admin`" becomes a request rather than a control — the same
+distinction `ratchet_gate.py` exists to make for thresholds. With it enabled,
+`gh pr merge --admin` fails instead of succeeding quietly, which is the whole
+point: the person merging should not be able to decide the gates do not apply.
+
 AI review is advisory only. Deterministic checks and behavior-specific tests
 are the merge authority.
 
