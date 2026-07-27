@@ -4,19 +4,25 @@ Voice Codex is developed primarily with AI assistance. A generated change is
 not accepted merely because it looks plausible: it must pass repeatable checks
 and carry direct behavior evidence.
 
+**This file holds what the repository cannot**: settings that live in GitHub's
+web UI, decisions taken *against* an alternative — which by definition leave no
+artifact — and planned direction. Anything derivable from the Makefile, a
+gate's failure output, or a comment on the config line it describes belongs
+there instead, where it is maintained next to the thing that could invalidate
+it. You do not need this file to write a feature or fix a bug; `make ci` and
+`AGENTS.md` are sufficient for that.
+
 The only local definition of done is:
 
 ```bash
 make ci
 ```
 
-`uv sync --locked --all-groups` must be run first. CI uses the checked-in lock
-file and must never resolve a new dependency graph while validating a change.
-
-Run `make hooks` once after cloning. It installs `make verify` as a pre-commit
-hook and `make ci` as a pre-push hook. Hooks make the normal local path safe,
-but never replace CI: hooks can be bypassed and do not validate a clean hosted
-environment. Run `make hook-check` after changing hook configuration.
+Run `uv sync --locked --all-groups` first. Run `make hooks` once after cloning
+to install `make verify` as a pre-commit hook and `make ci` as a pre-push hook;
+re-run `make hook-check` after changing hook configuration. Hooks are a fast
+local convenience, not the authority — they are per-clone, opt-in, and
+bypassable. CI decides.
 
 ## Required checks
 
@@ -62,6 +68,9 @@ and prints what to do when it fails. This is the map, not the manual.
   and skips that name no issue.
 - **Gate self-tests** (`tests/test_quality_gates.py`) plant a violation for
   every gate, because a gate that matches nothing still reports green.
+- **Context budget** (`tools/context_budget.py`) caps `AGENTS.md`, the only
+  file loaded on every task. Everything else here ratchets upward; instructions
+  are the one thing that must not.
 
 Recorded only here: per-file floors are set at the value each file had when the
 gate was added and ratchet upward only, and the global floor follows toward 60%
@@ -69,44 +78,51 @@ and then 80% as adapters are isolated from the runtime.
 
 ## Security policy
 
-Bandit writes all findings to `reports/bandit.json` and blocks medium/high.
-Low-severity findings are recorded there rather than suppressed; nothing is
-hidden with `# nosec`. Semgrep already rejects `shell=True` and string
-commands, so the rule that survives review is the one it cannot check: every
-new subprocess invocation needs a test or a direct review of where its
-arguments came from.
+Three decisions, none of them visible in the commands themselves:
 
-`pip-audit` is a merge gate. Its vulnerability feed changes over time, so an
-unchanged lockfile can legitimately fail after a newly published advisory.
-Gitleaks is also a merge gate and scans history, not only changed files.
+**Low-severity Bandit findings are recorded, not suppressed.** They stay in
+`reports/bandit.json`; nothing is hidden behind `# nosec`.
 
-Semgrep is a serverless merge gate. `make semgrep` runs a digest-pinned
-container with networking disabled and the repository mounted read-only, so it
-cannot download a remote rule pack: the only rules are the committed
-`semgrep.yml`. Evidence lands in `reports/semgrep.json`. Use `make semgrep` for
-immediate file-and-line feedback; `make ci` and the hosted quality job run it
-through `make security-static`. The `.semgrepignore` at the repository root is
-load-bearing — its header says why.
+**Semgrep runs offline by construction** — a digest-pinned container with
+networking disabled — so it can never pull a remote rule pack. The only rules
+are the committed `semgrep.yml`, and `.semgrepignore` is load-bearing rather
+than incidental; its header says why.
 
-Generated coverage and security evidence is ignored by Git. GitHub Actions
-uploads it on both success and failure. Local `voice.yaml`, transcripts, and
-audio recordings are never committed.
+**Subprocess argument provenance is reviewed by a human.** Semgrep already
+rejects `shell=True` and string commands, so the rule left over is the one no
+tool can check: every new subprocess invocation needs a test or a direct review
+of where its arguments came from.
+
+`pip-audit` and Gitleaks are merge gates whose inputs move on their own; see
+the scheduled audit below. Local `voice.yaml`, transcripts, and recordings are
+never committed.
 
 ## CI and merge policy
 
-GitHub Actions uses immutable action revisions, Python 3.12.3, uv 0.11.16, and
-`uv sync --locked --all-groups`. The hosted quality job runs `make ci-hosted`;
-the separate Gitleaks job supplies the secret scan because its GitHub action
-installs the scanner itself. Together they are equivalent to `make ci`.
+The hosted quality job runs `make ci-hosted`; a separate Gitleaks job supplies
+the secret scan, because that action installs the scanner itself. Together they
+are equivalent to `make ci`.
 
-Protect `master` in GitHub with pull requests required, force pushes disabled,
-and these required checks:
+Branch protection is GitHub UI state and exists nowhere in this repository, so
+it is recorded here. Protect `master` with pull requests required, force pushes
+disabled, and these required checks:
 
 - `Quality and security`
 - `Secret scan`
 
 AI review is advisory only. Deterministic checks and behavior-specific tests
 are the merge authority.
+
+### Scheduled audit
+
+The workflow also runs weekly; `ci.yml` says why, and `dependabot.yml` covers
+the fix path. A red scheduled run blocks nothing, since branch protection gates
+pull requests and not schedules — it is an alarm someone has to act on.
+
+GitHub disables scheduled workflows after 60 days of repository inactivity, so
+the safety net switches itself off exactly when nobody is watching; one commit
+re-arms it. Failure notifications go to whoever last edited the cron
+expression, not to the repository owner.
 
 ## Tooling boundaries
 

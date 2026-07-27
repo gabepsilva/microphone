@@ -5,6 +5,14 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Two gates are time-dependent rather than change-dependent: pip-audit's
+  # advisory feed and the Gitleaks rule set both move without this repository
+  # changing. Everything else is pinned and hermetic, so a weekly run on
+  # unchanged code is deterministic — which also makes it a canary for a
+  # yanked package version, a missing action revision, or a vanished Semgrep
+  # image digest. A red scheduled run blocks nothing; it is an alarm.
+  schedule:
+    - cron: "0 8 * * 1"
 
 permissions:
   contents: read

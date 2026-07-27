@@ -195,6 +195,42 @@ def test_mutation_gate_rejects_a_run_that_mutated_nothing(
 
 
 # --------------------------------------------------------------------------
+# tools/context_budget.py
+# --------------------------------------------------------------------------
+
+
+def test_context_budget_rejects_an_oversized_instruction_file(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("context_budget")
+    (tmp_path / "AGENTS.md").write_text("word " * 500, encoding="utf-8")
+    monkeypatch.setattr(gate, "BUDGETS", {"AGENTS.md": 400})
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 1
+
+
+def test_context_budget_accepts_a_file_within_budget(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("context_budget")
+    (tmp_path / "AGENTS.md").write_text("word " * 300, encoding="utf-8")
+    monkeypatch.setattr(gate, "BUDGETS", {"AGENTS.md": 400})
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 0
+
+
+def test_context_budget_rejects_a_budgeted_file_that_vanished(
+    tmp_path, monkeypatch
+) -> None:
+    """Deleting the file is not a way to satisfy its budget."""
+    gate = _load_gate("context_budget")
+    monkeypatch.setattr(gate, "BUDGETS", {"AGENTS.md": 400})
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 1
+
+
+# --------------------------------------------------------------------------
 # tools/ratchet_gate.py
 # --------------------------------------------------------------------------
 
@@ -224,6 +260,7 @@ def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
 
 BASE_COVERAGE_GATE = 'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n'
 BASE_MUTATION_GATE = "MUTATION_SCORE_FLOOR = 42.0\n"
+BASE_CONTEXT_BUDGET = 'BUDGETS = {"AGENTS.md": 400}\n'
 BASE_PYPROJECT = """
 [tool.coverage.report]
 fail_under = 46
@@ -236,6 +273,7 @@ BASE_SEMGREP = "rules:\n  - id: python-subprocess-shell-true\n"
 BASE_FILES = {
     "tools/coverage_gate.py": BASE_COVERAGE_GATE,
     "tools/mutation_gate.py": BASE_MUTATION_GATE,
+    "tools/context_budget.py": BASE_CONTEXT_BUDGET,
     "pyproject.toml": BASE_PYPROJECT,
     "semgrep.yml": BASE_SEMGREP,
 }
@@ -275,6 +313,16 @@ BASE_FILES = {
             "deleted semgrep rule",
             "semgrep.yml",
             "rules:\n  - id: something-else\n",
+        ),
+        (
+            "raised context budget",
+            "tools/context_budget.py",
+            'BUDGETS = {"AGENTS.md": 4000}\n',
+        ),
+        (
+            "removed context budget",
+            "tools/context_budget.py",
+            "BUDGETS = {}\n",
         ),
     ],
 )
