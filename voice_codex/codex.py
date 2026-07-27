@@ -18,23 +18,74 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from openai_codex import ApprovalMode, Codex, Sandbox
-from openai_codex.generated.v2_all import (
-    AgentMessageDeltaNotification,
-    AgentMessageThreadItem,
-    CommandExecutionOutputDeltaNotification,
-    CommandExecutionThreadItem,
-    ErrorNotification,
-    ItemCompletedNotification,
-    ItemStartedNotification,
-    McpToolCallThreadItem,
-    ReasoningEffort,
-    ThreadTokenUsageUpdatedNotification,
-    TurnCompletedNotification,
-)
-
 from .domain import SentenceChunker, TranscriptRouter
 from .presentation import CodexPresentation
+
+# --------------------------------------------------------------------------
+# The Codex SDK, bound on first use
+#
+# Importing it costs about half a second, nearly all of it in one generated
+# module, and none of it is needed to ask the startup questions or draw the
+# interface — so the session used to sit blank for that half second before
+# anything appeared.
+#
+# The names land in this module's globals rather than behind an accessor, so
+# the isinstance dispatch below still reads them as ordinary globals and pays
+# nothing per notification. Every constructor that can reach that dispatch
+# calls :func:`load_codex_sdk` first, which is what makes that safe.
+# --------------------------------------------------------------------------
+
+_sdk_loaded = False
+
+# Declared, not bound: these names exist in this module only after
+# :func:`load_codex_sdk` has run. Naming them here is what lets the loader
+# assign them and the dispatch below read them.
+ApprovalMode: Any
+Codex: Any
+Sandbox: Any
+ReasoningEffort: Any
+AgentMessageDeltaNotification: Any
+AgentMessageThreadItem: Any
+CommandExecutionOutputDeltaNotification: Any
+CommandExecutionThreadItem: Any
+ErrorNotification: Any
+ItemCompletedNotification: Any
+ItemStartedNotification: Any
+McpToolCallThreadItem: Any
+ThreadTokenUsageUpdatedNotification: Any
+TurnCompletedNotification: Any
+
+
+def load_codex_sdk() -> None:
+    """Import the Codex SDK into this module's namespace, once."""
+    global _sdk_loaded
+    global ApprovalMode, Codex, Sandbox
+    global AgentMessageDeltaNotification, AgentMessageThreadItem
+    global CommandExecutionOutputDeltaNotification
+    global CommandExecutionThreadItem, ErrorNotification
+    global ItemCompletedNotification, ItemStartedNotification
+    global McpToolCallThreadItem, ReasoningEffort
+    global ThreadTokenUsageUpdatedNotification, TurnCompletedNotification
+
+    if _sdk_loaded:
+        return
+    from openai_codex import ApprovalMode, Codex, Sandbox
+    from openai_codex.generated.v2_all import (
+        AgentMessageDeltaNotification,
+        AgentMessageThreadItem,
+        CommandExecutionOutputDeltaNotification,
+        CommandExecutionThreadItem,
+        ErrorNotification,
+        ItemCompletedNotification,
+        ItemStartedNotification,
+        McpToolCallThreadItem,
+        ReasoningEffort,
+        ThreadTokenUsageUpdatedNotification,
+        TurnCompletedNotification,
+    )
+
+    _sdk_loaded = True
+
 
 CODEX_DEVELOPER_INSTRUCTIONS = """
 This conversation has three possible input sources:
@@ -87,6 +138,7 @@ class CodexTurnRenderer:
     """
 
     def __init__(self, transcript_display, reply_to, sentence_chunker=None):
+        load_codex_sdk()  # `handle` dispatches on the SDK's notification types
         self.display = transcript_display
         self.reply_to = reply_to
         self.chunker = sentence_chunker
@@ -180,6 +232,7 @@ class CodexConversation:
         transcript_display: CodexPresentation,
         tts=None,
     ):
+        load_codex_sdk()
         self.sandbox = Sandbox(settings.sandbox)
         self.model = settings.model
         self.reasoning_effort = settings.reasoning_effort
