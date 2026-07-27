@@ -154,9 +154,10 @@ class CodexTurnRenderer:
             self.display.tool_completed(item.status)
 
     def _turn_completed(self):
-        if self.message_open:
-            self.display.codex_message_close()
-            self.message_open = False
+        self._close_message()
+        # A turn that ended on a command rather than on text has no message to
+        # close, and still has to flush: the chunker can be holding the tail of
+        # a message closed earlier in the turn.
         self._flush_speech()
         if self.last_usage is not None:
             self.display.token_usage(self.last_usage.total_tokens)
