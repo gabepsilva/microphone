@@ -911,25 +911,25 @@ class VoiceCodexTUI:
 
     # -- transcript --------------------------------------------------------
 
-    def partial(self, source: str, text: str) -> None:
+    def _show_partial(self, source: str, text: str) -> None:
         """Show revisable partial text for ``source`` on the live line."""
         self.state.partial_source = source
         self.state.partial_text = text
         self._call(self.app._sync_partial)
 
-    def clear_partial(self) -> None:
-        self.partial("", "")
+    def _clear_partial(self) -> None:
+        self._show_partial("", "")
 
     # The following methods implement the runtime's TranscriptPresentation
     # boundary. Keeping them here means the runtime never imports Textual
     # widgets directly.
 
     def update(self, speaker: str, text: str) -> None:
-        self.partial(speaker, text)
+        self._show_partial(speaker, text)
 
     def finish_turn(self, speaker: str) -> None:
         if self.state.partial_source == speaker:
-            self.clear_partial()
+            self._clear_partial()
 
     def close_speaker(self, speaker: str) -> None:
         self.finish_turn(speaker)
@@ -950,15 +950,12 @@ class VoiceCodexTUI:
 
     # -- Codex turn --------------------------------------------------------
 
-    def codex_begin(self, reply_to: str = USER_VOICE) -> None:
-        self.state.codex_state = f"replying to {reply_to}"
-        self._call(self._codex_begin_impl, reply_to)
-
     def begin_codex(self) -> None:
-        self.clear_partial()
+        self._clear_partial()
 
     def codex_message_open(self, reply_to: str) -> None:
-        self.codex_begin(reply_to)
+        self.state.codex_state = f"replying to {reply_to}"
+        self._call(self._codex_begin_impl, reply_to)
 
     def _codex_begin_impl(self, reply_to: str) -> None:
         entry = Entry(kind="speech", source=CODEX, reply_to=reply_to, streaming=True)
@@ -982,28 +979,24 @@ class VoiceCodexTUI:
         row.sync()
         self.app.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
-    def codex_end(self, interrupted: bool = False) -> None:
-        self.state.codex_state = "idle"
-        self._call(self._codex_end_impl, interrupted)
-
     def end_codex(self) -> None:
-        self.codex_end()
+        self.state.codex_state = "idle"
+        self._call(self._codex_end_impl)
 
-    def _codex_end_impl(self, interrupted: bool) -> None:
+    def _codex_end_impl(self) -> None:
+        # An interrupted turn is marked by the interrupt itself, which clears
+        # the streaming row before this runs. A turn that ends normally has
+        # nothing to mark.
         row = self.app._streaming
         if row is not None:
             row.entry.streaming = False
-            row.entry.interrupted = interrupted
             row.sync()
             self.app._streaming = None
         self.app.refresh_sidebar()
 
-    def command(self, command: str) -> None:
+    def command_started(self, command: str) -> None:
         self.state.codex_state = "running command"
         self._call(self._command_impl, command)
-
-    def command_started(self, command: str) -> None:
-        self.command(command)
 
     def _command_impl(self, command: str) -> None:
         self.app._streaming = None
@@ -1021,11 +1014,10 @@ class VoiceCodexTUI:
         row.sync()
         self.app.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
-    def command_exit(self, code: int) -> None:
-        self._call(self._command_exit_impl, code)
-
     def command_completed(self, exit_code: int | None) -> None:
-        self.command_exit(-1 if exit_code is None else exit_code)
+        # A command the SDK reports without an exit code is still finished;
+        # -1 distinguishes that from a real zero.
+        self._call(self._command_exit_impl, -1 if exit_code is None else exit_code)
 
     def tool_called(self, server: str, tool: str) -> None:
         self.note(f"tool {server}.{tool}")
@@ -1118,8 +1110,3 @@ class VoiceCodexTUI:
         self.state.status = status
         self.state.live = live
         self._call(self.app.refresh_sidebar)
-
-    def set_policy(self, policy: str) -> None:
-        if policy in POLICIES:
-            self.state.policy = policy
-            self._call(self.app.refresh_sidebar)
