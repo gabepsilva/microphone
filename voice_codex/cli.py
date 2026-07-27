@@ -39,10 +39,11 @@ from openai_codex.generated.v2_all import (
 from .config import load_startup_config, save_startup_config
 from .domain import (
     RESPONSE_POLICIES,
-    EchoMatcher,
+    EchoMemory,
     SentenceChunker,
     SpeakerGate,
     TranscriptRouter,
+    TurnGate,
     resolve_response_policy,
 )
 from .presentation import TranscriptPresentation
@@ -513,11 +514,53 @@ def choose_tts(requested=None):
     )
 
 
+def describe_tool_failure(headline, stderr):
+    """Explain a failed helper process, quoting its stderr when it wrote any."""
+    message = stderr.decode(errors="replace").strip() if stderr else ""
+    return f"\n{headline}{': ' + message if message else '.'}"
+
+
+def trim_command(trimmer, silence_filter):
+    """Build the ffmpeg command that trims leading and trailing silence."""
+    return [
+        trimmer,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "pipe:0",
+        "-af",
+        silence_filter,
+        "-f",
+        "wav",
+        "pipe:1",
+    ]
+
+
+def play_command(player):
+    """Build the ffplay command that plays one synthesized sentence."""
+    return [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-i", "pipe:0"]
+
+
+def player_environment(output_sink, base_environment=None):
+    """Copy the environment, routing playback to a specific sink when given."""
+    environment = dict(os.environ if base_environment is None else base_environment)
+    if output_sink is not None:
+        environment["PULSE_SINK"] = output_sink
+    return environment
+
+
 class EdgeSentenceTTS:
     """Prefetch two Edge sentences and play them in their original order."""
 
     PREFETCH_COUNT = 2
     REQUEST_STAGGER_SECONDS = 0.1
+    # A sentence stays recognizable as an echo for as long as it could still
+    # be heard: longest while it waits in the queue, shortest once it has been
+    # played and only room reverberation can still bring it back.
+    QUEUED_RETENTION_SECONDS = 120
+    SYNTHESIZING_RETENTION_SECONDS = 30
+    SPOKEN_RETENTION_SECONDS = 12
     SILENCE_TRIM_FILTER = (
         "silenceremove="
         "start_periods=1:start_duration=0.02:start_threshold=-45dB:"
@@ -556,12 +599,8 @@ class EdgeSentenceTTS:
         self.sentences = queue.Queue()
         self.stop_item = object()
         self.shutdown_requested = threading.Event()
-        self.turn_lock = threading.Lock()
-        self.current_turn = 0
-        self.turn_cancelled = False
-        self.enabled = True
-        self.echo_lock = threading.Lock()
-        self.recent_speech = {}
+        self.turns = TurnGate()
+        self.echo = EchoMemory()
         self.player_lock = threading.Lock()
         self.active_player = None
         self.worker = threading.Thread(
@@ -572,41 +611,27 @@ class EdgeSentenceTTS:
         self.worker.start()
 
     def begin_turn(self):
-        with self.turn_lock:
-            self.current_turn += 1
-            self.turn_cancelled = False
+        self.turns.begin_turn()
 
     def set_enabled(self, enabled):
         """Enable or silence future speech without rebuilding the pipeline."""
-        with self.turn_lock:
-            self.enabled = enabled
-        if not enabled:
+        if self.turns.set_enabled(enabled):
             self.interrupt()
 
     def _turn_is_active(self, turn):
-        with self.turn_lock:
-            return turn == self.current_turn and not self.turn_cancelled
+        return self.turns.is_active(turn)
 
     def speak(self, text):
-        with self.turn_lock:
-            turn = self.current_turn
-            turn_cancelled = self.turn_cancelled
-            enabled = self.enabled
-        if (
-            text
-            and enabled
-            and not turn_cancelled
-            and not self.shutdown_requested.is_set()
-        ):
-            self._remember_speech(text, retention=120)
+        turn, accepting = self.turns.accepting_turn()
+        if text and accepting and not self.shutdown_requested.is_set():
+            self.echo.remember(text, retention=self.QUEUED_RETENTION_SECONDS)
             self.sentences.put_nowait((turn, text))
 
     def interrupt(self):
         """Stop the current response and discard all of its queued speech."""
         if self.shutdown_requested.is_set():
             return
-        with self.turn_lock:
-            self.turn_cancelled = True
+        self.turns.cancel()
 
         while True:
             try:
@@ -621,47 +646,14 @@ class EdgeSentenceTTS:
             if self.active_player is not None:
                 self.active_player.terminate()
 
-    @staticmethod
-    def _normalize_speech(text):
-        return EchoMatcher.normalize(text)
-
-    def _remember_speech(self, text, retention, replace=False):
-        normalized = self._normalize_speech(text)
-        if not normalized:
-            return
-        expires_at = time.monotonic() + retention
-        with self.echo_lock:
-            if replace:
-                self.recent_speech[normalized] = expires_at
-            else:
-                self.recent_speech[normalized] = max(
-                    expires_at,
-                    self.recent_speech.get(normalized, 0),
-                )
-
-    @staticmethod
-    def _speech_matches(transcript, spoken):
-        return EchoMatcher.matches(transcript, spoken)
-
     def is_likely_echo(self, text):
         """Return True when a transcript resembles recently queued TTS."""
-        transcript = self._normalize_speech(text)
-        if not transcript:
-            return False
-        now = time.monotonic()
-        with self.echo_lock:
-            expired = [
-                spoken
-                for spoken, expires_at in self.recent_speech.items()
-                if expires_at <= now
-            ]
-            for spoken in expired:
-                del self.recent_speech[spoken]
-            recent = tuple(self.recent_speech)
-        return any(self._speech_matches(transcript, spoken) for spoken in recent)
+        return self.echo.matches(text)
 
     async def _synthesize(self, turn, text):
-        self._remember_speech(text, retention=30, replace=True)
+        self.echo.remember(
+            text, retention=self.SYNTHESIZING_RETENTION_SECONDS, replace=True
+        )
         communicate = self.edge_tts.Communicate(text, self.voice)
         audio = bytearray()
         async for chunk in communicate.stream():
@@ -680,28 +672,17 @@ class EdgeSentenceTTS:
     def _trim_silence(self, audio):
         try:
             result = subprocess.run(
-                [
-                    self.trimmer,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    "pipe:0",
-                    "-af",
-                    self.SILENCE_TRIM_FILTER,
-                    "-f",
-                    "wav",
-                    "pipe:1",
-                ],
+                trim_command(self.trimmer, self.SILENCE_TRIM_FILTER),
                 input=audio,
                 capture_output=True,
                 check=True,
             )
         except subprocess.CalledProcessError as error:
-            message = error.stderr.decode(errors="replace").strip()
             print(
-                f"\nEdge TTS silence trimming failed; playing original audio"
-                f"{': ' + message if message else '.'}",
+                describe_tool_failure(
+                    "Edge TTS silence trimming failed; playing original audio",
+                    error.stderr,
+                ),
                 file=sys.stderr,
                 flush=True,
             )
@@ -715,23 +696,12 @@ class EdgeSentenceTTS:
             or not self._turn_is_active(turn)
         ):
             return
-        player_environment = os.environ.copy()
-        if self.output_sink is not None:
-            player_environment["PULSE_SINK"] = self.output_sink
         process = subprocess.Popen(
-            [
-                self.player,
-                "-nodisp",
-                "-autoexit",
-                "-loglevel",
-                "quiet",
-                "-i",
-                "pipe:0",
-            ],
+            play_command(self.player),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            env=player_environment,
+            env=player_environment(self.output_sink),
         )
         with self.player_lock:
             self.active_player = process
@@ -755,10 +725,11 @@ class EdgeSentenceTTS:
             and not self.shutdown_requested.is_set()
             and self._turn_is_active(turn)
         ):
-            message = player_error.decode(errors="replace").strip()
             print(
-                f"\nEdge TTS player exited with code {process.returncode}"
-                f"{': ' + message if message else '.'}",
+                describe_tool_failure(
+                    f"Edge TTS player exited with code {process.returncode}",
+                    player_error,
+                ),
                 file=sys.stderr,
                 flush=True,
             )
@@ -815,7 +786,9 @@ class EdgeSentenceTTS:
                         flush=True,
                     )
             finally:
-                self._remember_speech(text, retention=12, replace=True)
+                self.echo.remember(
+                    text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True
+                )
                 available_slots.release()
 
     async def _run_pipeline(self):

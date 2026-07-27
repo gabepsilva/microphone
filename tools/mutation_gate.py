@@ -16,7 +16,7 @@ import json
 import sys
 from pathlib import Path
 
-MUTATION_SCORE_FLOOR = 45.0
+MUTATION_SCORE_FLOOR = 58.0
 STATS_PATH = Path("mutants/mutmut-cicd-stats.json")
 
 
