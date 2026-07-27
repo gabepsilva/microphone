@@ -36,7 +36,7 @@ from .capture import (
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
 from .domain import SpeakerGate, TurnSilence, TurnSilenceClock
-from .listener import ConversationListener, TranscriptSubmitter, tts_switch
+from .listener import TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
     build_session_state,
@@ -171,13 +171,11 @@ def main():
     attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
     submitter = TranscriptSubmitter(conversation, gate, tts)
 
-    user_listener = ConversationListener(
+    user_listener = submitter.channel(
         args.confidence,
         turn_silence,
         "User Voice",
-        submitter.submit,
         transcript_display,
-        on_speech=submitter.handle_speech,
         countdown=countdown,
     )
     user_transcriber = metered_mic_transcriber(
@@ -200,13 +198,11 @@ def main():
     them_listener = None
     them_transcriber = None
     if them_output is not None:
-        them_listener = ConversationListener(
+        them_listener = submitter.channel(
             args.confidence,
             turn_silence,
             "Them",
-            submitter.submit,
             transcript_display,
-            on_speech=submitter.handle_speech,
             countdown=countdown,
         )
         them_transcriber = PulseMonitorTranscriber(

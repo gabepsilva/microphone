@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.domain import TurnSilence
-from voice_codex.listener import ConversationListener
+from voice_codex.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
+from voice_codex.listener import ConversationListener, TranscriptSubmitter
 
 
 class RecordingDisplay:
@@ -106,6 +106,51 @@ def test_a_flush_from_a_superseded_timer_is_ignored(listener) -> None:
 
     assert listener.submitted == []
     assert listener.pending == ["buffered"]
+
+
+def test_flushing_now_submits_the_buffer_without_waiting_for_silence(
+    listener,
+) -> None:
+    """The buffered turn goes out at once, rather than at the timer's deadline."""
+    listener.on_line_completed(SimpleNamespace(line=line("worth knowing")))
+    pending_timer = listener.timer
+
+    listener.flush_now()
+
+    assert listener.submitted == [("User Voice", "worth knowing")]
+    assert listener.recorded.finished == ["User Voice"]
+    assert listener.pending == []
+    assert listener.timer is None
+    assert pending_timer.finished.is_set()
+
+
+def test_an_immediate_flush_leaves_nothing_for_the_timer_to_resubmit(
+    listener,
+) -> None:
+    """The superseded timer must not send the same words a second time."""
+    listener.on_line_completed(SimpleNamespace(line=line("said once")))
+    stale_generation = listener.timer_generation
+
+    listener.flush_now()
+    listener._flush(stale_generation)
+
+    assert listener.submitted == [("User Voice", "said once")]
+
+
+def test_flushing_an_empty_buffer_now_submits_nothing(listener) -> None:
+    listener.flush_now()
+
+    assert listener.submitted == []
+    assert listener.recorded.finished == []
+
+
+def test_an_immediate_flush_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener.flush_now()
+
+    assert countdown.waiting == []
 
 
 def test_resumed_speech_cancels_the_pending_flush(listener) -> None:
@@ -334,3 +379,78 @@ def test_a_listener_without_a_countdown_still_completes_a_turn(listener) -> None
 
     assert listener.submitted == [("User Voice", "all done")]
     listener.close()
+
+
+class RecordingConversation:
+    """Record what reached Codex, in the order the request would carry it."""
+
+    def __init__(self):
+        self.ingested: list[tuple[str, str, bool]] = []
+
+    def ingest(self, speaker, text, respond):
+        self.ingested.append((speaker, text, respond))
+
+
+def two_channels(policy):
+    """Two live listeners sharing one submitter, as a session wires them."""
+    conversation = RecordingConversation()
+    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(conversation, gate, None)
+    display = RecordingDisplay()
+    listeners = {
+        speaker: ConversationListener(
+            confidence_threshold=0.6,
+            turn_silence=TurnSilence(3.0),
+            speaker=speaker,
+            submit=submitter.submit,
+            presentation=display,
+        )
+        for speaker in ("User Voice", "Them")
+    }
+    for listener in listeners.values():
+        submitter.add_listener(listener)
+    return conversation, listeners
+
+
+def test_answering_them_takes_the_user_context_transcribed_so_far() -> None:
+    """The reply goes out on Them's silence, carrying words User Voice has
+    already said but not yet finished waiting out."""
+    conversation, listeners = two_channels("them")
+    listeners["User Voice"].on_line_completed(
+        SimpleNamespace(line=line("check the latency"))
+    )
+    listeners["Them"].on_line_completed(SimpleNamespace(line=line("what do you think")))
+    listeners["Them"].timer.cancel()
+
+    listeners["Them"]._flush(listeners["Them"].timer_generation)
+
+    assert conversation.ingested == [
+        ("User Voice", "check the latency", False),
+        ("Them", "what do you think", True),
+    ]
+    assert listeners["User Voice"].timer is None
+    assert listeners["User Voice"].pending == []
+
+
+def test_answering_the_user_takes_the_them_context_transcribed_so_far() -> None:
+    conversation, listeners = two_channels("user")
+    listeners["Them"].on_line_completed(SimpleNamespace(line=line("the build is red")))
+    listeners["User Voice"].on_line_completed(SimpleNamespace(line=line("why is that")))
+    listeners["User Voice"].timer.cancel()
+
+    listeners["User Voice"]._flush(listeners["User Voice"].timer_generation)
+
+    assert conversation.ingested == [
+        ("Them", "the build is red", False),
+        ("User Voice", "why is that", True),
+    ]
+
+
+def test_a_silent_other_channel_adds_nothing_to_the_reply() -> None:
+    conversation, listeners = two_channels("them")
+    listeners["Them"].on_line_completed(SimpleNamespace(line=line("what do you think")))
+    listeners["Them"].timer.cancel()
+
+    listeners["Them"]._flush(listeners["Them"].timer_generation)
+
+    assert conversation.ingested == [("Them", "what do you think", True)]

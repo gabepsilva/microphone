@@ -106,6 +106,23 @@ class ConversationListener(TranscriptEventListener):
                 self.timer = None
         self._stop_counting()
 
+    def flush_now(self):
+        """Submit what is already transcribed without waiting out the silence.
+
+        The silence window exists to decide that a speaker has stopped talking.
+        When another speaker's turn is already being answered that question has
+        been overtaken: whatever this listener has buffered is context for the
+        reply being built now, and holding it until this speaker's own timer
+        fires would deliver it one request too late.
+        """
+        with self.lock:
+            self.timer_generation += 1
+            if self.timer is not None:
+                self.timer.cancel()
+                self.timer = None
+            generation = self.timer_generation
+        self._flush(generation)
+
     def on_line_started(self, event):  # noqa: ARG002 - Textual/Codex callback signature is fixed
         # Speech has resumed. Keep all completed lines buffered and wait for
         # this new line to finish before considering the turn complete.
@@ -164,6 +181,47 @@ class TranscriptSubmitter:
         self.gate = gate
         self.tts = tts
         self.stream = stream
+        self.listeners = []
+
+    def add_listener(self, listener):
+        """Register a channel whose buffer may be swept into a reply's context."""
+        self.listeners.append(listener)
+
+    def channel(
+        self, confidence_threshold, turn_silence, speaker, presentation, countdown=None
+    ):
+        """Build a listener for a speaker and register it in one step.
+
+        Registration is not left to the caller because a listener that submits
+        turns but was never registered still works — it just silently stops
+        contributing context, which is the kind of omission a session only
+        reveals as a reply that is missing something.
+        """
+        listener = ConversationListener(
+            confidence_threshold,
+            turn_silence,
+            speaker,
+            self.submit,
+            presentation,
+            on_speech=self.handle_speech,
+            countdown=countdown,
+        )
+        self.add_listener(listener)
+        return listener
+
+    def _sweep_context(self, replying_to):
+        """Flush the channels that only supply context, so this reply carries it.
+
+        Only the channels the policy does not answer are swept. Flushing one
+        the policy does answer would queue a second reply from speech its own
+        speaker has not finished, which is a turn nobody asked for rather than
+        context for this one.
+        """
+        for listener in self.listeners:
+            if listener.speaker != replying_to and not self.gate.should_respond(
+                listener.speaker
+            ):
+                listener.flush_now()
 
     def submit(self, speaker, text):
         if (
@@ -177,11 +235,12 @@ class TranscriptSubmitter:
                 flush=True,
             )
             return
-        self.conversation.ingest(
-            speaker,
-            text,
-            respond=self.gate.should_respond(speaker),
-        )
+        respond = self.gate.should_respond(speaker)
+        # Swept before this turn is ingested, so the context a speaker supplied
+        # earlier is ordered earlier in the request that carries both.
+        if respond:
+            self._sweep_context(speaker)
+        self.conversation.ingest(speaker, text, respond=respond)
 
     def handle_speech(self, partial):
         """Interrupt playback for real speech; report whether it was real."""
