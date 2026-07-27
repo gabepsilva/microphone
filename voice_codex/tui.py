@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -182,6 +183,20 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
     return bar
 
 
+def options_including(
+    options: list[tuple[str, str]], current: str
+) -> list[tuple[str, str]]:
+    """Guarantee the active value is selectable.
+
+    ``Select`` raises ``InvalidSelectValueError`` for a value it does not list,
+    so a host-configured model or effort that predates the discovered catalog
+    has to be offered as an option of its own.
+    """
+    if any(value == current for _, value in options):
+        return list(options)
+    return [(current, current), *options]
+
+
 def _kv(rows: list[tuple[RenderableType, RenderableType]]) -> Table:
     grid = Table.grid(expand=True)
     grid.add_column(justify="left", style="#6f757e", no_wrap=True)
@@ -229,36 +244,47 @@ class Sidebar(Vertical):
         super().__init__(**kwargs)
         self.state = state
         self.hooks = hooks
+        # What each picker currently lists, and the Select.Changed messages our
+        # own writes have posted and must therefore ignore on the way back.
+        self._listed: dict[str, list[tuple[str, str]]] = {}
+        self._echoes: dict[str, deque[str]] = {}
+
+    def _policy_options(self) -> list[tuple[str, str]]:
+        return [(POLICIES[key], key) for key in POLICIES]
+
+    def _effort_options(self) -> list[tuple[str, str]]:
+        return [(effort, effort) for effort in self.state.codex_efforts]
+
+    def _picker(
+        self, widget_id: str, options: list[tuple[str, str]], current: str
+    ) -> Select:
+        options = options_including(options, current)
+        self._listed[f"#{widget_id}"] = options
+        return Select(
+            options,
+            value=current,
+            allow_blank=False,
+            compact=True,
+            id=widget_id,
+        )
 
     def compose(self) -> ComposeResult:
         yield Static(id="panel-clock")
         with Vertical(id="policy-row"):
             yield Static("AI agent responds to:", id="policy-label")
-            yield Select(
-                [(POLICIES[key], key) for key in POLICIES],
-                value=self.state.policy,
-                allow_blank=False,
-                compact=True,
-                id="policy-select",
+            yield self._picker(
+                "policy-select", self._policy_options(), self.state.policy
             )
         yield Static(id="panel-top")
         with Vertical(id="model-row"):
             yield Static("AI model", id="model-label")
-            yield Select(
-                self.state.codex_models,
-                value=self.state.codex_model,
-                allow_blank=False,
-                compact=True,
-                id="model-select",
+            yield self._picker(
+                "model-select", self.state.codex_models, self.state.codex_model
             )
         with Vertical(id="reasoning-row"):
             yield Static("reasoning effort", id="reasoning-label")
-            yield Select(
-                [(effort, effort) for effort in self.state.codex_efforts],
-                value=self.state.codex_effort,
-                allow_blank=False,
-                compact=True,
-                id="reasoning-select",
+            yield self._picker(
+                "reasoning-select", self._effort_options(), self.state.codex_effort
             )
         yield Static(id="panel-codex")
         yield Static(id="panel-bottom")
@@ -271,18 +297,12 @@ class Sidebar(Vertical):
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
         self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
-        self._sync_select(
-            "#policy-select",
-            [(POLICIES[key], key) for key in POLICIES],
-            self.state.policy,
-        )
+        self._sync_select("#policy-select", self._policy_options(), self.state.policy)
         self._sync_select(
             "#model-select", self.state.codex_models, self.state.codex_model
         )
         self._sync_select(
-            "#reasoning-select",
-            [(effort, effort) for effort in self.state.codex_efforts],
-            self.state.codex_effort,
+            "#reasoning-select", self._effort_options(), self.state.codex_effort
         )
 
     def sync_audio(self) -> None:
@@ -294,17 +314,47 @@ class Sidebar(Vertical):
         options: list[tuple[str, str]],
         current: str,
     ) -> None:
-        """Push host-driven changes into a picker without re-firing its hook."""
+        """Push host-driven changes into a picker without re-firing its hook.
+
+        Every write below posts a ``Select.Changed`` that arrives back here
+        asynchronously, so each one is recorded as an echo to swallow. Without
+        that the pickers answer their own messages and drive each other in a
+        loop, queueing model and effort switches nobody asked for.
+        """
         select = self.query_one(selector, Select)
-        listed = [value for _, value in select._options if value is not Select.BLANK]
-        values = [value for _, value in options]
-        if listed != values:
+        options = options_including(options, current)
+        if self._listed.get(selector) != options:
+            self._listed[selector] = options
+            reset = options[0][1]  # set_options resets the selection to it
+            if select.value != reset:
+                self._echo(selector, reset)
             select.set_options(options)
-        if current in values and select.value != current:
+        # Land on `current` with exactly one Changed either way: a plain write
+        # when the value moved, a forced watcher run when only its label did —
+        # otherwise the closed picker keeps showing the label it replaced.
+        self._echo(selector, current)
+        if select.value == current:
+            select.mutate_reactive(Select.value)
+        else:
             select.value = current
 
+    def _echo(self, selector: str, value: str) -> None:
+        """Record a Select.Changed one of our own writes is about to post."""
+        self._echoes.setdefault(selector, deque()).append(value)
+
+    def _is_echo(self, event: Select.Changed) -> bool:
+        """Report whether this change is one :meth:`_sync_select` just made."""
+        echoes = self._echoes.get(f"#{event.select.id}")
+        if not echoes:
+            return False
+        if echoes.popleft() == event.value:
+            return True
+        # Our bookkeeping drifted — drop it and trust the widget.
+        echoes.clear()
+        return False
+
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.value is Select.BLANK:
+        if self._is_echo(event) or event.value is Select.NULL:
             return
         value = str(event.value)
         if event.select.id == "policy-select" and value != self.state.policy:
@@ -314,6 +364,7 @@ class Sidebar(Vertical):
         elif event.select.id == "model-select" and value != self.state.codex_model:
             previous_model = self.state.codex_model
             previous_effort = self.state.codex_effort
+            previous_efforts = self.state.codex_efforts
             if self.hooks.on_codex_model and self.hooks.on_codex_model(value) is False:
                 self.sync()
                 return
@@ -331,8 +382,10 @@ class Sidebar(Vertical):
                 and self.hooks.on_codex_effort
                 and self.hooks.on_codex_effort(self.state.codex_effort) is False
             ):
+                # The whole switch is off, effort list included.
                 self.state.codex_model = previous_model
                 self.state.codex_effort = previous_effort
+                self.state.codex_efforts = previous_efforts
             self.sync()
         elif event.select.id == "reasoning-select" and value != self.state.codex_effort:
             if (
@@ -342,6 +395,7 @@ class Sidebar(Vertical):
                 self.sync()
                 return
             self.state.codex_effort = value
+            self.sync()
 
     def sync_clock(self) -> None:
         """Cheap per-tick repaint — only the panel holding the session clock."""
@@ -1008,10 +1062,11 @@ class VoiceCodexTUI:
         efforts_by_model: dict[str, list[str]],
         default_effort_by_model: dict[str, str],
     ) -> None:
-        """Install asynchronously-discovered Codex model and effort choices."""
-        values = [value for _, value in models]
-        if self.state.codex_model not in values:
-            models = [(self.state.codex_model, self.state.codex_model), *models]
+        """Install asynchronously-discovered Codex model and effort choices.
+
+        A configured model the catalog omits stays selectable: the pickers keep
+        their active value on offer themselves.
+        """
         self.state.codex_models = models
         self.state.codex_efforts_by_model = efforts_by_model
         self.state.codex_default_effort_by_model = default_effort_by_model

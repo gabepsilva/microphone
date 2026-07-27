@@ -4,7 +4,9 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 
+from rich.console import Console
 from textual.widgets import Input, Select, Static
 
 
@@ -116,6 +118,135 @@ def test_codex_selectors_change_model_and_reasoning_effort(tui) -> None:
     assert state.codex_model == "gpt-5.6-sol"
     assert state.codex_effort == "high"
     assert received == [("model", "gpt-5.6-sol"), ("effort", "high")]
+
+
+def _catalog_state(tui, **overrides):
+    """A session that knows two models with disjoint reasoning-effort lists."""
+    return tui.SessionState(
+        **{
+            "codex_model": "luna",
+            "codex_effort": "high",
+            "codex_models": [("Luna", "luna"), ("Sol", "sol")],
+            "codex_efforts": ["low", "medium", "high"],
+            "codex_efforts_by_model": {
+                "luna": ["low", "medium", "high"],
+                "sol": ["minimal"],
+            },
+            "codex_default_effort_by_model": {"luna": "high", "sol": "minimal"},
+            **overrides,
+        }
+    )
+
+
+def _sidebar_snapshot(app, act=None) -> dict[str, str]:
+    """Mount ``app``, run ``act``, let the pickers settle, then read them back.
+
+    The picker writes bounce back through the message queue, so the snapshot is
+    taken after several frames and before ``run_test`` tears the DOM down.
+    """
+    snapshot: dict[str, str] = {}
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            if act is not None:
+                act()
+            for _ in range(4):
+                await pilot.pause()
+            console = Console(width=40)
+            with console.capture() as capture:
+                console.print(app.query_one("#panel-codex", Static).content)
+            snapshot["model"] = app.query_one("#model-select", Select).value
+            snapshot["effort"] = app.query_one("#reasoning-select", Select).value
+            snapshot["codex-panel"] = capture.get()
+
+    asyncio.run(exercise())
+    return snapshot
+
+
+def _set_picker(app, selector: str, value: str):
+    return lambda: setattr(app.query_one(selector, Select), "value", value)
+
+
+def test_pickers_accept_a_startup_model_and_effort_the_catalog_omits(tui) -> None:
+    app = tui.VoiceCodexApp(
+        tui.SessionState(codex_model="gpt-5.6-nebula", codex_effort="high"),
+        tui.TuiHooks(),
+    )
+
+    snapshot = _sidebar_snapshot(app)
+
+    assert snapshot["model"] == "gpt-5.6-nebula"
+    assert snapshot["effort"] == "high"
+
+
+def test_installing_the_codex_catalog_does_not_fire_the_pickers_hooks(tui) -> None:
+    received: list[tuple[str, str]] = []
+    facade = tui.VoiceCodexTUI(
+        tui.SessionState(codex_model="luna", codex_effort="high"),
+        on_codex_model=lambda model: received.append(("model", model)),
+        on_codex_effort=lambda effort: received.append(("effort", effort)),
+    )
+
+    def install() -> None:
+        # Stand in for run(), which normally marks the app thread as ready.
+        facade._app_thread = threading.get_ident()
+        facade._ready.set()
+        facade.set_codex_catalog(
+            [("Sol", "sol"), ("Luna", "luna")],
+            {"luna": ["low", "high"], "sol": ["minimal"]},
+            {"luna": "high", "sol": "minimal"},
+        )
+
+    snapshot = _sidebar_snapshot(facade.app, install)
+
+    assert received == []
+    assert (facade.state.codex_model, facade.state.codex_effort) == ("luna", "high")
+    assert (snapshot["model"], snapshot["effort"]) == ("luna", "high")
+
+
+def test_changing_the_model_only_reports_the_effort_it_settles_on(tui) -> None:
+    received: list[tuple[str, str]] = []
+    state = _catalog_state(tui)
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(
+            on_codex_model=lambda model: received.append(("model", model)),
+            on_codex_effort=lambda effort: received.append(("effort", effort)),
+        ),
+    )
+
+    snapshot = _sidebar_snapshot(app, _set_picker(app, "#model-select", "sol"))
+
+    assert received == [("model", "sol"), ("effort", "minimal")]
+    assert (state.codex_model, state.codex_effort) == ("sol", "minimal")
+    assert (snapshot["model"], snapshot["effort"]) == ("sol", "minimal")
+
+
+def test_a_refused_effort_switch_restores_the_whole_model_choice(tui) -> None:
+    state = _catalog_state(tui)
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(
+            on_codex_model=lambda model: True,
+            on_codex_effort=lambda effort: False,
+        ),
+    )
+
+    snapshot = _sidebar_snapshot(app, _set_picker(app, "#model-select", "sol"))
+
+    assert (state.codex_model, state.codex_effort) == ("luna", "high")
+    assert state.codex_efforts == ["low", "medium", "high"]
+    assert (snapshot["model"], snapshot["effort"]) == ("luna", "high")
+
+
+def test_choosing_an_effort_repaints_the_codex_panel(tui) -> None:
+    state = _catalog_state(tui)
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    snapshot = _sidebar_snapshot(app, _set_picker(app, "#reasoning-select", "low"))
+
+    assert state.codex_effort == "low"
+    assert "low · standard" in snapshot["codex-panel"]
 
 
 def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
