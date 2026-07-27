@@ -12,9 +12,23 @@ from rich.console import Console
 from textual.widgets import Checkbox, Input, Select, Static
 
 
-def test_meter_clamps_audio_levels(tui) -> None:
-    assert tui.meter(-1, width=4).plain == "□□□□"
-    assert tui.meter(2, width=4).plain == "■■■■"
+def _rendered(renderable, width: int = 40) -> str:
+    """Render a Rich renderable the way the sidebar would draw it."""
+    console = Console(width=width)
+    with console.capture() as capture:
+        console.print(renderable)
+    return capture.get()
+
+
+def test_the_sound_dot_shows_whether_a_channel_hears_anything(tui) -> None:
+    assert tui.sound_dot(True).plain == tui.SOUND_ON
+    assert tui.sound_dot(False).plain == tui.SOUND_OFF
+
+
+def test_a_quiet_channel_dims_its_dot_instead_of_colouring_it(tui) -> None:
+    """The colour is the signal, so silence must not wear the live one."""
+    assert str(tui.sound_dot(True, "#6ba7ff").style) == "#6ba7ff"
+    assert str(tui.sound_dot(False, "#6ba7ff").style) != "#6ba7ff"
 
 
 def test_quiet_response_policy_is_labeled_stay_silent(tui) -> None:
@@ -25,11 +39,11 @@ def test_facade_updates_state_before_the_app_starts(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     facade.update(tui.USER_VOICE, "testing")
-    facade.set_audio("mic", device="USB mic", level=3)
+    facade.set_audio("mic", device="USB mic", active=True)
 
     assert facade.state.partial_text == "testing"
     assert facade.state.mic.device == "USB mic"
-    assert facade.state.mic.level == 1.0
+    assert facade.state.mic.active is True
 
 
 def test_facade_implements_runtime_display_events_before_the_app_starts(tui) -> None:
@@ -1133,16 +1147,18 @@ def test_the_mic_box_follows_the_mute_key(tui) -> None:
 
 
 def test_a_muted_channel_reads_as_silent(tui) -> None:
+    """Nothing a muted channel hears is used, so its dot stays dark."""
     state = tui.SessionState()
-    state.mic.level = 1.0
+    state.mic.active = True
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
-    hot = sidebar._channel(state.mic, "#6ba7ff")[1].plain
+    hot = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
     state.mic.muted = True
-    silenced = sidebar._channel(state.mic, "#6ba7ff")[1].plain
+    silenced = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
 
-    assert hot == "■" * 20
-    assert silenced == "□" * 20
+    assert tui.SOUND_ON in hot
+    assert tui.SOUND_ON not in silenced
+    assert tui.SOUND_OFF in silenced
 
 
 def test_the_channel_heading_leaves_the_mute_state_to_the_box(tui) -> None:
@@ -1152,11 +1168,9 @@ def test_the_channel_heading_leaves_the_mute_state_to_the_box(tui) -> None:
     state.mic.muted = True
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
-    console = Console(width=40)
-    with console.capture() as capture:
-        console.print(sidebar._channel(state.mic, "#6ba7ff")[0])
+    heading = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
 
-    assert capture.get().split() == ["mic", "Yeti"]
+    assert heading.split() == [tui.SOUND_OFF, "mic", "Yeti"]
 
 
 def test_the_mute_box_reads_muted_once_the_channel_is(tui) -> None:

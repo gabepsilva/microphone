@@ -7,7 +7,10 @@ microphone, a PipeWire server, or a Codex account.
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -725,3 +728,38 @@ def test_an_empty_config_resolves_every_default_from_the_code(tmp_path) -> None:
     assert args.codex_reasoning == "low"
     assert args.codex_fast is True
     assert args.tts_provider == "piper"
+
+
+def test_the_codex_sdk_is_not_imported_just_to_start_the_interface() -> None:
+    """The SDK costs about half a second to import and draws nothing.
+
+    Importing it eagerly left the session blank for that half second before
+    the startup questions appeared. Run in a fresh interpreter because the
+    suite has almost certainly imported it already.
+    """
+    probe = (
+        "import sys;"
+        "import voice_codex.cli;"
+        "import voice_codex.tui;"
+        "print('openai_codex' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+    assert result.stdout.strip() == "False"
+
+
+def test_building_a_conversation_loads_the_sdk_it_dispatches_on() -> None:
+    """Deferring the import must not leave the dispatch names unbound."""
+    from voice_codex import codex as codex_module
+
+    codex_module.load_codex_sdk()
+
+    assert codex_module._sdk_loaded is True
+    assert isinstance(codex_module.AgentMessageDeltaNotification, type)
+    assert isinstance(codex_module.ItemStartedNotification, type)

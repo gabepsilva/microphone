@@ -667,3 +667,39 @@ def test_speech_can_start_again_after_being_silenced() -> None:
     activity.queued()
 
     assert activity.speaking is True
+
+
+def test_unanswered_context_stops_growing_at_its_bound() -> None:
+    """Nothing replies under the "stay silent" policy, so nothing clears it."""
+    router = TranscriptRouter(max_pending_context=3)
+
+    for index in range(20):
+        assert (
+            router.ingest("Them", f"line {index}", "2026-07-26T12:00:00-04:00", False)
+            is None
+        )
+
+    assert len(router.pending_context) == 3
+
+
+def test_the_bound_keeps_the_most_recent_turns() -> None:
+    """A reply is about what was just said, not about the start of the day."""
+    router = TranscriptRouter(max_pending_context=2)
+
+    for index in range(5):
+        router.ingest("Them", f"line {index}", "2026-07-26T12:00:00-04:00", False)
+    request = router.ingest("User Voice", "Yes", "2026-07-26T12:00:03-04:00", True)
+
+    assert request is not None
+    assert [entry.text for entry in request.entries] == ["line 3", "line 4", "Yes"]
+
+
+def test_context_within_the_bound_is_carried_whole() -> None:
+    router = TranscriptRouter(max_pending_context=10)
+
+    router.ingest("Them", "first", "2026-07-26T12:00:00-04:00", False)
+    router.ingest("Them", "second", "2026-07-26T12:00:01-04:00", False)
+    request = router.ingest("User Voice", "third", "2026-07-26T12:00:02-04:00", True)
+
+    assert request is not None
+    assert [entry.text for entry in request.entries] == ["first", "second", "third"]

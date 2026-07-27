@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from openai_codex import Sandbox
 
-from voice_codex.capture import AudioLevelReporter
+from voice_codex.capture import SoundActivityReporter
 from voice_codex.catalog import CodexModelOption, probe_codex_models
 from voice_codex.choosers import VirtualMeetingOutput, audio_outputs
 from voice_codex.cli import main
@@ -83,18 +83,18 @@ def test_virtual_meeting_output_unloads_its_loopback_and_sink(monkeypatch) -> No
     ]
 
 
-def test_audio_level_reporter_publishes_normalized_rms_levels() -> None:
-    levels: list[tuple[str, float]] = []
+def test_sound_activity_reporter_names_the_channel_it_speaks_for() -> None:
+    reports: list[tuple[str, bool]] = []
     display = SimpleNamespace(
-        set_audio=lambda channel, level: levels.append((channel, level))
+        set_audio=lambda channel, active: reports.append((channel, active))
     )
-    reporter = AudioLevelReporter(display, "mic", interval=0)
+    clock = iter([0.0, 1.0]).__next__
+    reporter = SoundActivityReporter(display, "mic", release=0.35, clock=clock)
 
     reporter.update(np.array([-0.1, 0.1], dtype=np.float32))
     reporter.update(np.array([], dtype=np.float32))
 
-    assert levels[0] == ("mic", pytest.approx(0.5))
-    assert levels[1] == ("mic", 0.0)
+    assert reports == [("mic", True), ("mic", False)]
 
 
 def test_codex_context_entries_include_timestamps() -> None:

@@ -186,7 +186,7 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
 
     async def body(pilot):
         facade.set_audio("mic", device="Blue Yeti")
-        facade.set_audio("mic", level=0.5)
+        facade.set_audio("mic", active=True)
         facade.set_audio("nonexistent", device="ignored")
         facade.set_output("Speakers")
         facade.set_codex(model="gpt-5.6-nova", thread="thread-9")
@@ -198,7 +198,7 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
     drive(facade, body)
 
     assert facade.state.mic.device == "Blue Yeti"
-    assert facade.state.mic.level == 0.5
+    assert facade.state.mic.active is True
     assert facade.state.out_device == "Speakers"
     assert facade.state.codex_model == "gpt-5.6-nova"
     assert facade.state.codex_thread == "thread-9"
@@ -497,3 +497,229 @@ def test_the_facade_implements_every_presentation_call(tui) -> None:
     public = {name for name in vars(tui.VoiceCodexTUI) if not name.startswith("_")}
 
     assert protocol_methods() - public == set()
+
+
+# --------------------------------------------------------------------------
+# Keeping the interface fast as the transcript grows
+#
+# Textual lays out every widget in the application on each layout pass, so an
+# unbounded transcript makes every repaint anywhere in the interface slower —
+# the sidebar included. These hold the two properties that prevent it.
+# --------------------------------------------------------------------------
+
+
+def mounted_rows(facade):
+    return list(facade.app.query_one("#transcript").query(EntryRow))
+
+
+def test_the_transcript_stops_mounting_rows_once_it_is_full(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    facade.app.MAX_MOUNTED_ROWS = 5
+    counted: list[int] = []
+
+    async def body(pilot):
+        for index in range(12):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        counted.append(len(mounted_rows(facade)))
+
+    drive(facade, body)
+
+    assert counted == [5]
+
+
+def test_every_entry_is_kept_however_few_rows_stay_mounted(tui) -> None:
+    """Scrollback is what the cap spends. The record is not."""
+    facade = tui.VoiceCodexTUI()
+    facade.app.MAX_MOUNTED_ROWS = 3
+    saved: list[list] = []
+    facade.hooks.on_save = saved.append
+
+    async def body(pilot):
+        for index in range(10):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        facade.app.action_save()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert entry_texts(facade)[:10] == [f"line {index}" for index in range(10)]
+    assert [entry.text for entry in saved[0]] == [
+        f"line {index}" for index in range(10)
+    ]
+
+
+def test_the_streaming_row_is_never_unmounted_under_it(tui) -> None:
+    """A row still being written to must survive the cap however old it is."""
+    facade = tui.VoiceCodexTUI()
+    facade.app.MAX_MOUNTED_ROWS = 2
+
+    async def body(pilot):
+        facade.codex_message_open(tui.USER_VOICE)
+        streaming = facade.app._streaming
+        for index in range(8):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        assert streaming in mounted_rows(facade)
+        facade.codex_delta("answer")
+        await pilot.pause()
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    codex_entries = [
+        entry.text for entry in facade.app.entries if entry.source == tui.CODEX
+    ]
+    assert codex_entries == ["answer"]
+
+
+def test_the_running_command_row_is_never_unmounted_under_it(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    facade.app.MAX_MOUNTED_ROWS = 2
+
+    async def body(pilot):
+        facade.command_started("ls -la")
+        command_row = facade.app._command_row
+        for index in range(8):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        assert command_row in mounted_rows(facade)
+        facade.command_output("total 0")
+        facade.command_completed(0)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    command = next(entry for entry in facade.app.entries if entry.kind == "command")
+    assert command.output == ["total 0"]
+    assert command.exit_code == 0
+
+
+# --------------------------------------------------------------------------
+# Coalescing the stream
+# --------------------------------------------------------------------------
+
+
+def test_streamed_deltas_do_not_repaint_once_per_token(tui) -> None:
+    """Codex streams faster than a terminal can usefully redraw."""
+    facade = tui.VoiceCodexTUI()
+    repaints: list[int] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.USER_VOICE)
+        row = facade.app._streaming
+        original = row.sync
+        row.sync = lambda: (repaints.append(1), original())[1]
+        for word in ("one ", "two ", "three ", "four "):
+            facade.codex_delta(word)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(repaints) < 4
+
+
+def test_the_finished_answer_is_drawn_in_full_however_it_was_coalesced(tui) -> None:
+    """Coalescing may skip repaints, but never the last one."""
+    facade = tui.VoiceCodexTUI()
+    drawn: list[str] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.USER_VOICE)
+        for word in ("one ", "two ", "three"):
+            facade.codex_delta(word)
+        facade.end_codex()
+        await pilot.pause()
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.CODEX)
+        drawn.append(next(iter(row.query(".entry-body"))).content.plain)
+
+    drive(facade, body)
+
+    assert entry_texts(facade) == ["one two three"]
+    assert "one two three" in drawn[0]
+    assert facade.app._dirty == []
+
+
+def test_an_interrupted_answer_shows_the_text_that_arrived_before_the_cut(tui) -> None:
+    """An interrupt must not strand text the flush timer had not drawn yet."""
+    facade = tui.VoiceCodexTUI()
+    drawn: list[str] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_delta("half a th")
+        facade.app.action_interrupt()
+        await pilot.pause()
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.CODEX)
+        drawn.append(next(iter(row.query(".entry-body"))).content.plain)
+
+    drive(facade, body)
+
+    assert "half a th" in drawn[0]
+    assert "cut off" in drawn[0]
+    assert facade.app.entries[0].interrupted is True
+
+
+def test_an_idle_session_flushes_nothing(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    facade.app.flush_stream()
+
+    assert facade.app._dirty == []
+
+
+# --------------------------------------------------------------------------
+# Repainting only what changed
+# --------------------------------------------------------------------------
+
+
+def test_token_usage_repaints_the_counters_and_not_the_pickers(tui) -> None:
+    """It arrives all through a streamed answer, so it must stay cheap."""
+    facade = tui.VoiceCodexTUI()
+    calls: list[str] = []
+
+    async def body(pilot):
+        sidebar = facade.app.query_one("#sidebar", tui.Sidebar)
+        sidebar.sync = lambda: calls.append("whole sidebar")
+        sidebar.sync_session = lambda: calls.append("session panel")
+        facade.token_usage(1234)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert calls == ["session panel"]
+    assert facade.state.tokens == 1234
+
+
+def test_a_sound_report_never_waits_on_the_application_thread(tui) -> None:
+    """These come from an audio callback; waiting there stalls capture."""
+    facade = tui.VoiceCodexTUI()
+    waited: list[str] = []
+
+    async def body(pilot):
+        facade._app_thread = -1  # pretend we are a capture thread
+        facade.app.call_from_thread = lambda *a, **k: waited.append("blocked")
+        facade.set_audio("mic", active=True)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert waited == []
+    assert facade.state.mic.active is True
+
+
+def test_naming_a_capture_device_still_refreshes_the_whole_sidebar(tui) -> None:
+    """A device name is set once, from the main thread, and moves the layout."""
+    facade = tui.VoiceCodexTUI()
+    calls: list[str] = []
+
+    async def body(pilot):
+        sidebar = facade.app.query_one("#sidebar", tui.Sidebar)
+        sidebar.sync = lambda: calls.append("whole sidebar")
+        facade.set_audio("mic", device="Blue Yeti")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert calls == ["whole sidebar"]

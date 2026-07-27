@@ -414,17 +414,28 @@ class CodexRequest:
     entries: tuple[TranscriptEntry, ...]
 
 
+# How many unanswered turns are carried as context. Reaching this at all
+# means nothing is being replied to — the "stay silent" policy, or a long
+# stretch of one-sided talk — and under it the context would otherwise grow
+# for the whole session. That costs memory, and it costs far more on the
+# reply that finally comes: the entire session would be sent as one request.
+# The most recent turns are the ones kept, being the ones a reply is about.
+MAX_PENDING_CONTEXT = 200
+
+
 @dataclass
 class TranscriptRouter:
     """Accumulate chronological context and create requests at reply boundaries."""
 
     pending_context: list[TranscriptEntry] = field(default_factory=list)
+    max_pending_context: int = MAX_PENDING_CONTEXT
 
     def ingest(
         self, speaker: str, text: str, timestamp: str, respond: bool
     ) -> CodexRequest | None:
         self.pending_context.append(TranscriptEntry(speaker, text, timestamp))
         if not respond:
+            del self.pending_context[: -self.max_pending_context]
             return None
         request = CodexRequest(speaker, tuple(self.pending_context))
         self.pending_context.clear()

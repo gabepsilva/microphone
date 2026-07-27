@@ -99,7 +99,10 @@ class Entry:
 class Channel:
     label: str
     device: str = "—"
-    level: float = 0.0
+    # Whether the channel is hearing anything right now. A bare presence flag
+    # rather than a level: it only changes when speech starts or stops, and
+    # the interface repaints on change, so a quiet channel costs nothing.
+    active: bool = False
     muted: bool = False
 
 
@@ -195,12 +198,13 @@ def render_entry_body(entry: Entry) -> Text:
     return body
 
 
-def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
-    filled = max(0, min(width, round(level * width)))
-    bar = Text()
-    bar.append("■" * filled, style=style)
-    bar.append("□" * (width - filled), style="#2f343b")
-    return bar
+SOUND_ON = "●"
+SOUND_OFF = "○"
+
+
+def sound_dot(active: bool, style: str = "#6cc06c") -> Text:
+    """Show whether a channel is hearing anything, in its own colour."""
+    return Text(SOUND_ON if active else SOUND_OFF, style=style if active else "#2f343b")
 
 
 IDLE = "idle"
@@ -431,11 +435,19 @@ class Sidebar(Vertical):
         self._sync_checkbox("#them-mute", self.state.them.muted)
 
     def sync_audio(self) -> None:
+        """Repaint both channel lines without re-laying-out the interface.
+
+        Each line is exactly one row high whatever it says, so Textual does
+        not need to arrange anything to draw it. That matters because this is
+        the panel the capture threads drive: with ``layout=True`` every
+        report cost a pass over every widget in the application, transcript
+        included, and the transcript grows all session.
+        """
         self.query_one("#panel-mic", Static).update(
-            Group(*self._channel(self.state.mic, "#6ba7ff"))
+            Group(*self._channel(self.state.mic, "#6ba7ff")), layout=False
         )
         self.query_one("#panel-them", Static).update(
-            Group(*self._channel(self.state.them, "#d7b562"))
+            Group(*self._channel(self.state.them, "#d7b562")), layout=False
         )
 
     def _sync_checkbox(self, selector: str, muted: bool) -> None:
@@ -459,6 +471,18 @@ class Sidebar(Vertical):
     def sync_countdown(self) -> None:
         """Cheap per-frame repaint — only the one line the countdown occupies."""
         self.query_one("#panel-countdown", Static).update(self._countdown())
+
+    def sync_session(self) -> None:
+        """Cheap repaint — only the session counters.
+
+        Token usage arrives repeatedly while Codex streams. Sending it
+        through the full :meth:`sync` would re-offer the options of all four
+        pickers mid-answer, which is far more work than redrawing five
+        numbers and risks disturbing a picker the user has open.
+        """
+        self.query_one("#panel-session", Static).update(
+            Group(*self._session()), layout=False
+        )
 
     def _sync_select(
         self,
@@ -626,16 +650,22 @@ class Sidebar(Vertical):
         return [Text(), Text("AUDIO", style="#5a6068")]
 
     def _channel(self, channel: Channel, style: str) -> list[RenderableType]:
-        """Name one capture channel, its device, and how loud it currently is."""
+        """Name one capture channel, its device, and whether it hears anything.
+
+        The dot sits on the channel's own line rather than under it, so the
+        panel keeps a fixed height and can repaint without the interface
+        laying itself out again.
+        """
         head = Table.grid(expand=True)
         head.add_column(justify="left", no_wrap=True)
         head.add_column(justify="right", ratio=1, overflow="ellipsis")
-        # The mute state is not restated here. The box below says it.
-        head.add_row(
-            Text(channel.label, style=style), Text(channel.device, style="#9aa3ad")
-        )
         # A muted channel reads as silent because nothing it hears is used.
-        return [head, meter(0.0 if channel.muted else channel.level, style=style)]
+        name = sound_dot(channel.active and not channel.muted, style)
+        name.append(" ")
+        name.append(channel.label, style=style)
+        # The mute state is not restated here. The box below says it.
+        head.add_row(name, Text(channel.device, style="#9aa3ad"))
+        return [head]
 
     def _audio_foot(self) -> list[RenderableType]:
         return [
@@ -899,6 +929,20 @@ class VoiceCodexApp(App):
     # same picture; anything slower is visibly steppy.
     COUNTDOWN_INTERVAL_SECONDS = 0.1
 
+    # How many transcript rows stay mounted as widgets. Textual measures every
+    # widget in the application on each layout pass, and a mounted row costs
+    # around 128KB, so an unbounded transcript makes every repaint anywhere in
+    # the interface steadily slower and the session steadily larger. Only the
+    # widgets are capped: ``self.entries`` keeps every entry, and that is what
+    # the save hook exports.
+    MAX_MOUNTED_ROWS = 300
+
+    # Codex streams faster than a terminal can usefully redraw. Deltas land on
+    # the entry immediately and the row is repainted on this interval instead
+    # of once per token, which bounds the repaints a long answer costs without
+    # changing what it finally says.
+    STREAM_FLUSH_INTERVAL_SECONDS = 0.05
+
     def __init__(
         self, state: SessionState, hooks: TuiHooks, countdown=None, speech=None
     ) -> None:
@@ -912,6 +956,8 @@ class VoiceCodexApp(App):
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
+        # Rows whose entry has changed since the last repaint, oldest first.
+        self._dirty: list[EntryRow] = []
 
     # -- layout ------------------------------------------------------------
 
@@ -937,6 +983,7 @@ class VoiceCodexApp(App):
         self.set_interval(0.25, self._tick)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
+        self.set_interval(self.STREAM_FLUSH_INTERVAL_SECONDS, self.flush_stream)
         self.query_one("#input", Input).focus()
 
     # -- chrome ------------------------------------------------------------
@@ -1022,7 +1069,14 @@ class VoiceCodexApp(App):
         self.query_one("#sidebar", Sidebar).sync()
 
     def refresh_audio(self) -> None:
-        self.query_one("#sidebar", Sidebar).sync_audio()
+        # Posted from a capture thread, which can arrive after the sidebar
+        # has gone — during shutdown, or before it has mounted.
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_audio()
+
+    def refresh_session(self) -> None:
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_session()
 
     # -- transcript --------------------------------------------------------
 
@@ -1035,8 +1089,49 @@ class VoiceCodexApp(App):
         row = EntryRow(entry)
         transcript = self.query_one("#transcript", VerticalScroll)
         transcript.mount(row)
+        self._trim_rows(transcript)
         transcript.scroll_end(animate=False)
         return row
+
+    def _trim_rows(self, transcript: VerticalScroll) -> None:
+        """Unmount the oldest rows once the transcript outgrows its window.
+
+        Scrollback is what this spends: entries past the window can no longer
+        be scrolled back to on screen. Nothing is lost from the record — the
+        entries themselves are all still held, and saving still writes every
+        one of them.
+
+        A row that is still being written to is never unmounted, however old
+        it is. The open Codex message and the running command are re-rendered
+        in place as their output arrives, and removing either would leave the
+        stream writing to a row nobody can see.
+        """
+        rows = list(transcript.query(EntryRow))
+        for row in rows[: len(rows) - self.MAX_MOUNTED_ROWS]:
+            if row is self._streaming or row is self._command_row:
+                continue
+            if row in self._dirty:
+                self._dirty.remove(row)
+            row.remove()
+
+    def mark_dirty(self, row: EntryRow) -> None:
+        """Note that a row needs repainting at the next flush."""
+        if row not in self._dirty:
+            self._dirty.append(row)
+
+    def flush_stream(self) -> None:
+        """Repaint every row that has changed since the last flush.
+
+        An idle session does no work here, which is why this can run on a
+        timer at all.
+        """
+        if not self._dirty:
+            return
+        for row in self._dirty:
+            row.sync()
+        self._dirty.clear()
+        with suppress(NoMatches):
+            self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
     def _selected_transcript_entries(self) -> list[Entry]:
         selections = self.screen.selections
@@ -1176,8 +1271,11 @@ class VoiceCodexApp(App):
         if self._streaming is not None:
             self._streaming.entry.streaming = False
             self._streaming.entry.interrupted = True
-            self._streaming.sync()
+            self.mark_dirty(self._streaming)
             self._streaming = None
+        # Draw the cut-off mark, and whatever text arrived just before it,
+        # without waiting for the next flush.
+        self.flush_stream()
         self.state.codex_state = "idle"
         self.state.tts_queue.clear()
         self.refresh_sidebar()
@@ -1242,6 +1340,20 @@ class VoiceCodexTUI:
         else:
             with suppress(RuntimeError):
                 self.app.call_from_thread(fn, *args)
+
+    def _post(self, fn, *args) -> None:
+        """Schedule a repaint without waiting for it to happen.
+
+        :meth:`_call` waits on the application thread. That is fine for the
+        occasional change, but the capture threads call in from inside an
+        audio callback, where waiting on a repaint stalls the very capture
+        the interface is drawing. ``call_later`` hands the work over and
+        returns; it is safe from any thread and never blocks.
+        """
+        if not self._ready.is_set():
+            return
+        with suppress(RuntimeError):
+            self.app.call_later(fn, *args)
 
     # -- transcript --------------------------------------------------------
 
@@ -1310,8 +1422,7 @@ class VoiceCodexTUI:
         if row is None:
             raise RuntimeError("Could not create a streaming Codex transcript row.")
         row.entry.text += delta
-        row.sync()
-        self.app.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+        self.app.mark_dirty(row)
 
     def end_codex(self) -> None:
         self.state.codex_state = "idle"
@@ -1324,8 +1435,11 @@ class VoiceCodexTUI:
         row = self.app._streaming
         if row is not None:
             row.entry.streaming = False
-            row.sync()
+            self.app.mark_dirty(row)
             self.app._streaming = None
+        # The turn is over, so whatever the flush timer has not drawn yet is
+        # drawn now. Nothing else will arrive to trigger it.
+        self.app.flush_stream()
         self.app.refresh_sidebar()
 
     def command_started(self, command: str) -> None:
@@ -1345,8 +1459,7 @@ class VoiceCodexTUI:
         if row is None:
             return
         row.entry.output.append(line)
-        row.sync()
-        self.app.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+        self.app.mark_dirty(row)
 
     def command_completed(self, exit_code: int | None) -> None:
         # A command the SDK reports without an exit code is still finished;
@@ -1360,7 +1473,13 @@ class VoiceCodexTUI:
         self.note(f"tool status: {status}")
 
     def token_usage(self, total_tokens: int) -> None:
-        self.set_session(tokens=total_tokens)
+        """Record the running token count, repainting only where it shows.
+
+        This arrives repeatedly while Codex streams, so it deliberately does
+        not go through :meth:`set_session` and its full sidebar refresh.
+        """
+        self.state.tokens = total_tokens
+        self._call(self.app.refresh_session)
 
     def error(self, message: str) -> None:
         self.note(message)
@@ -1370,8 +1489,9 @@ class VoiceCodexTUI:
         if row is None:
             return
         row.entry.exit_code = code
-        row.sync()
+        self.app.mark_dirty(row)
         self.app._command_row = None
+        self.app.flush_stream()
         self.app.refresh_sidebar()
 
     # -- panels ------------------------------------------------------------
@@ -1380,17 +1500,23 @@ class VoiceCodexTUI:
         self,
         channel: str,
         device: str | None = None,
-        level: float | None = None,
+        active: bool | None = None,
     ) -> None:
+        """Name a capture channel's device, or say whether it hears anything.
+
+        The sound reports come from an audio callback thread, so they are
+        posted rather than waited on, and they repaint only the two channel
+        lines instead of the whole sidebar.
+        """
         target = {"mic": self.state.mic, "them": self.state.them}.get(channel)
         if target is None:
             return
         if device is not None:
             target.device = device
-        if level is not None:
-            target.level = max(0.0, min(1.0, level))
-        if device is None and level is not None:
-            self._call(self.app.refresh_audio)
+        if active is not None:
+            target.active = active
+        if device is None and active is not None:
+            self._post(self.app.refresh_audio)
         else:
             self._call(self.app.refresh_sidebar)
 
