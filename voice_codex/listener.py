@@ -89,7 +89,7 @@ class ConversationListener(TranscriptEventListener):
             self.timer.cancel()
         self.timer_generation += 1
         self.timer = threading.Timer(
-            self.turn_silence,
+            self.turn_silence.seconds,
             self._flush,
             args=(self.timer_generation,),
         )

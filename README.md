@@ -57,6 +57,15 @@ importable `voice_codex` package separates pure configuration and transcript
 domain logic from presentation and runtime integrations, so hardware and SDK
 boundaries can be tested with deterministic fakes.
 
+## Turn silence
+
+The pause that ends a spoken turn is the largest delay in the loop, and the
+sidebar both shows and edits it. A draining bar counts the silence down while
+a turn waits; the field above it takes a new window at any point, applied to
+the next turn rather than the one already running. Values outside 0.25-30
+seconds are refused in place rather than clamped, and Escape restores the
+window in force.
+
 ## Quality gate
 
 Run the complete local gate before committing:

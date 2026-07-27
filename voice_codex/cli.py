@@ -35,7 +35,7 @@ from .capture import (
 )
 from .codex import CodexConversation, CodexSettings
 from .config import save_startup_config
-from .domain import SpeakerGate, TurnSilenceClock
+from .domain import SpeakerGate, TurnSilence, TurnSilenceClock
 from .listener import ConversationListener, TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -98,11 +98,13 @@ def main():
 
     from .tui import VoiceCodexTUI
 
-    countdown = TurnSilenceClock(args.turn_silence)
+    turn_silence = TurnSilence(args.turn_silence)
+    countdown = TurnSilenceClock(turn_silence)
     tui = VoiceCodexTUI(
         build_session_state(args, selection),
         countdown=countdown,
         on_policy=gate.set_policy,
+        on_turn_silence=turn_silence.set,
     )
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
@@ -124,7 +126,7 @@ def main():
 
     user_listener = ConversationListener(
         args.confidence,
-        args.turn_silence,
+        turn_silence,
         "User Voice",
         submitter.submit,
         transcript_display,
@@ -153,7 +155,7 @@ def main():
     if them_output is not None:
         them_listener = ConversationListener(
             args.confidence,
-            args.turn_silence,
+            turn_silence,
             "Them",
             submitter.submit,
             transcript_display,

@@ -238,6 +238,61 @@ class EchoMemory:
         return any(EchoMatcher.matches(transcript, spoken) for spoken in recent)
 
 
+class TurnSilence:
+    """The quiet a finished turn waits out before it is sent.
+
+    One object rather than a number copied into each listener, the countdown,
+    and the sidebar: the value is editable while the session runs, and four
+    copies of it would be four chances to change three of them.
+
+    A change lands on the next turn. Re-arming a timer that is already running
+    would either cut short a wait the speaker is relying on or extend one they
+    have already stopped talking through, and neither is what typing a new
+    number asks for.
+    """
+
+    MINIMUM = 0.25
+    MAXIMUM = 30.0
+
+    def __init__(self, seconds: float) -> None:
+        self._lock = threading.Lock()
+        self._seconds = self.clamp(seconds)
+
+    @classmethod
+    def clamp(cls, seconds: float) -> float:
+        return max(cls.MINIMUM, min(cls.MAXIMUM, seconds))
+
+    @property
+    def seconds(self) -> float:
+        with self._lock:
+            return self._seconds
+
+    def set(self, seconds: float) -> float:
+        """Adopt a new window, and report the value actually in force."""
+        applied = self.clamp(seconds)
+        with self._lock:
+            self._seconds = applied
+        return applied
+
+
+def parse_turn_silence(text: str) -> float | None:
+    """Read a typed turn-silence value, or None when it is not one.
+
+    The trailing unit is accepted because the field displays one, so the
+    obvious thing to type back is what was already shown. Out-of-range values
+    are refused rather than clamped: silently turning a typed 60 into 30 would
+    look like the field ignored the keystrokes.
+    """
+    try:
+        seconds = float(text.strip().removesuffix("s").strip())
+    except ValueError:
+        return None
+    # Rejects NaN too, which compares false against everything.
+    if not TurnSilence.MINIMUM <= seconds <= TurnSilence.MAXIMUM:
+        return None
+    return seconds
+
+
 class TurnSilenceClock:
     """Track how long each speaker's turn has left before it is submitted.
 
@@ -253,7 +308,7 @@ class TurnSilenceClock:
     would be a worse failure than one that simply disappears.
     """
 
-    def __init__(self, window: float, clock=time.monotonic) -> None:
+    def __init__(self, window: TurnSilence, clock=time.monotonic) -> None:
         self.window = window
         self._clock = clock
         self._lock = threading.Lock()
@@ -261,7 +316,7 @@ class TurnSilenceClock:
 
     def started(self, speaker: str) -> None:
         """Record that a speaker's silence timer has just begun."""
-        due_at = self._clock() + self.window
+        due_at = self._clock() + self.window.seconds
         with self._lock:
             self._deadlines[speaker] = due_at
 

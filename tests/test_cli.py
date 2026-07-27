@@ -30,11 +30,11 @@ PLAYBACK = {"name": "alsa_output.pci", "description": "Speakers"}
 class FakeTUI:
     """Stand in for the Textual interface without mounting one."""
 
-    def __init__(self, session_state, countdown=None, on_policy=None):
+    def __init__(self, session_state, countdown=None, **hooks):
         self.session_state = session_state
         self.countdown = countdown
-        self.on_policy = on_policy
-        self.hooks = SimpleNamespace()
+        self.hook_arguments = hooks
+        self.hooks = SimpleNamespace(**hooks)
         self.audio: dict[str, str] = {}
         self.codex_fields: dict[str, object] = {}
         self.output = None
@@ -297,3 +297,26 @@ def test_speech_plays_through_the_default_output_when_none_was_chosen(
     cli.build_speech(selection, SimpleNamespace(tts_voice="v"), None)
 
     assert started == [None]
+
+
+def test_one_turn_silence_is_shared_by_every_part_that_needs_it(wiring) -> None:
+    """Four copies of the window would be four chances to update three."""
+    cli.main()
+    tui, channels, _, _ = wiring["session"]
+    wiring["them_output"] = THEM_OUTPUT
+
+    windows = {id(listener.turn_silence) for _, listener in channels}
+    windows.add(id(tui.countdown.window))
+
+    assert len(windows) == 1
+
+
+def test_editing_the_window_reaches_the_listeners(wiring) -> None:
+    wiring["them_output"] = THEM_OUTPUT
+
+    cli.main()
+    tui, channels, _, _ = wiring["session"]
+
+    assert tui.hook_arguments["on_turn_silence"](1.25) == 1.25
+    assert [listener.turn_silence.seconds for _, listener in channels] == [1.25, 1.25]
+    assert tui.countdown.window.seconds == 1.25

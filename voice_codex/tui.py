@@ -40,7 +40,14 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, Select, Static
 
-from .domain import CODEX, RESPONSE_POLICIES, THEM, USER_TEXT, USER_VOICE
+from .domain import (
+    CODEX,
+    RESPONSE_POLICIES,
+    THEM,
+    USER_TEXT,
+    USER_VOICE,
+    parse_turn_silence,
+)
 from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, default_voice
 
 # --------------------------------------------------------------------------
@@ -144,6 +151,7 @@ class TuiHooks:
     on_mute: Callable[[bool], None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
     on_tts_provider: Callable[[str], bool | None] | None = None
+    on_turn_silence: Callable[[float], float | None] | None = None
     on_interrupt: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
     on_quit: Callable[[], None] | None = None
@@ -182,6 +190,11 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
     bar.append("■" * filled, style=style)
     bar.append("□" * (width - filled), style="#2f343b")
     return bar
+
+
+def format_seconds(seconds: float) -> str:
+    """Render a turn-silence window the way the field accepts it back."""
+    return f"{seconds:.2f}".rstrip("0").rstrip(".")
 
 
 def countdown_bar(remaining: float, window: float, width: int = 10) -> Text:
@@ -320,6 +333,16 @@ class Sidebar(Vertical):
                 "speech-select", self._speech_options(), self.state.tts_provider
             )
         yield Static(id="panel-bottom")
+        with Horizontal(id="silence-row"):
+            yield Static("turn silence", id="silence-label")
+            yield Input(
+                value=format_seconds(self.state.turn_silence),
+                id="silence-input",
+                compact=True,
+            )
+            yield Static("s", id="silence-unit")
+        yield Static(id="panel-countdown")
+        yield Static(id="panel-session")
 
     def on_mount(self) -> None:
         self.sync()
@@ -329,6 +352,8 @@ class Sidebar(Vertical):
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
         self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
+        self.query_one("#panel-session", Static).update(Group(*self._session()))
+        self.sync_countdown()
         self._sync_select("#policy-select", self._policy_options(), self.state.policy)
         self._sync_select(
             "#model-select", self.state.codex_models, self.state.codex_model
@@ -343,9 +368,9 @@ class Sidebar(Vertical):
     def sync_audio(self) -> None:
         self.query_one("#panel-top", Static).update(Group(*self._top()))
 
-    def sync_session(self) -> None:
-        """Cheap per-frame repaint — only the panel holding the countdown."""
-        self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
+    def sync_countdown(self) -> None:
+        """Cheap per-frame repaint — only the one line the countdown occupies."""
+        self.query_one("#panel-countdown", Static).update(self._countdown())
 
     def _sync_select(
         self,
@@ -538,11 +563,11 @@ class Sidebar(Vertical):
         )
         return blocks
 
-    def _turn_silence(self) -> Text:
-        """Show the silence still to wait, or the window when none is running."""
+    def _countdown(self) -> Text:
+        """Show the silence still to wait, or nothing when none is running."""
         state = self.state
         if state.turn_countdown is None:
-            return Text(f"{state.turn_silence:.1f}s", style="#9aa3ad")
+            return Text()
         return countdown_bar(state.turn_countdown, state.turn_silence)
 
     def _bottom(self) -> list[RenderableType]:
@@ -580,10 +605,13 @@ class Sidebar(Vertical):
         blocks.append(Text())
 
         blocks.append(Text("SESSION", style="#5a6068"))
-        blocks.append(
+        return blocks
+
+    def _session(self) -> list[RenderableType]:
+        state = self.state
+        return [
             _kv(
                 [
-                    ("turn silence", self._turn_silence()),
                     ("confidence", Text(f"{state.confidence:.2f}", style="#9aa3ad")),
                     ("language", Text(state.language, style="#9aa3ad")),
                     ("moonshine", Text(state.moonshine, style="#9aa3ad")),
@@ -591,8 +619,7 @@ class Sidebar(Vertical):
                     ("echoes cut", Text(str(state.echoes_cut), style="#9aa3ad")),
                 ]
             )
-        )
-        return blocks
+        ]
 
 
 # --------------------------------------------------------------------------
@@ -661,6 +688,18 @@ class VoiceCodexApp(App):
     }
     #input:focus { border: none; background: #0f1113; }
     #input-hint { width: auto; color: #5a6068; }
+    #silence-row { height: auto; margin-bottom: 1; }
+    #silence-label { width: 13; color: #6f757e; }
+    #silence-input {
+        width: 8;
+        border: none;
+        padding: 0;
+        background: #14171a;
+        color: #cdd6e4;
+    }
+    #silence-input:focus { background: #0f1113; }
+    #silence-input.invalid { color: #c96a5c; background: #2a1a1a; }
+    #silence-unit { width: auto; color: #6f757e; }
 
     #keys {
         height: 5;
@@ -715,6 +754,7 @@ class VoiceCodexApp(App):
         Binding("ctrl+t", "toggle_tts", "tts", priority=True),
         Binding("ctrl+x", "interrupt", "interrupt codex", priority=True),
         Binding("ctrl+s", "save", "save transcript", priority=True),
+        Binding("escape", "revert_turn_silence", "revert turn silence", show=False),
     ]
 
     # The countdown redraws ten times a second. A 20-cell bar over a 3s window
@@ -818,7 +858,7 @@ class VoiceCodexApp(App):
             return
         self.state.turn_countdown = remaining
         with suppress(NoMatches):
-            self.query_one("#sidebar", Sidebar).sync_session()
+            self.query_one("#sidebar", Sidebar).sync_countdown()
 
     def refresh_sidebar(self) -> None:
         self.query_one("#sidebar", Sidebar).sync()
@@ -868,7 +908,42 @@ class VoiceCodexApp(App):
             return
         self.action_quit_app()
 
+    def _apply_turn_silence(self, text: str) -> None:
+        """Adopt a typed window, or mark the field as holding a bad value.
+
+        A rejected value is left in place rather than overwritten. The typist
+        is mid-correction, and replacing their text with the old number would
+        discard the keystrokes that were nearly right.
+        """
+        field = self.query_one("#silence-input", Input)
+        seconds = parse_turn_silence(text)
+        applied = (
+            None
+            if seconds is None or self.hooks.on_turn_silence is None
+            else self.hooks.on_turn_silence(seconds)
+        )
+        if applied is None:
+            field.add_class("invalid")
+            return
+        field.remove_class("invalid")
+        self.state.turn_silence = applied
+        field.value = format_seconds(applied)
+        self.refresh_sidebar()
+        self.query_one("#input", Input).focus()
+
+    def action_revert_turn_silence(self) -> None:
+        """Put the field back to the window in force, and leave it."""
+        field = self.query_one("#silence-input", Input)
+        if not field.has_focus:
+            raise SkipAction
+        field.remove_class("invalid")
+        field.value = format_seconds(self.state.turn_silence)
+        self.query_one("#input", Input).focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "silence-input":
+            self._apply_turn_silence(event.value)
+            return
         text = event.value.strip()
         event.input.value = ""
         if not text:
