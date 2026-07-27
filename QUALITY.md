@@ -25,9 +25,12 @@ environment. Run `make hook-check` after changing hook configuration.
 | Formatting | `make format-check` | One canonical Python style. |
 | Lint | `make lint` | Imports, correctness smells, and modern Python rules. |
 | Types | `make types` | Nullability and third-party API contract errors. |
-| Tests | `make test-coverage` | Deterministic unit and Textual interaction behavior. |
+| Tests | `make test-coverage` | Deterministic unit and Textual interaction behavior, plus per-file coverage floors. |
+| Test integrity | `make test-integrity` | Rejects tests with no assertion and skips that name no issue. |
+| Mutation score | `make mutation` | Proves the domain tests detect corrupted behavior, not just execute it. |
 | Shell syntax | `make shellcheck` | Parse the privileged setup script before it is run. |
 | Workflow integrity | `make workflows` | Validate GitHub Actions syntax and expressions. |
+| Threshold ratchet | `make ratchet` | Blocks a lowered floor, a narrowed mutation scope, or a deleted rule. |
 | Static policy/SAST | `make semgrep` | Blocks committed rules for dangerous APIs and project security policy. |
 | Static security | `make security-static` | Blocks Bandit medium/high findings and known dependency vulnerabilities. |
 | Secret detection | `make secrets` | Scans the complete Git history with Gitleaks. |
@@ -37,34 +40,53 @@ PipeWire service, timer delay, or a real external process. Tests use fakes and
 synthetic events at those boundaries. Any bug that can be reproduced without
 hardware gets a regression test.
 
-Branch coverage is measured for application scripts and currently has a 30%
-floor. This is a deliberately visible baseline, not a claim of sufficient
-feature coverage: the current monolithic audio runtime has 32% measured
-coverage. Do not lower the floor. Raise it as adapters are isolated, first to
-60% and then to 80%; new behavior always needs a focused acceptance or
-regression test regardless of the global percentage.
+## Test-quality controls
+
+A suite written largely by AI can be green without being evidence: coverage and
+a passing run cannot distinguish a meaningful test from one that merely
+executes code. Each control below is documented in full at its implementation,
+and prints what to do when it fails. This is the map, not the manual.
+
+- **Per-file coverage floors** (`tools/coverage_gate.py`) stop a well-covered
+  module from paying for an uncovered one.
+- **Diff coverage** (`DIFF_COVERAGE_MIN` in the Makefile) is the
+  machine-checked form of "every behavior change needs a test".
+- **Mutation score** (`tools/mutation_gate.py`, scope in `[tool.mutmut]`)
+  proves a test would notice if a line were wrong, where coverage only proves
+  the line ran.
+- **Threshold ratchet** (`tools/ratchet_gate.py`) checks the gates themselves,
+  since nothing else stops an agent from editing one instead of satisfying it.
+- **Fail-first verification** (`tools/verify_regression.sh`) proves a
+  regression test fails without its fix.
+- **Test integrity** (`tools/test_integrity.py`) rejects tests that cannot fail
+  and skips that name no issue.
+- **Gate self-tests** (`tests/test_quality_gates.py`) plant a violation for
+  every gate, because a gate that matches nothing still reports green.
+
+Recorded only here: per-file floors are set at the value each file had when the
+gate was added and ratchet upward only, and the global floor follows toward 60%
+and then 80% as adapters are isolated from the runtime.
 
 ## Security policy
 
-Bandit writes all findings to `reports/bandit.json` and blocks medium/high
-findings. The current low-severity subprocess findings are retained in that
-report; none are hidden with `# nosec`. Each new subprocess invocation must use
-an argument list, never `shell=True`, and must have a test or direct review of
-its argument provenance.
+Bandit writes all findings to `reports/bandit.json` and blocks medium/high.
+Low-severity findings are recorded there rather than suppressed; nothing is
+hidden with `# nosec`. Semgrep already rejects `shell=True` and string
+commands, so the rule that survives review is the one it cannot check: every
+new subprocess invocation needs a test or a direct review of where its
+arguments came from.
 
 `pip-audit` is a merge gate. Its vulnerability feed changes over time, so an
 unchanged lockfile can legitimately fail after a newly published advisory.
 Gitleaks is also a merge gate and scans history, not only changed files.
 
-Semgrep is a serverless merge gate. `make semgrep` runs the official
-digest-pinned Semgrep CLI container with networking and its version check
-disabled, then mounts the repository read-only. It never downloads a remote
-rule pack: the only rules are the repository's committed `semgrep.yml`. The
-rules reject dynamic code execution, unsafe deserialization, disabled TLS
-verification, string-based process commands, and shell-based process
-invocation. Its JSON evidence is written to `reports/semgrep.json`. Use
-`make semgrep` for immediate file-and-line feedback; `make ci` and the hosted
-quality job run it through `make security-static`.
+Semgrep is a serverless merge gate. `make semgrep` runs a digest-pinned
+container with networking disabled and the repository mounted read-only, so it
+cannot download a remote rule pack: the only rules are the committed
+`semgrep.yml`. Evidence lands in `reports/semgrep.json`. Use `make semgrep` for
+immediate file-and-line feedback; `make ci` and the hosted quality job run it
+through `make security-static`. The `.semgrepignore` at the repository root is
+load-bearing — its header says why.
 
 Generated coverage and security evidence is ignored by Git. GitHub Actions
 uploads it on both success and failure. Local `voice.yaml`, transcripts, and
@@ -88,8 +110,12 @@ are the merge authority.
 
 ## Tooling boundaries
 
-Do not add tools simply because they exist. Mutation testing belongs after the
-transcript/domain logic is extracted from the current runtime and has a strong
-unit-test baseline. Hardware-in-the-loop tests belong only once a controlled
-test device or emulator exists. Add architecture-import rules once the project
-has stable package boundaries.
+Do not add tools simply because they exist. Hardware-in-the-loop tests belong
+only once a controlled test device or emulator exists. Add architecture-import
+rules once the project has stable package boundaries.
+
+Docstring linting (ruff `D`) was evaluated and rejected. It checks that a
+docstring exists, never that it is true, so the cheapest way to satisfy it is
+to restate the function name — text that reads as documentation and is never
+revalidated. If the goal is machine-checked intent at function boundaries, use
+`ANN` instead: `ty` verifies annotations against real call sites.

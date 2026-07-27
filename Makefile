@@ -3,7 +3,16 @@
 SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
 PYTHON_SOURCES := voice-codex.py voice-codex-tui.py voice_codex
 
-.PHONY: format format-check lint types test test-coverage semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
+# Lines this change touches must be tested even where the file's own floor is
+# still low. Overridable so a stacked branch can compare against its base.
+DIFF_BASE ?= origin/master
+DIFF_COVERAGE_MIN ?= 80
+
+# Thresholds are compared against this ref so a lowered floor fails the build
+# instead of relying on a reviewer noticing the diff.
+RATCHET_BASE ?= origin/master
+
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
 
 format:
 	uv run ruff format .
@@ -21,7 +30,20 @@ test:
 	uv run pytest
 
 test-coverage:
-	uv run pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+	uv run pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
+	uv run python tools/coverage_gate.py
+
+diff-coverage:
+	uv run diff-cover coverage.xml --compare-branch=$(DIFF_BASE) --fail-under=$(DIFF_COVERAGE_MIN) --show-uncovered
+
+verify-regression:
+	@test -n "$(TEST)" || { echo "usage: make verify-regression TEST=tests/test_x.py::test_y"; exit 2; }
+	tools/verify_regression.sh "$(TEST)"
+
+mutation:
+	uv run mutmut run
+	uv run mutmut export-cicd-stats
+	uv run python tools/mutation_gate.py
 
 semgrep:
 	mkdir -p reports
@@ -36,15 +58,22 @@ security-static: semgrep
 secrets:
 	gitleaks detect --source . --log-opts="--all"
 
+test-integrity:
+	uv run python tools/test_integrity.py
+
+ratchet:
+	uv run python tools/ratchet_gate.py $(RATCHET_BASE)
+
 shellcheck:
 	bash -n fix-codex-sandbox.sh
+	bash -n tools/verify_regression.sh
 
 workflows:
 	uv run actionlint .github/workflows/ci.yml
 
 security: security-static secrets
 
-verify: format-check lint types test-coverage shellcheck workflows
+verify: format-check lint types test-coverage test-integrity mutation ratchet shellcheck workflows
 
 ci: verify security
 

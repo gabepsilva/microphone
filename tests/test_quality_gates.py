@@ -1,0 +1,351 @@
+"""The quality gates must reject known-bad input.
+
+A gate that matches nothing is worse than no gate: it reports green and is
+believed. This is not hypothetical here — the Semgrep rule forbidding tests
+from faking the unit under test was inert on the day it was written, because
+Semgrep's built-in ignore list excludes ``tests/``. It parsed, it reported
+"7 rules run", and it could never have fired. That was caught by hand, which
+is not a control.
+
+Each test below plants a violation the gate is supposed to catch, and asserts
+it is caught. The false-positive direction matters too: a detector that
+rejects the assertion styles this suite legitimately uses would be silenced
+within a week, so that is asserted as well.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import tomllib
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+TOOLS = ROOT / "tools"
+
+
+def _load_gate(name: str):
+    """Import a gate script by path; tools/ is deliberately not a package."""
+    spec = importlib.util.spec_from_file_location(f"_gate_{name}", TOOLS / f"{name}.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# --------------------------------------------------------------------------
+# tools/test_integrity.py
+# --------------------------------------------------------------------------
+
+ASSERTION_FREE = """
+def test_looks_like_a_test():
+    result = 2 + 2
+    str(result)
+"""
+
+BARE_SKIP = """
+import pytest
+
+@pytest.mark.skip
+def test_hidden():
+    assert False
+"""
+
+SKIP_WITHOUT_ISSUE = """
+import pytest
+
+@pytest.mark.skipif(True, reason="flaky sometimes")
+def test_hidden():
+    assert False
+"""
+
+# Styles this suite really uses. None contains a bare `assert` statement.
+INVERTED_ASSERTIONS = """
+import pytest
+
+
+def test_rejects_bad_config():
+    with pytest.raises(RuntimeError, match="Unknown startup config key"):
+        load_startup_config("x")
+
+
+def test_import_does_not_load_the_adapter(monkeypatch):
+    def prohibit(name):
+        raise AssertionError("must not load")
+
+    monkeypatch.setattr(module, "__getattr__", prohibit)
+    importlib.import_module("voice_codex.cli")
+"""
+
+
+@pytest.mark.parametrize(
+    ("label", "source"),
+    [
+        ("assertion-free test", ASSERTION_FREE),
+        ("bare skip decorator", BARE_SKIP),
+        ("skip with no issue reference", SKIP_WITHOUT_ISSUE),
+    ],
+)
+def test_test_integrity_rejects_untrustworthy_tests(
+    tmp_path, monkeypatch, label, source
+) -> None:
+    gate = _load_gate("test_integrity")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_planted.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(gate, "TESTS_DIR", tests_dir)
+
+    assert gate.main() == 1, f"gate accepted a {label}"
+
+
+def test_test_integrity_accepts_this_suites_inverted_assertion_styles(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("test_integrity")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_planted.py").write_text(INVERTED_ASSERTIONS, encoding="utf-8")
+    monkeypatch.setattr(gate, "TESTS_DIR", tests_dir)
+
+    assert gate.main() == 0
+
+
+# --------------------------------------------------------------------------
+# tools/coverage_gate.py
+# --------------------------------------------------------------------------
+
+
+def _write_coverage(path: Path, files: dict[str, float]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "files": {
+                    name: {"summary": {"percent_covered": percent}}
+                    for name, percent in files.items()
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_coverage_gate_rejects_a_file_below_its_floor(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("coverage_gate")
+    report = tmp_path / "coverage.json"
+    _write_coverage(report, {"voice_codex/domain.py": 70.0})
+    monkeypatch.setattr(gate, "COVERAGE_PATH", report)
+    monkeypatch.setattr(gate, "FLOORS", {"voice_codex/domain.py": 81.0})
+
+    assert gate.main() == 1
+
+
+def test_coverage_gate_rejects_an_untested_new_module(tmp_path, monkeypatch) -> None:
+    """A new file must not inherit the monolith's low recorded floor."""
+    gate = _load_gate("coverage_gate")
+    report = tmp_path / "coverage.json"
+    _write_coverage(report, {"voice_codex/brand_new.py": 5.0})
+    monkeypatch.setattr(gate, "COVERAGE_PATH", report)
+    monkeypatch.setattr(gate, "FLOORS", {})
+
+    assert gate.main() == 1
+
+
+def test_coverage_gate_rejects_a_floor_for_a_file_that_vanished(
+    tmp_path, monkeypatch
+) -> None:
+    """A floor pointing at nothing is the silent no-op this suite exists for."""
+    gate = _load_gate("coverage_gate")
+    report = tmp_path / "coverage.json"
+    _write_coverage(report, {"voice_codex/domain.py": 90.0})
+    monkeypatch.setattr(gate, "COVERAGE_PATH", report)
+    monkeypatch.setattr(gate, "FLOORS", {"voice_codex/deleted.py": 50.0})
+
+    assert gate.main() == 1
+
+
+# --------------------------------------------------------------------------
+# tools/mutation_gate.py
+# --------------------------------------------------------------------------
+
+
+def test_mutation_gate_rejects_a_dropped_score(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("mutation_gate")
+    stats = tmp_path / "stats.json"
+    stats.write_text(json.dumps({"killed": 10, "survived": 90, "total": 100}))
+    monkeypatch.setattr(gate, "STATS_PATH", stats)
+    monkeypatch.setattr(gate, "MUTATION_SCORE_FLOOR", 42.0)
+
+    assert gate.main() == 1
+
+
+def test_mutation_gate_rejects_a_run_that_mutated_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """Zero mutants would otherwise divide into a vacuous pass."""
+    gate = _load_gate("mutation_gate")
+    stats = tmp_path / "stats.json"
+    stats.write_text(json.dumps({"killed": 0, "survived": 0, "total": 0}))
+    monkeypatch.setattr(gate, "STATS_PATH", stats)
+
+    assert gate.main() == 1
+
+
+# --------------------------------------------------------------------------
+# tools/ratchet_gate.py
+# --------------------------------------------------------------------------
+
+
+def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
+    """A throwaway git repo whose HEAD holds `base_files`.
+
+    The ratchet compares the working tree against a ref, so exercising it needs
+    real git history rather than a fake — git is the boundary here, not the
+    subject.
+    """
+    repo = tmp_path / "repo"
+    (repo / "tools").mkdir(parents=True)
+    for name, content in base_files.items():
+        (repo / name).write_text(content, encoding="utf-8")
+
+    run = lambda *args: subprocess.run(  # noqa: E731 - terse local helper
+        args, cwd=repo, check=True, capture_output=True
+    )
+    run("git", "init", "--quiet")
+    run("git", "config", "user.email", "gate@example.invalid")
+    run("git", "config", "user.name", "gate")
+    run("git", "add", "-A")
+    run("git", "commit", "--quiet", "-m", "base")
+    return repo
+
+
+BASE_COVERAGE_GATE = 'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n'
+BASE_MUTATION_GATE = "MUTATION_SCORE_FLOOR = 42.0\n"
+BASE_PYPROJECT = """
+[tool.coverage.report]
+fail_under = 46
+
+[tool.mutmut]
+source_paths = ["voice_codex/domain.py"]
+"""
+BASE_SEMGREP = "rules:\n  - id: python-subprocess-shell-true\n"
+
+BASE_FILES = {
+    "tools/coverage_gate.py": BASE_COVERAGE_GATE,
+    "tools/mutation_gate.py": BASE_MUTATION_GATE,
+    "pyproject.toml": BASE_PYPROJECT,
+    "semgrep.yml": BASE_SEMGREP,
+}
+
+
+@pytest.mark.parametrize(
+    ("label", "path", "tampered"),
+    [
+        (
+            "lowered per-file coverage floor",
+            "tools/coverage_gate.py",
+            'FLOORS = {"voice_codex/domain.py": 40.0}\nNEW_FILE_FLOOR = 60.0\n',
+        ),
+        (
+            "lowered new-file floor",
+            "tools/coverage_gate.py",
+            'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 10.0\n',
+        ),
+        (
+            "lowered mutation floor",
+            "tools/mutation_gate.py",
+            "MUTATION_SCORE_FLOOR = 5.0\n",
+        ),
+        (
+            "lowered global coverage threshold",
+            "pyproject.toml",
+            "\n[tool.coverage.report]\nfail_under = 5\n\n[tool.mutmut]\n"
+            'source_paths = ["voice_codex/domain.py"]\n',
+        ),
+        (
+            "narrowed mutmut scope",
+            "pyproject.toml",
+            "\n[tool.coverage.report]\nfail_under = 46\n\n[tool.mutmut]\n"
+            "source_paths = []\n",
+        ),
+        (
+            "deleted semgrep rule",
+            "semgrep.yml",
+            "rules:\n  - id: something-else\n",
+        ),
+    ],
+)
+def test_ratchet_rejects_a_weakened_threshold(
+    tmp_path, monkeypatch, label, path, tampered
+) -> None:
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / path).write_text(tampered, encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 1, f"ratchet allowed a {label}"
+
+
+def test_ratchet_allows_a_raised_floor(tmp_path, monkeypatch) -> None:
+    """Improving a threshold must never be blocked, or the ratchet stops turning."""
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "tools/coverage_gate.py").write_text(
+        'FLOORS = {"voice_codex/domain.py": 95.0}\nNEW_FILE_FLOOR = 80.0\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
+
+
+def test_ratchet_fails_loudly_when_the_base_ref_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """A ratchet that cannot compare must not report success."""
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "origin/does-not-exist"]) == 1
+
+
+# --------------------------------------------------------------------------
+# Scanner configuration
+# --------------------------------------------------------------------------
+
+
+def test_semgrep_scans_test_code() -> None:
+    """Semgrep's built-in ignore list excludes tests/; the repo must override it.
+
+    Without this file the test-integrity rule below is inert. It was.
+    """
+    semgrepignore = ROOT / ".semgrepignore"
+    assert semgrepignore.exists(), "deleting .semgrepignore silently unscans tests/"
+
+    excluded = {
+        line.strip().strip("/")
+        for line in semgrepignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert "tests" not in excluded
+
+
+def test_semgrep_forbids_faking_the_unit_under_test() -> None:
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "python-test-fakes-the-unit-under-test" in rules
+    assert "voice_codex" in rules
+    assert "domain" in rules
+
+
+def test_mutmut_mutates_files_that_exist() -> None:
+    """A typo in source_paths yields zero mutants and a vacuously perfect run."""
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source_paths = config["tool"]["mutmut"]["source_paths"]
+
+    assert source_paths
+    for path in source_paths:
+        assert (ROOT / path).is_file(), f"mutmut mutates nothing: {path} is missing"
