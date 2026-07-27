@@ -104,9 +104,16 @@ asserting precisely because nothing else can catch it. So `main` is now
 exercised with each adapter faked at `cli`'s own import boundary, asserting the
 connections rather than re-testing the parts.
 
-What remains uncovered is the Edge TTS pipeline's error and cancellation
-branches (`voice_codex/tts.py`, the lowest floor in the package at 80%). Each
-needs a network fake per branch. That is a gap to close, not a decision.
+That gap was the Edge TTS pipeline's error and cancellation branches, and it
+is closed: each one now has a network fake and waits on an event the fake
+player sets, so `voice_codex/tts.py` measures 97% and does so identically
+across repeated runs. It used to flap by a point between runs, which is why
+its floor sat at 80 until the races were fixed rather than floored around.
+
+The lowest floor in the package is now `voice_codex/capture.py` at 86%, and
+what it leaves uncovered is the microphone adapter itself — the subclass that
+opens a PortAudio stream. That one is a decision rather than a gap: it is the
+hardware boundary, and no fake can assert the thing that makes it real.
 
 ## Security policy
 
