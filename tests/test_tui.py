@@ -825,3 +825,111 @@ def test_escape_outside_the_field_does_not_steal_the_key(tui) -> None:
     asyncio.run(exercise())
 
     assert seen["text"] == "half typed"
+
+
+@pytest.mark.parametrize(
+    ("stream_state", "speaking", "expected"),
+    [
+        ("idle", False, "idle"),
+        ("idle", True, "speaking"),
+        # The stream state is the more specific of the two, and both are true
+        # at once while sentences play against an answer still arriving.
+        ("replying to User Voice", True, "replying to User Voice"),
+        ("replying to User Voice", False, "replying to User Voice"),
+        ("running command", True, "running command"),
+    ],
+)
+def test_codex_activity_counts_speech_as_doing_something(
+    tui, stream_state, speaking, expected
+) -> None:
+    assert tui.codex_activity(stream_state, speaking) == expected
+
+
+def test_the_sidebar_says_speaking_after_the_stream_has_ended(tui) -> None:
+    """The tail of a turn: text finished, audio still playing."""
+    state = tui.SessionState(codex_state="idle", codex_speaking=True)
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._activity().plain == "speaking"
+
+
+def test_the_sidebar_dims_only_a_genuinely_idle_codex(tui) -> None:
+    idle = tui.Sidebar(tui.SessionState(), tui.TuiHooks())._activity()
+    speaking = tui.Sidebar(
+        tui.SessionState(codex_speaking=True), tui.TuiHooks()
+    )._activity()
+
+    assert idle.style == "#9aa3ad"
+    assert speaking.style == "#6cc06c"
+
+
+class FakeSpeech:
+    """A speech engine a test switches between talking and quiet."""
+
+    def __init__(self, speaking=False):
+        self.value = speaking
+
+    def is_speaking(self):
+        return self.value
+
+
+def test_speech_starting_is_picked_up_by_the_tick(tui) -> None:
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is True
+
+
+def test_speech_ending_is_picked_up_by_the_tick(tui) -> None:
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+            speech.value = False
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is False
+
+
+def test_an_unchanged_speech_state_repaints_nothing(tui) -> None:
+    """Ten frames a second of an unchanged word is the cost this avoids."""
+    speech = FakeSpeech(speaking=True)
+    state = tui.SessionState(codex_speaking=True)
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), None, speech)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_codex = lambda: painted.append(True)
+            state.codex_speaking = True
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert painted == []
+
+
+def test_a_silent_session_never_claims_to_be_speaking(tui) -> None:
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_speaking()
+
+    asyncio.run(exercise())
+
+    assert state.codex_speaking is False

@@ -55,6 +55,9 @@ class FakeEngine:
     def is_likely_echo(self, text):
         return text == "echo"
 
+    def is_speaking(self):
+        return bool(self.spoken)
+
     def close(self):
         self.closed = True
 
@@ -157,6 +160,7 @@ def test_the_runtime_reaches_the_installed_engine() -> None:
     assert speech.engine.interrupts == 1
     assert speech.engine.enabled == [False]
     assert speech.is_likely_echo("echo") is True
+    assert speech.is_speaking() is True
 
 
 def test_switching_replaces_the_engine_and_closes_the_old_one() -> None:
@@ -287,3 +291,18 @@ def test_the_interface_switch_drives_the_session_speech() -> None:
 
     assert provider_switch(speech)("edge") is True
     assert wait_until(lambda: speech.provider == "edge")
+
+
+def test_a_switch_reports_the_new_engine_speech_not_the_old(engines) -> None:
+    """The sidebar must not keep describing an engine that has been retired."""
+    speech = SwitchableSpeech.start("piper")
+    speech.speak("From the first engine.")
+    assert speech.is_speaking() is True
+
+    speech.set_provider("edge")
+
+    # Installed, not merely built: the old engine keeps answering until the
+    # new one is swapped in, which is the whole point of the handover.
+    assert wait_until(lambda: speech.provider == "edge")
+    assert len(engines) == 2
+    assert speech.is_speaking() is False

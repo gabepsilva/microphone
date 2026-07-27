@@ -733,3 +733,33 @@ def test_a_turn_cancelled_during_the_request_stagger_is_dropped(
         assert playback.audio == [b"audio:Sent immediately.", b"audio:A fresh turn."]
     finally:
         engine.close()
+
+
+def test_an_engine_with_nothing_to_say_is_not_speaking(tts) -> None:
+    assert tts.is_speaking() is False
+
+
+def test_an_engine_is_speaking_from_the_moment_a_sentence_is_accepted(tts) -> None:
+    tts.begin_turn()
+    tts.speak("Hello there.")
+
+    assert tts.is_speaking() is True
+
+
+def test_an_engine_falls_quiet_once_the_last_sentence_has_played(tts, playback) -> None:
+    tts.begin_turn()
+    tts.speak("Hello there.")
+    assert playback.wait_for(1)
+
+    assert wait_until(lambda: tts.is_speaking() is False)
+
+
+def test_an_interrupted_engine_stops_reporting_speech(tts, playback) -> None:
+    tts.begin_turn()
+    tts.speak("First.")
+    tts.speak("Second.")
+    assert playback.wait_for(1)
+
+    tts.interrupt()
+
+    assert tts.is_speaking() is False

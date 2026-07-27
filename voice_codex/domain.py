@@ -238,6 +238,43 @@ class EchoMemory:
         return any(EchoMatcher.matches(transcript, spoken) for spoken in recent)
 
 
+class SpeechActivity:
+    """Count the sentences a speech engine still owes the listener.
+
+    Asking the player whether a process is alive is not enough to answer "is
+    Codex still speaking": between two sentences the player has exited and the
+    next one is still being synthesized, so a poll lands in the gap and reads
+    silence. At ten frames a second that gap is visible as a flicker.
+
+    A count spans the gaps. It rises when a sentence is accepted and falls
+    only once that sentence has been played or abandoned.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending = 0
+
+    def queued(self) -> None:
+        with self._lock:
+            self._pending += 1
+
+    def finished(self) -> None:
+        with self._lock:
+            # Floored rather than allowed negative: an engine that reports one
+            # extra completion would otherwise go quiet for the next sentence.
+            self._pending = max(0, self._pending - 1)
+
+    def silenced(self) -> None:
+        """Drop everything outstanding, as an interrupt or a shutdown does."""
+        with self._lock:
+            self._pending = 0
+
+    @property
+    def speaking(self) -> bool:
+        with self._lock:
+            return self._pending > 0
+
+
 class TurnSilence:
     """The quiet a finished turn waits out before it is sent.
 

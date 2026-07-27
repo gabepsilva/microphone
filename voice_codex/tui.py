@@ -114,6 +114,10 @@ class SessionState:
     codex_sandbox: str = "full-access"
     codex_thread: str = "—"
     codex_state: str = "idle"
+    # Whether speech is still coming out of the speakers. Tracked apart from
+    # codex_state because the two end at different moments: the text stream
+    # finishes seconds before the audio it produced has finished playing.
+    codex_speaking: bool = False
     codex_models: list[tuple[str, str]] = field(
         default_factory=lambda: [("gpt-5.6-luna", "gpt-5.6-luna")]
     )
@@ -190,6 +194,24 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
     bar.append("■" * filled, style=style)
     bar.append("□" * (width - filled), style="#2f343b")
     return bar
+
+
+IDLE = "idle"
+SPEAKING = "speaking"
+
+
+def codex_activity(stream_state: str, speaking: bool) -> str:
+    """Say what Codex is doing, counting speech as doing something.
+
+    The stream state wins while there is one, because "replying to Them" says
+    more than "speaking" and both are true at once — sentences play while the
+    rest of the answer is still arriving. What this fixes is the tail: the
+    stream ends when the last token lands, and for several seconds after that
+    Codex is still talking. That used to read as idle.
+    """
+    if stream_state != IDLE:
+        return stream_state
+    return SPEAKING if speaking else IDLE
 
 
 def format_seconds(seconds: float) -> str:
@@ -367,6 +389,10 @@ class Sidebar(Vertical):
 
     def sync_audio(self) -> None:
         self.query_one("#panel-top", Static).update(Group(*self._top()))
+
+    def sync_codex(self) -> None:
+        """Cheap per-frame repaint — only the panel naming what Codex is doing."""
+        self.query_one("#panel-codex", Static).update(Group(*self._codex()))
 
     def sync_countdown(self) -> None:
         """Cheap per-frame repaint — only the one line the countdown occupies."""
@@ -549,19 +575,19 @@ class Sidebar(Vertical):
                     ),
                     ("sandbox", sandbox),
                     ("thread", Text(state.codex_thread, style="#9aa3ad")),
-                    (
-                        "state",
-                        Text(
-                            state.codex_state,
-                            style="#6cc06c"
-                            if state.codex_state != "idle"
-                            else "#9aa3ad",
-                        ),
-                    ),
+                    ("state", self._activity()),
                 ]
             )
         )
         return blocks
+
+    def _activity(self) -> Text:
+        """Name what Codex is doing, speech included."""
+        activity = codex_activity(self.state.codex_state, self.state.codex_speaking)
+        return Text(
+            activity,
+            style="#9aa3ad" if activity == IDLE else "#6cc06c",
+        )
 
     def _countdown(self) -> Text:
         """Show the silence still to wait, or nothing when none is running."""
@@ -762,11 +788,16 @@ class VoiceCodexApp(App):
     # same picture; anything slower is visibly steppy.
     COUNTDOWN_INTERVAL_SECONDS = 0.1
 
-    def __init__(self, state: SessionState, hooks: TuiHooks, countdown=None) -> None:
+    def __init__(
+        self, state: SessionState, hooks: TuiHooks, countdown=None, speech=None
+    ) -> None:
         super().__init__()
         self.state = state
         self.hooks = hooks
         self.countdown = countdown
+        # The session's speech, polled for whether it is still talking. Absent
+        # when the session was started silent.
+        self.speech = speech
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
@@ -794,6 +825,7 @@ class VoiceCodexApp(App):
         self._sync_partial()
         self.set_interval(0.25, self._tick)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
+        self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.query_one("#input", Input).focus()
 
     # -- chrome ------------------------------------------------------------
@@ -859,6 +891,15 @@ class VoiceCodexApp(App):
         self.state.turn_countdown = remaining
         with suppress(NoMatches):
             self.query_one("#sidebar", Sidebar).sync_countdown()
+
+    def _tick_speaking(self) -> None:
+        """Repaint only when speech starts or stops, not on every frame."""
+        speaking = self.speech is not None and self.speech.is_speaking()
+        if speaking == self.state.codex_speaking:
+            return
+        self.state.codex_speaking = speaking
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_codex()
 
     def refresh_sidebar(self) -> None:
         self.query_one("#sidebar", Sidebar).sync()
@@ -1035,11 +1076,15 @@ class VoiceCodexTUI:
     """
 
     def __init__(
-        self, state: SessionState | None = None, countdown=None, **hooks
+        self,
+        state: SessionState | None = None,
+        countdown=None,
+        speech=None,
+        **hooks,
     ) -> None:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
-        self.app = VoiceCodexApp(self.state, self.hooks, countdown)
+        self.app = VoiceCodexApp(self.state, self.hooks, countdown, speech)
         self._ready = threading.Event()
         self._app_thread: int | None = None
 
