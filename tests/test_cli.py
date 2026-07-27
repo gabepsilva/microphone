@@ -177,6 +177,27 @@ def test_a_them_output_adds_a_second_channel_in_order(wiring) -> None:
     assert tui.audio["them"] == "Voice Codex Meeting"
 
 
+def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
+    """The sidebar's speaker checkbox has to reach the channel it names."""
+    wiring["them_output"] = THEM_OUTPUT
+
+    cli.main()
+    tui, channels, _, _ = wiring["session"]
+    them_listener = channels[1][1]
+
+    tui.hooks.on_them_mute(True)
+
+    assert them_listener.muted is True
+    assert channels[0][1].muted is False
+
+
+def test_a_session_without_a_speaker_channel_binds_no_speaker_mute(wiring) -> None:
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+
+    assert getattr(tui.hooks, "on_them_mute", None) is None
+
+
 def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
     cli.main()
     tui, _, _, _ = wiring["session"]
@@ -189,6 +210,7 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_tts",
         "on_mute",
     } <= set(vars(tui.hooks))
+    assert tui.hooks.on_mute is not None
 
 
 def test_typed_text_always_requests_a_reply(wiring) -> None:
