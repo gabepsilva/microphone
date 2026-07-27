@@ -90,11 +90,48 @@ class CodexModelOption:
     default_effort: str
 
 
-def _parse_codex_model_catalog(payload: object) -> list[CodexModelOption]:  # noqa: C901,PLR0912 - pre-existing: Codex catalog shapes vary by version
+def _parse_reasoning_efforts(raw_levels: object) -> list[str]:
+    """Collect the usable effort names from one model's reasoning levels."""
+    if not isinstance(raw_levels, list):
+        return []
+    efforts: list[str] = []
+    for raw_level in raw_levels:
+        if not isinstance(raw_level, dict):
+            continue
+        effort = cast(dict[str, object], raw_level).get("effort")
+        if isinstance(effort, str) and effort:
+            efforts.append(effort)
+    return efforts
+
+
+def _parse_codex_model(model: dict[str, object]):
+    """Parse one catalog entry into (priority, option), or None if unusable."""
+    if model.get("visibility") != "list" or model.get("supported_in_api") is False:
+        return None
+    slug = model.get("slug")
+    if not isinstance(slug, str) or not slug:
+        return None
+    label = model.get("display_name")
+    if not isinstance(label, str) or not label:
+        label = slug
+    efforts = _parse_reasoning_efforts(model.get("supported_reasoning_levels"))
+    if not efforts:
+        return None
+    default_effort = model.get("default_reasoning_level")
+    if not isinstance(default_effort, str) or default_effort not in efforts:
+        default_effort = efforts[0]
+    priority = model.get("priority")
+    return (
+        priority if isinstance(priority, int) else sys.maxsize,
+        CodexModelOption(slug, label, tuple(efforts), default_effort),
+    )
+
+
+def _parse_codex_model_catalog(payload: object) -> list[CodexModelOption]:
+    """Read the catalog defensively; its shape varies by Codex CLI version."""
     if not isinstance(payload, dict):
         return []
-    catalog = cast(dict[str, object], payload)
-    raw_models = catalog.get("models")
+    raw_models = cast(dict[str, object], payload).get("models")
     if not isinstance(raw_models, list):
         return []
 
@@ -102,37 +139,9 @@ def _parse_codex_model_catalog(payload: object) -> list[CodexModelOption]:  # no
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             continue
-        model = cast(dict[str, object], raw_model)
-        if model.get("visibility") != "list" or model.get("supported_in_api") is False:
-            continue
-        slug = model.get("slug")
-        label = model.get("display_name")
-        if not isinstance(slug, str) or not slug:
-            continue
-        if not isinstance(label, str) or not label:
-            label = slug
-        raw_levels = model.get("supported_reasoning_levels")
-        if not isinstance(raw_levels, list):
-            continue
-        efforts: list[str] = []
-        for raw_level in raw_levels:
-            if not isinstance(raw_level, dict):
-                continue
-            effort = cast(dict[str, object], raw_level).get("effort")
-            if isinstance(effort, str) and effort:
-                efforts.append(effort)
-        if not efforts:
-            continue
-        default_effort = model.get("default_reasoning_level")
-        if not isinstance(default_effort, str) or default_effort not in efforts:
-            default_effort = efforts[0]
-        priority = model.get("priority")
-        options.append(
-            (
-                priority if isinstance(priority, int) else sys.maxsize,
-                CodexModelOption(slug, label, tuple(efforts), default_effort),
-            )
-        )
+        parsed = _parse_codex_model(cast(dict[str, object], raw_model))
+        if parsed is not None:
+            options.append(parsed)
     return [
         option
         for _, option in sorted(options, key=lambda item: (item[0], item[1].label))
@@ -1870,3 +1879,18 @@ def main():
     if them_transcriber is not None:
         channels.append((them_transcriber, them_listener))
     run_session(tui, channels, conversation, virtual_meeting)
+
+
+def run_entrypoint():
+    """Run the application, reporting failures without a traceback.
+
+    Both compatibility scripts call this so the shutdown behavior they
+    advertise cannot drift apart.
+    """
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
