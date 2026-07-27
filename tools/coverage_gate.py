@@ -42,7 +42,7 @@ FLOORS = {
     "voice_codex/__init__.py": 100.0,
     "voice_codex/capture.py": 86.0,
     "voice_codex/catalog.py": 95.0,
-    "voice_codex/choosers.py": 92.0,
+    "voice_codex/choosers.py": 94.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
     "voice_codex/cli.py": 97.0,
     "voice_codex/codex.py": 97.0,
@@ -51,18 +51,15 @@ FLOORS = {
     "voice_codex/listener.py": 99.0,
     "voice_codex/presentation.py": 100.0,
     "voice_codex/startup.py": 98.0,
-    # The lowest floor in the package: the Edge pipeline's error and
-    # cancellation paths need a network fake per branch. Raise it, do not
-    # settle for it.
-    #
-    # It stays at 80 rather than the 81 this gate offers, because tts.py is
-    # the one file here whose measurement moves between runs: five runs of the
-    # same commit measured 80.99, 81.82, 81.82, 81.82, 81.40, with the guard
-    # in _play hit or missed depending on how the synthesis thread interleaves
-    # with shutdown. A floor at the top of that range fails a clean branch at
-    # random. Fixing the flap is the same work as raising the floor honestly:
-    # fake the network per branch instead of racing it.
-    "voice_codex/tts.py": 80.0,
+    # This floor sat at 80 while the measurement moved between runs: five runs
+    # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the
+    # guard in _play was hit or missed depending on how the synthesis thread
+    # interleaved with shutdown. The note here said the fix was to fake the
+    # network per branch rather than race it, and tests/test_tts.py now does
+    # exactly that: every abort and shutdown path waits on an event the fake
+    # player sets. Five runs of the current tree all measure 97.19, so this is
+    # the honest floor rather than the top of a flapping range.
+    "voice_codex/tts.py": 97.0,
     "voice_codex/tui.py": 94.0,
 }
 
