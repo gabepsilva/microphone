@@ -23,14 +23,12 @@ def test_quiet_response_policy_is_labeled_stay_silent(tui) -> None:
 def test_facade_updates_state_before_the_app_starts(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
-    facade.partial(tui.USER_VOICE, "testing")
+    facade.update(tui.USER_VOICE, "testing")
     facade.set_audio("mic", device="USB mic", level=3)
-    facade.set_policy("quiet")
 
     assert facade.state.partial_text == "testing"
     assert facade.state.mic.device == "USB mic"
     assert facade.state.mic.level == 1.0
-    assert facade.state.policy == "quiet"
 
 
 def test_facade_implements_runtime_display_events_before_the_app_starts(tui) -> None:

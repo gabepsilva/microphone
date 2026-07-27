@@ -35,7 +35,7 @@ def test_a_committed_turn_becomes_a_transcript_entry(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.partial(tui.USER_VOICE, "half a sen")
+        facade.update(tui.USER_VOICE, "half a sen")
         facade.commit(tui.USER_VOICE, "half a sentence")
         await pilot.pause()
 
@@ -91,7 +91,7 @@ def test_a_delta_with_no_open_row_opens_one(tui) -> None:
     assert entry_texts(facade) == ["Unannounced."]
 
 
-def test_an_interrupted_turn_is_marked_cut_off(tui) -> None:
+def test_an_interrupted_turn_reads_as_cut_off(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
@@ -99,7 +99,7 @@ def test_an_interrupted_turn_is_marked_cut_off(tui) -> None:
         await pilot.pause()
         facade.codex_delta("Half a th")
         await pilot.pause()
-        facade.codex_end(interrupted=True)
+        await pilot.press("ctrl+x")
         await pilot.pause()
 
     drive(facade, body)
@@ -192,7 +192,6 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
         facade.set_codex(model="gpt-5.6-nova", thread="thread-9")
         facade.set_session(tokens=42)
         facade.set_status("listening", live=True)
-        facade.set_policy("quiet")
         facade.set_tts_queue(["one", "two"])
         await pilot.pause()
 
@@ -204,16 +203,7 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
     assert facade.state.codex_model == "gpt-5.6-nova"
     assert facade.state.codex_thread == "thread-9"
     assert facade.state.tokens == 42
-    assert facade.state.policy == "quiet"
     assert facade.state.tts_queue == ["one", "two"]
-
-
-def test_an_unknown_policy_is_refused(tui) -> None:
-    facade = tui.VoiceCodexTUI()
-
-    facade.set_policy("nonsense")
-
-    assert facade.state.policy != "nonsense"
 
 
 def test_a_discovered_catalog_adopts_the_models_efforts(tui) -> None:
@@ -451,3 +441,59 @@ def test_the_transcript_shows_committed_entries(tui) -> None:
         assert [row.entry.text for row in rows] == ["visible text"]
 
     drive(facade, body)
+
+
+# --------------------------------------------------------------------------
+# The facade has one naming convention
+# --------------------------------------------------------------------------
+
+# Methods that are legitimately not part of the presentation protocols.
+# Adding a name here is a deliberate decision, which is the point: the fifteen
+# extras this list replaced grew one alias at a time, each reasonable on its
+# own, until the facade had two names for most of what it did.
+HOST_ONLY_METHODS = frozenset(
+    {
+        # Lifecycle, owned by whoever runs the interface.
+        "run",
+        "wait_ready",
+        "stop",
+        # Sidebar panels the host fills in. These are not part of a Codex
+        # turn, so no presentation protocol describes them.
+        "set_audio",
+        "set_output",
+        "set_session",
+        "set_status",
+        "set_tts_queue",
+    }
+)
+
+
+def protocol_methods():
+    from voice_codex import presentation
+
+    names: set[str] = set()
+    for protocol in (
+        presentation.TranscriptSink,
+        presentation.SessionStatusSink,
+        presentation.CodexStreamSink,
+    ):
+        names |= {name for name in vars(protocol) if not name.startswith("_")}
+    return names
+
+
+def test_the_facade_offers_no_second_name_for_a_presentation_call(tui) -> None:
+    """Every public method is a protocol method or a listed host control.
+
+    A second spelling of an existing call is how the runtime and the interface
+    drift into two vocabularies, and an alias is invisible to coverage because
+    its own tests keep it green.
+    """
+    public = {name for name in vars(tui.VoiceCodexTUI) if not name.startswith("_")}
+
+    assert public - protocol_methods() - HOST_ONLY_METHODS == set()
+
+
+def test_the_facade_implements_every_presentation_call(tui) -> None:
+    public = {name for name in vars(tui.VoiceCodexTUI) if not name.startswith("_")}
+
+    assert protocol_methods() - public == set()
