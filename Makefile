@@ -5,8 +5,13 @@ PYTHON_SOURCES := voice-codex.py voice-codex-tui.py voice_codex
 
 # Lines this change touches must be tested even where the file's own floor is
 # still low. Overridable so a stacked branch can compare against its base.
+#
+# Held above the project's own coverage so new code cannot be worse than what
+# is already here; below 100 because main() is deliberately untested wiring.
+# When it fires, the answer is usually to extract the logic out of main, not
+# to waive the check. `make ratchet` refuses to let it fall.
 DIFF_BASE ?= origin/master
-DIFF_COVERAGE_MIN ?= 80
+DIFF_COVERAGE_MIN ?= 90
 
 # Thresholds are compared against this ref so a lowered floor fails the build
 # instead of relying on a reviewer noticing the diff.

@@ -11,6 +11,10 @@ Thresholds are read from the base branch and compared with the working tree.
 Raising a floor is always allowed. Lowering one fails. A floor may be dropped
 only when its source file is genuinely gone.
 
+A threshold is only guarded if this file knows where it lives, so every new
+one needs an entry here. They currently sit in four places: the gate scripts,
+`pyproject.toml`, `semgrep.yml`, and the Makefile.
+
 Suppression counts are deliberately not ratcheted: AGENTS.md permits a
 `# noqa` or `# nosec` that carries a finding ID and a justification, so a
 count-based gate would fire on legitimate use and be silenced.
@@ -30,6 +34,7 @@ MUTATION_GATE = "tools/mutation_gate.py"
 CONTEXT_BUDGET = "tools/context_budget.py"
 PYPROJECT = "pyproject.toml"
 SEMGREP_RULES = "semgrep.yml"
+MAKEFILE = "Makefile"
 
 
 def _read_base(base: str, path: str) -> str | None:
@@ -156,6 +161,42 @@ def _check_pyproject(base: str, failures: list[str]) -> None:
         )
 
 
+def _make_variable(source: str, name: str) -> float | None:
+    """Read a `NAME ?= value` assignment without invoking make."""
+    match = re.search(
+        rf"^{re.escape(name)}\s*\?*=\s*([0-9]+(?:\.[0-9]+)?)\s*$",
+        source,
+        flags=re.MULTILINE,
+    )
+    return float(match.group(1)) if match else None
+
+
+def _check_diff_coverage_floor(base: str, failures: list[str]) -> None:
+    """The diff-coverage floor lives in the Makefile, not in a gate script.
+
+    Every other threshold this file guards sits in Python or TOML, so the one
+    written in make syntax was the only one an agent could lower with every
+    check still green — and it is the threshold that governs new code, which
+    is where a generated change actually lands.
+    """
+    base_source = _read_base(base, MAKEFILE)
+    if base_source is None:
+        return
+    was = _make_variable(base_source, "DIFF_COVERAGE_MIN")
+    if was is None:
+        return
+    now = _make_variable(
+        Path(MAKEFILE).read_text(encoding="utf-8"), "DIFF_COVERAGE_MIN"
+    )
+    if now is None:
+        failures.append(
+            "DIFF_COVERAGE_MIN removed from the Makefile; changed lines would "
+            "no longer need tests."
+        )
+    elif now < was:
+        failures.append(f"DIFF_COVERAGE_MIN lowered {was:g} -> {now:g}.")
+
+
 def _check_semgrep_rules(base: str, failures: list[str]) -> None:
     base_source = _read_base(base, SEMGREP_RULES)
     if base_source is None:
@@ -188,6 +229,7 @@ def main(argv: list[str]) -> int:
     _check_mutation_floor(base, failures)
     _check_context_budget(base, failures)
     _check_pyproject(base, failures)
+    _check_diff_coverage_floor(base, failures)
     _check_semgrep_rules(base, failures)
 
     for failure in failures:
