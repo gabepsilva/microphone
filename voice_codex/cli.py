@@ -1693,6 +1693,22 @@ def build_session_state(args, selection):
     )
 
 
+def tts_switch(tts):
+    """Build the interface's speech toggle.
+
+    It reports whether the session has speech at all, so a session started
+    without Edge TTS says so instead of silently appearing to enable it.
+    """
+
+    def toggle(enabled):
+        if tts is None:
+            return False
+        tts.set_enabled(enabled)
+        return True
+
+    return toggle
+
+
 class TranscriptSubmitter:
     """Send completed turns to Codex, discarding the assistant's own TTS echo.
 
@@ -1824,9 +1840,7 @@ def main():
     tui.hooks.on_interrupt = conversation.interrupt
     tui.hooks.on_codex_model = conversation.request_model
     tui.hooks.on_codex_effort = conversation.request_reasoning_effort
-    tui.hooks.on_tts = (
-        lambda enabled: False if tts is None else (tts.set_enabled(enabled) or True)
-    )
+    tui.hooks.on_tts = tts_switch(tts)
 
     submitter = TranscriptSubmitter(conversation, gate, tts)
 

@@ -446,3 +446,16 @@ def test_an_interrupted_session_still_closes_everything(
     assert "Stopping..." in capsys.readouterr().out
     assert events[-1] == "close conversation"
     assert events.count("close conversation") == 1
+
+
+def test_the_speech_toggle_reports_no_speech_when_the_session_has_none(voice) -> None:
+    assert voice.tts_switch(None)(True) is False
+
+
+def test_the_speech_toggle_forwards_to_the_engine(voice) -> None:
+    settings: list[bool] = []
+    toggle = voice.tts_switch(SimpleNamespace(set_enabled=settings.append))
+
+    assert toggle(False) is True
+    assert toggle(True) is True
+    assert settings == [False, True]
