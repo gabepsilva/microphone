@@ -564,3 +564,28 @@ def test_the_worker_drains_queued_requests(conversation) -> None:
     conversation.ingest("Them", "A question", respond=True, timestamp="T1")
 
     assert rendered.wait(WAIT_SECONDS)
+
+
+def test_a_turn_that_ends_on_a_command_speaks_its_text_exactly_once() -> None:
+    """The turn completes with no message open, so the close is a no-op.
+
+    The flush that follows it is not: the chunker can still hold the tail of a
+    message the command boundary closed. Speaking it twice, or not at all, are
+    both audible.
+    """
+    from voice_codex.domain import SentenceChunker
+
+    spoken: list[str] = []
+    display = render(
+        [
+            delta("Running it now"),
+            started(command_item()),
+            finished(command_item()),
+            turn_completed(),
+        ],
+        chunker=SentenceChunker(spoken.append),
+    )
+
+    assert spoken == ["Running it now"]
+    closes = [call for call in display.calls if call[0] == "codex_message_close"]
+    assert len(closes) == 1

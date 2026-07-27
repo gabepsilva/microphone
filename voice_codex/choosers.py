@@ -58,6 +58,35 @@ def prompt_number(prompt, low, high, retry):
     return prompt_until(prompt, resolve, retry)
 
 
+def print_menu(title, descriptions, first_number=1, note=None):
+    """Print a numbered menu of choices, followed by a blank line."""
+    print(title)
+    for number, description in enumerate(descriptions, start=first_number):
+        print(f"  {number:2d}) {description}")
+    if note is not None:
+        print(note)
+    print()
+
+
+def choose_from_menu(title, options, subject, first_number=1, note=None):
+    """Offer numbered ``(description, value)`` options and return the value.
+
+    The range in the prompt, the range in the retry message, and the range the
+    answer is checked against are all the length of the menu, so a chooser
+    cannot offer an entry it then refuses. ``first_number`` exists because the
+    Them menu counts a "None" entry from zero.
+    """
+    print_menu(title, [description for description, _ in options], first_number, note)
+    last = first_number + len(options) - 1
+    selected = prompt_number(
+        f"Select {subject} ({first_number}-{last}): ",
+        first_number,
+        last,
+        f"Please enter a number from {first_number} to {last}.",
+    )
+    return options[selected - first_number][1]
+
+
 def select_microphone(devices, requested):
     """Find a requested microphone by device index or exact name."""
     requested_text = str(requested)
@@ -78,21 +107,18 @@ def choose_microphone(requested=None):
     if requested is not None:
         return select_microphone(devices, requested)
 
-    print("Available audio input devices:")
-    for number, (index, device) in enumerate(devices, start=1):
-        print(
-            f"  {number:2d}) {device['name']} "
-            f"(device {index}, {int(device['default_samplerate'])} Hz)"
-        )
-    print()
-
-    selected = prompt_number(
-        f"Select a microphone (1-{len(devices)}): ",
-        1,
-        len(devices),
-        f"Please enter a number from 1 to {len(devices)}.",
+    return choose_from_menu(
+        "Available audio input devices:",
+        [
+            (
+                f"{device['name']} "
+                f"(device {index}, {int(device['default_samplerate'])} Hz)",
+                (index, device),
+            )
+            for index, device in devices
+        ],
+        "a microphone",
     )
-    return devices[selected - 1]
 
 
 def audio_outputs():
@@ -169,29 +195,26 @@ def choose_them_output(requested=None, require_isolation=False):
     if requested is not None:
         return select_them_output(outputs, requested, require_isolation)
 
-    print("\nAudio output to transcribe as Them:")
-    print("   0) None")
-    print("   1) Create isolated Voice Codex Meeting output (recommended)")
+    note = None
     if require_isolation:
         # A direct monitor would transcribe Codex's own speech back as Them.
         outputs = []
-        print("      Direct output monitors are hidden while Edge TTS is enabled.")
-    else:
-        for number, output in enumerate(outputs, start=2):
-            print(f"  {number:2d}) {output['description']}")
+        note = "      Direct output monitors are hidden while Edge TTS is enabled."
 
-    print()
-    selected = prompt_number(
-        f"Select an audio output (0-{len(outputs) + 1}): ",
-        0,
-        len(outputs) + 1,
-        f"Please enter a number from 0 to {len(outputs) + 1}.",
+    return choose_from_menu(
+        "\nAudio output to transcribe as Them:",
+        [
+            ("None", None),
+            (
+                "Create isolated Voice Codex Meeting output (recommended)",
+                {ISOLATED_OUTPUT: True},
+            ),
+            *((output["description"], output) for output in outputs),
+        ],
+        "an audio output",
+        first_number=0,
+        note=note,
     )
-    if selected == 0:
-        return None
-    if selected == 1:
-        return {ISOLATED_OUTPUT: True}
-    return outputs[selected - 2]
 
 
 def select_playback_output(outputs, requested):
@@ -211,17 +234,11 @@ def choose_playback_output(requested=None):
     if requested is not None:
         return select_playback_output(outputs, requested)
 
-    print("\nPhysical output for meeting audio and Codex TTS:")
-    for number, output in enumerate(outputs, start=1):
-        print(f"  {number:2d}) {output['description']}")
-    print()
-    selected = prompt_number(
-        f"Select a playback output (1-{len(outputs)}): ",
-        1,
-        len(outputs),
-        f"Please enter a number from 1 to {len(outputs)}.",
+    return choose_from_menu(
+        "\nPhysical output for meeting audio and Codex TTS:",
+        [(output["description"], output) for output in outputs],
+        "a playback output",
     )
-    return outputs[selected - 1]
 
 
 class VirtualMeetingOutput:
@@ -310,10 +327,7 @@ def choose_codex_after(requested=None):
         return resolve_response_policy(requested)
 
     policies = list(RESPONSE_POLICIES.values())
-    print("\nCodex should respond after:")
-    for number, policy in enumerate(policies, start=1):
-        print(f"  {number:2d}) {policy.label}")
-    print()
+    print_menu("\nCodex should respond after:", [p.label for p in policies])
     return prompt_until(
         f"Select a response policy (1-{len(policies)}): ",
         resolve_response_policy,
