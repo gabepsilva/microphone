@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from voice_codex import cli
+from voice_codex.domain import RESPONSE_POLICIES
 
 MIC = {"name": "Yeti"}
 THEM_OUTPUT = {
@@ -102,8 +103,7 @@ def wiring(monkeypatch, tmp_path):
                 them_output=built["them_output"],
                 them_output_setting="isolated",
                 playback_output=built["playback_output"],
-                policy_name="Them",
-                codex_speakers=frozenset({"Them"}),
+                policy=RESPONSE_POLICIES["them"],
             ),
             built["virtual_meeting"],
         )

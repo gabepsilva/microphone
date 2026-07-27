@@ -31,6 +31,7 @@ from voice_codex.choosers import (
     select_playback_output,
     select_them_output,
 )
+from voice_codex.domain import RESPONSE_POLICIES
 
 
 def answer_with(monkeypatch, answers):
@@ -359,7 +360,7 @@ def test_choosing_a_playback_output_fails_without_any_sink(monkeypatch) -> None:
     ],
 )
 def test_a_requested_response_policy_needs_no_prompt(requested, label) -> None:
-    assert choose_codex_after(requested)[0] == label
+    assert choose_codex_after(requested).label == label
 
 
 def test_choosing_a_response_policy_accepts_its_menu_number(
@@ -367,9 +368,10 @@ def test_choosing_a_response_policy_accepts_its_menu_number(
 ) -> None:
     answer_with(monkeypatch, ["9", "2"])
 
-    label, speakers = choose_codex_after()
+    policy = choose_codex_after()
 
-    assert (label, speakers) == (
+    assert (policy.name, policy.label, policy.speakers) == (
+        "both",
         "User Voice and Them",
         frozenset({"User Voice", "Them"}),
     )
@@ -488,3 +490,26 @@ def test_a_requested_playback_output_skips_the_menu(monkeypatch, capsys) -> None
 
     assert choose_playback_output("Headset") is OUTPUTS[1]
     assert capsys.readouterr().out == ""
+
+
+def test_the_startup_menu_offers_every_defined_policy_in_order(
+    monkeypatch, capsys
+) -> None:
+    answer_with(monkeypatch, ["1"])
+
+    choose_codex_after()
+
+    menu = capsys.readouterr().out
+    for number, policy in enumerate(RESPONSE_POLICIES.values(), start=1):
+        assert f"{number:2d}) {policy.label}" in menu
+
+
+@pytest.mark.parametrize("name", list(RESPONSE_POLICIES))
+def test_every_policy_is_reachable_by_name_and_by_menu_number(name) -> None:
+    policy = RESPONSE_POLICIES[name]
+    number = str(list(RESPONSE_POLICIES).index(name) + 1)
+
+    # Both spellings a user can supply resolve to the same policy, so the menu
+    # numbering cannot drift away from the mapping it is generated from.
+    assert choose_codex_after(name) is policy
+    assert choose_codex_after(number) is policy

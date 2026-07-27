@@ -70,7 +70,7 @@ def main():
     available_speakers = {"User Voice"}
     if them_output is not None:
         available_speakers.add("Them")
-    gate = SpeakerGate(selection.codex_speakers, available_speakers)
+    gate = SpeakerGate(selection.policy.speakers, available_speakers)
 
     from .tui import VoiceCodexTUI
 

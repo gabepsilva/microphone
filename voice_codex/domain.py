@@ -21,27 +21,42 @@ CODEX = "Codex"
 
 @dataclass(frozen=True)
 class ResponsePolicy:
-    """The completed voice turns that are allowed to trigger a reply."""
+    """The completed voice turns that are allowed to trigger a reply.
+
+    Both wordings live here because both name the same choice. ``label`` is
+    the startup menu's, which has a full terminal line; ``sidebar_label`` is
+    the interface picker's, which has 34 columns.
+    """
 
     name: str
     label: str
+    sidebar_label: str
     speakers: frozenset[str]
 
 
+# The one place a response policy is defined. Everything that offers, saves,
+# validates, or displays one derives from this mapping rather than restating
+# it: the CLI choices, the startup menu and its numbering, the saved config
+# value, and the interface picker. Insertion order is menu order.
 RESPONSE_POLICIES = {
-    "them": ResponsePolicy("them", "Them", frozenset({THEM})),
+    "them": ResponsePolicy("them", "Them", "Them", frozenset({THEM})),
     "both": ResponsePolicy(
-        "both", "User Voice and Them", frozenset({USER_VOICE, THEM})
+        "both",
+        "User Voice and Them",
+        "User Voice + Them",
+        frozenset({USER_VOICE, THEM}),
     ),
-    "user": ResponsePolicy("user", "User Voice", frozenset({USER_VOICE})),
-    "quiet": ResponsePolicy("quiet", "Codex will be quiet for voice", frozenset()),
+    "user": ResponsePolicy("user", "User Voice", "User Voice", frozenset({USER_VOICE})),
+    "quiet": ResponsePolicy(
+        "quiet", "Codex will be quiet for voice", "stay silent", frozenset()
+    ),
 }
+POLICY_NAMES = tuple(RESPONSE_POLICIES)
+# Menu numbers are positions, so they follow the mapping rather than a second
+# hand-written list that a reordering would silently invalidate.
 _POLICY_ALIASES = {
-    "1": "them",
-    "2": "both",
-    "3": "user",
-    "4": "quiet",
-    **{name: name for name in RESPONSE_POLICIES},
+    **{str(number): name for number, name in enumerate(POLICY_NAMES, start=1)},
+    **{name: name for name in POLICY_NAMES},
 }
 
 

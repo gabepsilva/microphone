@@ -39,14 +39,15 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, Select, Static
 
+from .domain import CODEX, RESPONSE_POLICIES, THEM, USER_TEXT, USER_VOICE
+
 # --------------------------------------------------------------------------
 # Sources and palette
+#
+# The speaker names and the response policies are the domain's, not the
+# interface's. Restating them here would let the two drift into two
+# vocabularies that compare unequal with nothing to catch it.
 # --------------------------------------------------------------------------
-
-USER_VOICE = "User Voice"
-USER_TEXT = "User Text"
-THEM = "Them"
-CODEX = "Codex"
 
 SOURCE_STYLES = {
     USER_VOICE: "bold #6ba7ff",  # bright blue
@@ -56,12 +57,7 @@ SOURCE_STYLES = {
 }
 BODY_STYLE = "#cdd6e4"
 
-POLICIES = {
-    "them": "Them",
-    "both": "User Voice + Them",
-    "user": "User Voice",
-    "quiet": "stay silent",
-}
+POLICIES = {name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.items()}
 
 
 # --------------------------------------------------------------------------

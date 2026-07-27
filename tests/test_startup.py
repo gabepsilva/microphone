@@ -13,12 +13,11 @@ from types import SimpleNamespace
 import pytest
 
 from voice_codex import catalog, startup
-from voice_codex.domain import SpeakerGate
+from voice_codex.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
 from voice_codex.listener import TranscriptSubmitter, tts_switch
 from voice_codex.startup import (
     StartupSelection,
     build_session_state,
-    codex_after_name,
     parse_startup_args,
     print_startup_summary,
     resolve_startup_selection,
@@ -45,8 +44,7 @@ BASE_SELECTION = StartupSelection(
     them_output=None,
     them_output_setting="none",
     playback_output=None,
-    policy_name="Them",
-    codex_speakers=frozenset({"Them"}),
+    policy=RESPONSE_POLICIES["them"],
 )
 
 
@@ -124,26 +122,12 @@ def test_them_output_is_named_the_way_a_saved_config_records_it(
     assert them_output_name(them_output) == expected
 
 
-@pytest.mark.parametrize(
-    ("speakers", "expected"),
-    [
-        ({"Them"}, "them"),
-        ({"User Voice", "Them"}, "both"),
-        ({"User Voice"}, "user"),
-        (set(), "quiet"),
-        ({"Nobody"}, "quiet"),
-    ],
-)
-def test_a_speaker_set_is_named_by_its_matching_policy(speakers, expected) -> None:
-    assert codex_after_name(speakers) == expected
-
-
 def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     chosen = selection(
         tts_enabled=True,
         them_output_setting="isolated",
         playback_output={"name": "alsa_output.pci", "description": "Speakers"},
-        codex_speakers=frozenset({"User Voice", "Them"}),
+        policy=RESPONSE_POLICIES["both"],
     )
 
     assert startup_settings(chosen) == {
@@ -227,7 +211,7 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
 
     state = build_session_state(
         args,
-        selection(tts_enabled=True, codex_speakers=frozenset({"User Voice"})),
+        selection(tts_enabled=True, policy=RESPONSE_POLICIES["user"]),
     )
 
     assert (state.policy, state.codex_tier, state.codex_effort) == (
@@ -459,3 +443,41 @@ def test_the_speech_toggle_forwards_to_the_engine() -> None:
     assert toggle(False) is True
     assert toggle(True) is True
     assert settings == [False, True]
+
+
+# --------------------------------------------------------------------------
+# The policy vocabulary has one definition
+#
+# These fail if a policy is added to `RESPONSE_POLICIES` and the command line
+# is not derived from it, which is how the four copies of this list drifted
+# apart in the first place.
+# --------------------------------------------------------------------------
+
+
+def test_the_command_line_offers_exactly_the_defined_policies() -> None:
+    parser = startup.build_parser()
+    action = next(a for a in parser._actions if a.dest == "codex_after")
+
+    assert tuple(action.choices) == POLICY_NAMES
+
+
+def test_a_bad_config_policy_is_rejected_by_naming_every_real_one(
+    tmp_path, capsys
+) -> None:
+    config = write_config(tmp_path, 'codex_after: "sometimes"\n')
+
+    with pytest.raises(SystemExit):
+        parse_startup_args(["--config", config])
+
+    message = capsys.readouterr().err
+    for name in POLICY_NAMES:
+        assert repr(name) in message
+
+
+def test_every_policy_round_trips_through_a_saved_config() -> None:
+    for name, policy in RESPONSE_POLICIES.items():
+        saved = startup_settings(selection(policy=policy))
+
+        assert saved["codex_after"] == name
+        # A saved name has to be a name the command line will take back.
+        assert name in POLICY_NAMES

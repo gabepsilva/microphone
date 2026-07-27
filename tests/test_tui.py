@@ -435,3 +435,14 @@ def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:
 
     assert app.state.tts_enabled is False
     assert app.entries[-1].text == "tts unavailable for this session"
+
+
+def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
+    from voice_codex.domain import RESPONSE_POLICIES
+
+    # The picker's labels are the domain's, so a policy added there appears
+    # here without a second list to remember to update.
+    assert {
+        name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.items()
+    } == tui.POLICIES
+    assert set(tui.POLICIES) == set(RESPONSE_POLICIES)
