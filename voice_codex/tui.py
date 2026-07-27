@@ -7,9 +7,10 @@ forwards user intent. Everything it displays arrives through
 leaves through :class:`TuiHooks` callbacks. The runtime uses that facade as its
 display boundary when started with ``voice-codex.py``.
 
-Run it directly to open an empty session:
-
-    uv run voice-codex-tui.py
+``voice-codex-tui.py`` is a compatibility alias for that same command, not a
+way to open this module on its own. Both entry points call
+``voice_codex.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds them
+to it.
 """
 
 from __future__ import annotations
