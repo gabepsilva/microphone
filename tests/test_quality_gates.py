@@ -231,6 +231,195 @@ def test_context_budget_rejects_a_budgeted_file_that_vanished(
 
 
 # --------------------------------------------------------------------------
+# tools/worker_gate.py
+# --------------------------------------------------------------------------
+
+NON_DAEMON_THREAD = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run)
+        self.worker.start()
+"""
+
+UNBOUNDED_JOIN = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self):
+        self.worker.join()
+"""
+
+EXPLICIT_NONE_JOIN_TIMEOUT = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self):
+        self.worker.join(timeout=None)
+"""
+
+POSITIONAL_NONE_JOIN_TIMEOUT = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self):
+        self.worker.join(None)
+"""
+
+UNPACKED_JOIN_KWARGS = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self, **options):
+        self.worker.join(**options)
+"""
+
+ANNOTATED_NON_DAEMON_THREAD = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker: threading.Thread = threading.Thread(target=self._run)
+        self.worker.start()
+
+    def close(self):
+        self.worker.join()
+"""
+
+INLINE_NON_DAEMON_THREAD = """
+import threading
+
+
+def run_session(tui):
+    threading.Thread(target=populate, args=(tui,)).start()
+"""
+
+NON_DAEMON_TIMER = """
+import threading
+
+
+class Listener:
+    def _start_timer(self):
+        self.timer = threading.Timer(3.0, self._flush)
+        self.timer.start()
+"""
+
+# Spellings this package really uses. Timer takes no daemon keyword, and
+# str.join is everywhere; neither may be flagged.
+CONVENTION_FOLLOWING_WORKERS = """
+import threading
+
+
+class Listener:
+    def _start_timer(self):
+        self.timer = threading.Timer(3.0, self._flush)
+        self.timer.daemon = True
+        self.timer.start()
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.drain: threading.Thread = threading.Thread(target=self._drain)
+        self.drain.daemon = True
+
+    def close(self):
+        self.reader.join(timeout=3)
+        self.worker.join(timeout=10)
+        self.drain.join(5.0)
+
+    def _text(self, words):
+        return " ".join(word.strip() for word in words)
+
+
+def run_session(tui):
+    threading.Thread(target=populate, args=(tui,), daemon=True).start()
+"""
+
+
+@pytest.mark.parametrize(
+    ("label", "source"),
+    [
+        ("non-daemon worker thread", NON_DAEMON_THREAD),
+        ("join with no timeout", UNBOUNDED_JOIN),
+        ("inline non-daemon thread", INLINE_NON_DAEMON_THREAD),
+        ("non-daemon timer", NON_DAEMON_TIMER),
+        ("join with an explicit None timeout", EXPLICIT_NONE_JOIN_TIMEOUT),
+        ("join with a positional None timeout", POSITIONAL_NONE_JOIN_TIMEOUT),
+        ("annotated non-daemon thread", ANNOTATED_NON_DAEMON_THREAD),
+        ("join whose timeout is hidden in **kwargs", UNPACKED_JOIN_KWARGS),
+    ],
+)
+def test_worker_gate_rejects_a_thread_that_can_outlive_shutdown(label, source) -> None:
+    gate = _load_gate("worker_gate")
+
+    assert gate.check_source(source, Path("planted.py")), f"gate accepted a {label}"
+
+
+def test_worker_gate_accepts_the_spellings_this_package_uses() -> None:
+    """A gate that rejects Timer or str.join would be deleted within a week."""
+    gate = _load_gate("worker_gate")
+
+    assert gate.check_source(CONVENTION_FOLLOWING_WORKERS, Path("planted.py")) == []
+
+
+def test_worker_gate_fails_when_it_scans_a_package_that_is_not_there(
+    tmp_path, monkeypatch
+) -> None:
+    """Scanning nothing must not be reported as a clean run."""
+    gate = _load_gate("worker_gate")
+    monkeypatch.setattr(gate, "PACKAGE", tmp_path / "voice_codex")
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 1
+
+
+def test_worker_gate_reports_a_planted_violation_through_main(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("worker_gate")
+    package = tmp_path / "voice_codex"
+    package.mkdir()
+    (package / "capture.py").write_text(NON_DAEMON_THREAD, encoding="utf-8")
+    monkeypatch.setattr(gate, "PACKAGE", package)
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 1
+
+
+def test_worker_gate_passes_on_this_repository() -> None:
+    """The convention it enforces is the one the package already follows."""
+    gate = _load_gate("worker_gate")
+    monkeypatch_free_failures = [
+        failure
+        for path in sorted((ROOT / "voice_codex").rglob("*.py"))
+        for failure in gate.check_source(path.read_text(encoding="utf-8"), path)
+    ]
+
+    assert monkeypatch_free_failures == []
+
+
+# --------------------------------------------------------------------------
 # tools/ratchet_gate.py
 # --------------------------------------------------------------------------
 

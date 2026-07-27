@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from voice_codex import cli
+from voice_codex.catalog import _parse_codex_model_catalog
+
 ENTRYPOINTS = ["voice-codex.py", "voice-codex-tui.py"]
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,29 +26,25 @@ def test_each_entrypoint_launches_the_configured_application(
     assert called == [True]
 
 
-def test_a_keyboard_interrupt_stops_without_a_traceback(
-    voice, monkeypatch, capsys
-) -> None:
+def test_a_keyboard_interrupt_stops_without_a_traceback(monkeypatch, capsys) -> None:
     def interrupted():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(voice, "main", interrupted)
+    monkeypatch.setattr(cli, "main", interrupted)
 
-    voice.run_entrypoint()
+    cli.run_entrypoint()
 
     assert "Stopped." in capsys.readouterr().out
 
 
-def test_a_startup_failure_is_reported_and_exits_nonzero(
-    voice, monkeypatch, capsys
-) -> None:
+def test_a_startup_failure_is_reported_and_exits_nonzero(monkeypatch, capsys) -> None:
     def failed():
         raise RuntimeError("No audio input devices were found.")
 
-    monkeypatch.setattr(voice, "main", failed)
+    monkeypatch.setattr(cli, "main", failed)
 
     with pytest.raises(SystemExit, match="1"):
-        voice.run_entrypoint()
+        cli.run_entrypoint()
 
     assert "Error: No audio input devices were found." in capsys.readouterr().err
 
@@ -67,8 +66,8 @@ def model(**overrides):
     return entry
 
 
-def test_a_usable_model_is_parsed_with_its_efforts(voice) -> None:
-    (option,) = voice._parse_codex_model_catalog(catalog(model()))
+def test_a_usable_model_is_parsed_with_its_efforts() -> None:
+    (option,) = _parse_codex_model_catalog(catalog(model()))
 
     assert option.slug == "gpt-5.6-luna"
     assert option.label == "Luna"
@@ -76,8 +75,8 @@ def test_a_usable_model_is_parsed_with_its_efforts(voice) -> None:
     assert option.default_effort == "high"
 
 
-def test_models_are_ordered_by_priority_then_label(voice) -> None:
-    options = voice._parse_codex_model_catalog(
+def test_models_are_ordered_by_priority_then_label() -> None:
+    options = _parse_codex_model_catalog(
         catalog(
             model(slug="c", display_name="Third", priority=9),
             model(slug="b", display_name="Beta", priority=1),
@@ -88,8 +87,8 @@ def test_models_are_ordered_by_priority_then_label(voice) -> None:
     assert [option.label for option in options] == ["Alpha", "Beta", "Third"]
 
 
-def test_a_model_without_a_priority_sorts_last(voice) -> None:
-    options = voice._parse_codex_model_catalog(
+def test_a_model_without_a_priority_sorts_last() -> None:
+    options = _parse_codex_model_catalog(
         catalog(
             model(slug="b", display_name="No priority", priority=None),
             model(slug="a", display_name="Has priority", priority=5),
@@ -99,14 +98,14 @@ def test_a_model_without_a_priority_sorts_last(voice) -> None:
     assert [option.label for option in options] == ["Has priority", "No priority"]
 
 
-def test_a_missing_display_name_falls_back_to_the_slug(voice) -> None:
-    (option,) = voice._parse_codex_model_catalog(catalog(model(display_name=None)))
+def test_a_missing_display_name_falls_back_to_the_slug() -> None:
+    (option,) = _parse_codex_model_catalog(catalog(model(display_name=None)))
 
     assert option.label == "gpt-5.6-luna"
 
 
-def test_an_unlisted_default_effort_falls_back_to_the_first(voice) -> None:
-    (option,) = voice._parse_codex_model_catalog(
+def test_an_unlisted_default_effort_falls_back_to_the_first() -> None:
+    (option,) = _parse_codex_model_catalog(
         catalog(model(default_reasoning_level="extreme"))
     )
 
@@ -125,20 +124,20 @@ def test_an_unlisted_default_effort_falls_back_to_the_first(voice) -> None:
         {"supported_reasoning_levels": [{"effort": ""}, {"not": "an effort"}, 7]},
     ],
 )
-def test_an_unusable_model_is_skipped(voice, overrides) -> None:
-    assert voice._parse_codex_model_catalog(catalog(model(**overrides))) == []
+def test_an_unusable_model_is_skipped(overrides) -> None:
+    assert _parse_codex_model_catalog(catalog(model(**overrides))) == []
 
 
 @pytest.mark.parametrize(
     "payload",
     ["not a dict", None, 7, {}, {"models": "not a list"}, {"models": ["not a dict"]}],
 )
-def test_an_unusable_catalog_yields_no_models(voice, payload) -> None:
-    assert voice._parse_codex_model_catalog(payload) == []
+def test_an_unusable_catalog_yields_no_models(payload) -> None:
+    assert _parse_codex_model_catalog(payload) == []
 
 
-def test_a_usable_model_survives_an_unusable_neighbour(voice) -> None:
-    options = voice._parse_codex_model_catalog(
+def test_a_usable_model_survives_an_unusable_neighbour() -> None:
+    options = _parse_codex_model_catalog(
         catalog("not a dict", model(visibility="hidden"), model())
     )
 
