@@ -23,6 +23,7 @@ STARTUP_CONFIG_KEYS = (
     "turn_silence",
     "codex_model",
     "codex_reasoning",
+    "codex_fast",
 )
 
 

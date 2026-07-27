@@ -56,6 +56,7 @@ def saved_args(**overrides):
             "turn_silence": 3.0,
             "codex_model": "gpt-5.6-luna",
             "codex_reasoning": "low",
+            "codex_fast": True,
             **overrides,
         }
     )
@@ -84,7 +85,7 @@ def test_parser_defaults_match_the_documented_startup_choices(tmp_path) -> None:
         "piper",
         "en_US-lessac-medium",
     )
-    assert args.codex_fast is False
+    assert args.codex_fast is True
     assert (args.tts, args.codex_after, args.microphone) == (None, None, None)
 
 
@@ -157,6 +158,7 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
+        "codex_fast": True,
     }
 
 
@@ -216,7 +218,6 @@ def test_the_startup_summary_omits_the_warning_without_a_them_output(tmp_path) -
 
     assert "Them audio output: None" in summary
     assert "may transcribe Codex TTS" not in summary
-    assert "Codex speed: Standard" in summary
 
 
 def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> None:
@@ -564,6 +565,7 @@ def test_a_turn_silence_inside_the_editable_range_is_accepted(
         'codex_reasoning: "sometimes"\n',
         'turn_silence: "three"\n',
         "turn_silence: true\n",
+        'codex_fast: "yes"\n',
     ],
 )
 def test_a_config_value_the_session_cannot_use_is_rejected(tmp_path, body) -> None:
@@ -589,6 +591,44 @@ def test_saved_codex_choices_are_loaded_back(tmp_path) -> None:
     )
 
 
+def test_codex_fast_is_asked_for_unless_the_session_declines_it(tmp_path) -> None:
+    # A spoken reply cannot start before the first token, so the tier is on by
+    # default and opting out is explicit.
+    _, fast = parse_startup_args(["--config", empty_config(tmp_path)])
+    _, standard = parse_startup_args(
+        ["--config", empty_config(tmp_path), "--no-codex-fast"]
+    )
+
+    assert (fast.codex_fast, standard.codex_fast) == (True, False)
+
+
+def test_a_saved_standard_tier_survives_the_default(tmp_path) -> None:
+    config = write_config(tmp_path, "codex_fast: false\n")
+
+    _, args = parse_startup_args(["--config", config])
+
+    assert args.codex_fast is False
+
+
+def test_the_command_line_still_outranks_a_saved_tier(tmp_path) -> None:
+    config = write_config(tmp_path, "codex_fast: false\n")
+
+    _, args = parse_startup_args(["--config", config, "--codex-fast"])
+
+    assert args.codex_fast is True
+
+
+def test_a_standard_tier_session_says_so_in_its_summary(tmp_path) -> None:
+    _, args = parse_startup_args(
+        ["--config", empty_config(tmp_path), "--no-codex-fast"]
+    )
+    stream = io.StringIO()
+
+    print_startup_summary(args, selection(), stream=stream)
+
+    assert "Codex speed: Standard" in stream.getvalue()
+
+
 def test_the_command_line_still_outranks_a_saved_codex_choice(tmp_path) -> None:
     config = write_config(tmp_path, 'codex_model: "gpt-5.6-sol"\nturn_silence: 1.25\n')
 
@@ -605,4 +645,5 @@ def test_an_empty_config_resolves_every_default_from_the_code(tmp_path) -> None:
     assert args.turn_silence == 3.0
     assert args.codex_model == "gpt-5.6-luna"
     assert args.codex_reasoning == "low"
+    assert args.codex_fast is True
     assert args.tts_provider == "piper"

@@ -21,6 +21,10 @@ def test_startup_config_round_trip(tmp_path) -> None:
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
+        # A boolean has to survive the round trip as a boolean: the loader
+        # reads it back through JSON, and "true" would be a nine-tenths-right
+        # config key that silently reads as truthy either way.
+        "codex_fast": False,
     }
     config = tmp_path / "voice.yaml"
 
@@ -100,6 +104,7 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
+        "codex_fast": True,
     }
 
     save_startup_config(path, settings)

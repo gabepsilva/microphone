@@ -8,7 +8,11 @@ tts_provider: null
 them_output: null
 playback_output: null
 codex_after: null
-# Left null, these take the built-in defaults: 3.0 seconds, gpt-5.6-luna, low.
+# Left null, these take the built-in defaults: 3.0 seconds, gpt-5.6-luna, low,
+# and Codex Fast on — a spoken reply cannot start before the first token, so
+# the tier is bought back as latency. Set codex_fast to false to spend fewer
+# credits instead.
 turn_silence: null
 codex_model: null
 codex_reasoning: null
+codex_fast: null

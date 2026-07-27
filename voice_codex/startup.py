@@ -33,6 +33,12 @@ DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
 CODEX_EFFORTS = ("low", "medium", "high")
 
+# A spoken conversation is waiting on the first word out loud, and the service
+# tier is the one part of that wait this program does not otherwise control:
+# nothing here can start speaking before Codex has produced a token. It costs
+# more credits, which is what --no-codex-fast is for.
+DEFAULT_CODEX_FAST = True
+
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "voice.yaml",
@@ -91,8 +97,13 @@ def build_parser():
     )
     parser.add_argument(
         "--codex-fast",
-        action="store_true",
-        help=("Request Codex Fast mode for lower latency; consumes more credits"),
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Request Codex Fast mode for lower latency; consumes more credits "
+            f"(default: {'on' if DEFAULT_CODEX_FAST else 'off'}). "
+            "--no-codex-fast asks for the standard tier"
+        ),
     )
     parser.add_argument(
         "--them-output",
@@ -155,6 +166,7 @@ def _resolve_defaults(args):
         ("turn_silence", DEFAULT_TURN_SILENCE),
         ("codex_model", DEFAULT_CODEX_MODEL),
         ("codex_reasoning", DEFAULT_CODEX_EFFORT),
+        ("codex_fast", DEFAULT_CODEX_FAST),
     ):
         if getattr(args, option) is None:
             setattr(args, option, fallback)
@@ -169,6 +181,8 @@ def _validate_startup_args(parser, args):
     if args.tts_provider is not None and args.tts_provider not in PROVIDERS:
         allowed = ", ".join(repr(name) for name in PROVIDERS)
         parser.error(f"startup config 'tts_provider' must be one of {allowed}")
+    if args.codex_fast is not None and not isinstance(args.codex_fast, bool):
+        parser.error("startup config 'codex_fast' must be true or false")
     if args.codex_reasoning is not None and args.codex_reasoning not in CODEX_EFFORTS:
         allowed = ", ".join(repr(name) for name in CODEX_EFFORTS)
         parser.error(f"startup config 'codex_reasoning' must be one of {allowed}")
@@ -242,6 +256,7 @@ def startup_settings(selection, args):
         "turn_silence": args.turn_silence,
         "codex_model": args.codex_model,
         "codex_reasoning": args.codex_reasoning,
+        "codex_fast": args.codex_fast,
     }
 
 
