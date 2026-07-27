@@ -234,7 +234,14 @@ class EntryRow(Vertical):
             yield Static(render_entry_body(self.entry), classes="entry-body")
 
     def sync(self) -> None:
-        self.query_one(".entry-body", Static).update(render_entry_body(self.entry))
+        """Re-render this row in place.
+
+        A row mounted in the same frame has not composed its children yet.
+        ``compose`` renders the entry as it stands then, so there is nothing
+        to update and querying for a body that does not exist would raise.
+        """
+        for body in self.query(".entry-body").results(Static):
+            body.update(render_entry_body(self.entry))
 
 
 class Sidebar(Vertical):
@@ -353,49 +360,70 @@ class Sidebar(Vertical):
         echoes.clear()
         return False
 
-    def on_select_changed(self, event: Select.Changed) -> None:  # noqa: C901 - pre-existing: one branch per sidebar picker
+    def on_select_changed(self, event: Select.Changed) -> None:
         if self._is_echo(event) or event.value is Select.NULL:
             return
-        value = str(event.value)
-        if event.select.id == "policy-select" and value != self.state.policy:
-            self.state.policy = value
-            if self.hooks.on_policy:
-                self.hooks.on_policy(value)
-        elif event.select.id == "model-select" and value != self.state.codex_model:
-            previous_model = self.state.codex_model
-            previous_effort = self.state.codex_effort
-            previous_efforts = self.state.codex_efforts
-            if self.hooks.on_codex_model and self.hooks.on_codex_model(value) is False:
-                self.sync()
-                return
-            self.state.codex_model = value
-            available_efforts = self.state.codex_efforts_by_model.get(value, [])
-            if available_efforts:
-                self.state.codex_efforts = available_efforts
-                if self.state.codex_effort not in available_efforts:
-                    self.state.codex_effort = (
-                        self.state.codex_default_effort_by_model.get(value)
-                        or available_efforts[0]
-                    )
-            if (
-                self.state.codex_effort != previous_effort
-                and self.hooks.on_codex_effort
-                and self.hooks.on_codex_effort(self.state.codex_effort) is False
-            ):
-                # The whole switch is off, effort list included.
-                self.state.codex_model = previous_model
-                self.state.codex_effort = previous_effort
-                self.state.codex_efforts = previous_efforts
+        handler = {
+            "policy-select": self._policy_selected,
+            "model-select": self._model_selected,
+            "reasoning-select": self._effort_selected,
+        }.get(event.select.id)
+        if handler is not None:
+            handler(str(event.value))
+
+    def _policy_selected(self, value: str) -> None:
+        if value == self.state.policy:
+            return
+        self.state.policy = value
+        if self.hooks.on_policy:
+            self.hooks.on_policy(value)
+
+    def _adopt_efforts_for(self, model: str) -> None:
+        """Offer the efforts the newly selected model supports."""
+        available_efforts = self.state.codex_efforts_by_model.get(model, [])
+        if not available_efforts:
+            return
+        self.state.codex_efforts = available_efforts
+        if self.state.codex_effort not in available_efforts:
+            self.state.codex_effort = (
+                self.state.codex_default_effort_by_model.get(model)
+                or available_efforts[0]
+            )
+
+    def _model_selected(self, value: str) -> None:
+        if value == self.state.codex_model:
+            return
+        previous = (
+            self.state.codex_model,
+            self.state.codex_effort,
+            self.state.codex_efforts,
+        )
+        if self.hooks.on_codex_model and self.hooks.on_codex_model(value) is False:
             self.sync()
-        elif event.select.id == "reasoning-select" and value != self.state.codex_effort:
-            if (
-                self.hooks.on_codex_effort
-                and self.hooks.on_codex_effort(value) is False
-            ):
-                self.sync()
-                return
-            self.state.codex_effort = value
+            return
+        self.state.codex_model = value
+        self._adopt_efforts_for(value)
+        if (
+            self.state.codex_effort != previous[1]
+            and self.hooks.on_codex_effort
+            and self.hooks.on_codex_effort(self.state.codex_effort) is False
+        ):
+            # The whole switch is off, effort list included.
+            (
+                self.state.codex_model,
+                self.state.codex_effort,
+                self.state.codex_efforts,
+            ) = previous
+        self.sync()
+
+    def _effort_selected(self, value: str) -> None:
+        if value == self.state.codex_effort:
+            return
+        if self.hooks.on_codex_effort and self.hooks.on_codex_effort(value) is False:
             self.sync()
+            return
+        self.state.codex_effort = value
+        self.sync()
 
     def sync_clock(self) -> None:
         """Cheap per-tick repaint — only the panel holding the session clock."""

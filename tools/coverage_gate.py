@@ -30,14 +30,14 @@ FLOORS = {
     "tools/mutation_gate.py": 78.0,
     "tools/ratchet_gate.py": 86.0,
     "tools/test_integrity.py": 93.0,
-    "voice-codex.py": 0.0,
-    "voice-codex-tui.py": 53.0,
+    "voice-codex.py": 83.0,
+    "voice-codex-tui.py": 83.0,
     "voice_codex/__init__.py": 100.0,
-    "voice_codex/cli.py": 81.0,
-    "voice_codex/config.py": 86.0,
+    "voice_codex/cli.py": 83.0,
+    "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 88.0,
     "voice_codex/presentation.py": 100.0,
-    "voice_codex/tui.py": 71.0,
+    "voice_codex/tui.py": 94.0,
 }
 
 # A module added after this gate existed has no legacy excuse.
