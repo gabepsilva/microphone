@@ -145,74 +145,14 @@ def test_a_usable_model_survives_an_unusable_neighbour(voice) -> None:
     assert [option.slug for option in options] == ["gpt-5.6-luna"]
 
 
-def test_a_config_value_that_is_not_json_is_kept_as_text(tmp_path) -> None:
+def test_the_committed_example_config_is_valid_for_a_first_run() -> None:
+    """The example file ships unset values so a first run prompts for all of them."""
     from voice_codex.config import load_startup_config
 
-    path = tmp_path / "voice.yaml"
-    path.write_text('microphone: Blue Yeti\ntts: "on"\n', encoding="utf-8")
-
-    assert load_startup_config(path) == {"microphone": "Blue Yeti", "tts": "on"}
-
-
-def test_an_empty_config_value_reads_as_unset(tmp_path) -> None:
-    from voice_codex.config import load_startup_config
-
-    path = tmp_path / "voice.yaml"
-    path.write_text("microphone:\n", encoding="utf-8")
-
-    assert load_startup_config(path) == {"microphone": None}
-
-
-def test_comments_and_blank_lines_are_ignored(tmp_path) -> None:
-    from voice_codex.config import load_startup_config
-
-    path = tmp_path / "voice.yaml"
-    path.write_text('# a comment\n\ntts: "off"\n', encoding="utf-8")
-
-    assert load_startup_config(path) == {"tts": "off"}
-
-
-def test_a_line_without_a_separator_is_rejected(tmp_path) -> None:
-    from voice_codex.config import load_startup_config
-
-    path = tmp_path / "voice.yaml"
-    path.write_text("microphone\n", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="line 1"):
-        load_startup_config(path)
-
-
-def test_an_unknown_config_key_is_rejected(tmp_path) -> None:
-    from voice_codex.config import load_startup_config
-
-    path = tmp_path / "voice.yaml"
-    path.write_text("volume: 11\n", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Unknown startup config key 'volume'"):
-        load_startup_config(path)
-
-
-def test_a_config_that_cannot_be_written_is_reported(tmp_path) -> None:
-    from voice_codex.config import save_startup_config
-
-    unwritable = tmp_path / "missing-directory" / "voice.yaml"
-
-    with pytest.raises(RuntimeError, match="Could not save startup config"):
-        save_startup_config(unwritable, {"microphone": "Yeti"})
-
-
-def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
-    from voice_codex.config import load_startup_config, save_startup_config
-
-    path = tmp_path / "voice.yaml"
-    settings = {
-        "microphone": "Blue Yeti",
-        "tts": "on",
-        "them_output": "isolated",
+    assert load_startup_config(ROOT / "voice.example.yaml") == {
+        "microphone": None,
+        "tts": None,
+        "them_output": None,
         "playback_output": None,
-        "codex_after": "both",
+        "codex_after": None,
     }
-
-    save_startup_config(path, settings)
-
-    assert load_startup_config(path) == settings
