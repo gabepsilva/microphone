@@ -432,3 +432,59 @@ def test_an_unavailable_model_catalog_notes_it_instead_of_failing(monkeypatch) -
         "Codex model catalog unavailable; using the configured model"
     ]
     assert display.catalog == {}
+
+
+# --------------------------------------------------------------------------
+# Configured answers skip the prompt
+#
+# Each chooser resolves a value the command line or the startup config already
+# supplied without asking. The resolution itself is covered above through the
+# ``select_*`` functions; what these add is that the chooser delegates to them
+# and prints no menu, so a fully configured session never blocks on a
+# terminal that may not be attached.
+# --------------------------------------------------------------------------
+
+
+def refuse_input(monkeypatch):
+    """Make any prompt a test failure rather than a hang."""
+
+    def unexpected_prompt(prompt=""):
+        raise AssertionError(f"startup asked {prompt!r} for an answer it was given")
+
+    monkeypatch.setattr(builtins, "input", unexpected_prompt)
+
+
+def test_a_requested_microphone_skips_the_menu(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("voice_codex.choosers.input_devices", lambda: DEVICES)
+    refuse_input(monkeypatch)
+
+    assert choose_microphone("Webcam") == DEVICES[1]
+    assert capsys.readouterr().out == ""
+
+
+def test_a_requested_them_output_skips_the_menu(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    refuse_input(monkeypatch)
+
+    assert choose_them_output("sink.b") == OUTPUTS[1]
+    assert capsys.readouterr().out == ""
+
+
+def test_a_requested_them_output_still_refuses_a_direct_monitor_for_tts(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    refuse_input(monkeypatch)
+
+    # The isolation rule belongs to the configured path too; a saved config
+    # must not be able to route Codex's own speech back in as Them.
+    with pytest.raises(RuntimeError, match="cannot be used with a direct Them monitor"):
+        choose_them_output("sink.b", require_isolation=True)
+
+
+def test_a_requested_playback_output_skips_the_menu(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    refuse_input(monkeypatch)
+
+    assert choose_playback_output("Headset") is OUTPUTS[1]
+    assert capsys.readouterr().out == ""
