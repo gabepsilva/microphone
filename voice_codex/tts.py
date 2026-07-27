@@ -128,6 +128,16 @@ class EdgeSentenceTTS:
     def _turn_is_active(self, turn):
         return self.turns.is_active(turn)
 
+    def _abandoned(self, turn):
+        """Report whether a turn's speech is no longer wanted.
+
+        Synthesis, trimming, and playback each hand off to a thread or an
+        event loop, so a turn can be interrupted or the engine closed between
+        any two of them. Every stage re-asks rather than trusting the answer
+        the stage before it got.
+        """
+        return self.shutdown_requested.is_set() or not self._turn_is_active(turn)
+
     def speak(self, text):
         turn, accepting = self.turns.accepting_turn()
         if text and accepting and not self.shutdown_requested.is_set():
@@ -164,15 +174,11 @@ class EdgeSentenceTTS:
         communicate = self.edge_tts.Communicate(text, self.voice)
         audio = bytearray()
         async for chunk in communicate.stream():
-            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
+            if self._abandoned(turn):
                 break
             if chunk["type"] == "audio":
                 audio.extend(chunk["data"])
-        if (
-            not audio
-            or self.shutdown_requested.is_set()
-            or not self._turn_is_active(turn)
-        ):
+        if not audio or self._abandoned(turn):
             return bytes(audio)
         return await asyncio.to_thread(self._trim_silence, bytes(audio))
 
@@ -197,11 +203,7 @@ class EdgeSentenceTTS:
         return result.stdout or audio
 
     def _play(self, turn, audio):
-        if (
-            not audio
-            or self.shutdown_requested.is_set()
-            or not self._turn_is_active(turn)
-        ):
+        if not audio or self._abandoned(turn):
             return
         process = subprocess.Popen(
             play_command(self.player),
@@ -227,11 +229,7 @@ class EdgeSentenceTTS:
             with self.player_lock:
                 if self.active_player is process:
                     self.active_player = None
-        if (
-            process.returncode
-            and not self.shutdown_requested.is_set()
-            and self._turn_is_active(turn)
-        ):
+        if process.returncode and not self._abandoned(turn):
             print(
                 describe_tool_failure(
                     f"Edge TTS player exited with code {process.returncode}",
@@ -240,6 +238,13 @@ class EdgeSentenceTTS:
                 file=sys.stderr,
                 flush=True,
             )
+
+    def _release_if_abandoned(self, turn, available_slots):
+        """Give back a prefetch slot held for speech nobody wants any more."""
+        if not self._abandoned(turn):
+            return False
+        available_slots.release()
+        return True
 
     async def _produce_synthesis_jobs(self, jobs, available_slots):
         last_request_started = None
@@ -250,8 +255,9 @@ class EdgeSentenceTTS:
             turn, text = item
 
             await available_slots.acquire()
-            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
-                available_slots.release()
+            # Checked twice around the stagger: acquiring a slot and waiting
+            # out the delay can each span an interrupt or a close.
+            if self._release_if_abandoned(turn, available_slots):
                 if self.shutdown_requested.is_set():
                     break
                 continue
@@ -262,8 +268,7 @@ class EdgeSentenceTTS:
                 if delay > 0:
                     await asyncio.sleep(delay)
 
-            if self.shutdown_requested.is_set() or not self._turn_is_active(turn):
-                available_slots.release()
+            if self._release_if_abandoned(turn, available_slots):
                 if self.shutdown_requested.is_set():
                     break
                 continue
@@ -283,7 +288,7 @@ class EdgeSentenceTTS:
             turn, text, synthesis = job
             try:
                 audio = await synthesis
-                if not self.shutdown_requested.is_set() and self._turn_is_active(turn):
+                if not self._abandoned(turn):
                     await asyncio.to_thread(self._play, turn, audio)
             except Exception as error:
                 if not self.shutdown_requested.is_set():
