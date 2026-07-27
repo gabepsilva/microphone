@@ -124,6 +124,25 @@ class EchoMatcher:
         return longest_match.size >= 3 and longest_match.size / shorter_length >= 0.70
 
 
+class SpeakerGate:
+    """Decide which completed turns trigger a reply, as the policy changes.
+
+    A policy names speakers that may not exist in this session: selecting
+    "both" with no Them output must not make Them replies possible. The gate
+    therefore intersects every policy with the speakers actually available.
+    """
+
+    def __init__(self, speakers, available):
+        self.available = frozenset(available)
+        self.active = frozenset(speakers) & self.available
+
+    def set_policy(self, policy_name: str) -> None:
+        self.active = resolve_response_policy(policy_name).speakers & self.available
+
+    def should_respond(self, speaker: str) -> bool:
+        return speaker in self.active
+
+
 @dataclass(frozen=True)
 class TranscriptEntry:
     """One transcript item sent to Codex with its capture timestamp."""
