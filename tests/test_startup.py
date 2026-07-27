@@ -338,6 +338,84 @@ def test_the_submitter_answers_only_the_speakers_the_policy_allows() -> None:
     ]
 
 
+class FakeChannel:
+    """A channel that records whether its buffer was swept into a reply."""
+
+    def __init__(self, speaker, conversation, buffered=None):
+        self.speaker = speaker
+        self.conversation = conversation
+        self.buffered = buffered
+        self.flushes = 0
+
+    def flush_now(self):
+        self.flushes += 1
+        if self.buffered is not None:
+            self.conversation.ingest(self.speaker, self.buffered, respond=False)
+            self.buffered = None
+
+
+def test_a_reply_carries_context_still_buffered_on_the_other_channel() -> None:
+    """Them's answer must not wait out User Voice's own silence timer."""
+    conversation = FakeConversation()
+    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(conversation, gate, None)
+    user = FakeChannel("User Voice", conversation, buffered="what about latency")
+    submitter.add_listener(user)
+    submitter.add_listener(FakeChannel("Them", conversation))
+
+    submitter.submit("Them", "so what do you think")
+
+    assert user.flushes == 1
+    assert conversation.ingested == [
+        ("User Voice", "what about latency", False),
+        ("Them", "so what do you think", True),
+    ]
+
+
+def test_a_context_only_channel_is_never_swept_by_its_own_turn() -> None:
+    conversation = FakeConversation()
+    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(conversation, gate, None)
+    them = FakeChannel("Them", conversation)
+    user = FakeChannel("User Voice", conversation)
+    submitter.add_listener(them)
+    submitter.add_listener(user)
+
+    submitter.submit("User Voice", "thinking aloud")
+
+    assert (them.flushes, user.flushes) == (0, 0)
+    assert conversation.ingested == [("User Voice", "thinking aloud", False)]
+
+
+def test_a_channel_the_policy_answers_is_left_to_its_own_silence() -> None:
+    """Sweeping it would queue a reply to speech its speaker has not finished."""
+    conversation = FakeConversation()
+    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(conversation, gate, None)
+    user = FakeChannel("User Voice", conversation, buffered="mid sentence")
+    submitter.add_listener(user)
+
+    submitter.submit("Them", "so what do you think")
+
+    assert user.flushes == 0
+    assert conversation.ingested == [("Them", "so what do you think", True)]
+
+
+def test_an_ignored_echo_never_sweeps_the_other_channel() -> None:
+    conversation = FakeConversation()
+    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(
+        conversation, gate, FakeTTS(echoes={"my own reply"}), stream=io.StringIO()
+    )
+    user = FakeChannel("User Voice", conversation, buffered="still talking")
+    submitter.add_listener(user)
+
+    submitter.submit("Them", "my own reply")
+
+    assert user.flushes == 0
+    assert conversation.ingested == []
+
+
 def test_the_submitter_drops_a_transcript_of_codex_speaking() -> None:
     conversation = FakeConversation()
     gate = SpeakerGate({"Them"}, {"Them"})
