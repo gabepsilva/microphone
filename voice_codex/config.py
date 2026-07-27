@@ -1,8 +1,15 @@
-"""Dependency-free startup configuration handling."""
+"""Dependency-free startup configuration handling.
+
+The file is both what a session starts from and where it records what the
+sidebar changed, so the two lists have to stay the same list: a setting the
+interface can change but the file cannot hold would be lost at exit, and a key
+the file holds but nothing resolves would be read and ignored.
+"""
 
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -13,6 +20,9 @@ STARTUP_CONFIG_KEYS = (
     "them_output",
     "playback_output",
     "codex_after",
+    "turn_silence",
+    "codex_model",
+    "codex_reasoning",
 )
 
 
@@ -68,3 +78,47 @@ def save_startup_config(filename: str | Path, settings: Mapping[str, object]) ->
         raise RuntimeError(
             f"Could not save startup config {str(filename)!r}: {error}"
         ) from error
+
+
+class StartupConfigFile:
+    """Keep the config file matching the choices currently in force.
+
+    Every sidebar change is written straight through, because there is no
+    later moment to rely on: the session ends on Ctrl-C or a closed terminal
+    as often as it ends on a clean quit, and a write deferred to shutdown is a
+    write that does not happen. The file is a handful of short lines, so the
+    cost of rewriting it on each change is not worth batching.
+
+    A file that cannot be written is reported once. Repeating it on every
+    keystroke would bury the transcript under the same sentence.
+    """
+
+    def __init__(self, path, settings, save=None, stream=None):
+        self.path = path
+        self.settings = dict(settings)
+        self._save = save_startup_config if save is None else save
+        self._stream = stream
+        self._reported = False
+
+    def record(self, key, value):
+        """Store a changed setting; report whether the file was rewritten."""
+        if key not in STARTUP_CONFIG_KEYS:
+            raise RuntimeError(f"{key!r} is not a startup config key.")
+        if self.settings.get(key) == value:
+            return False
+        self.settings[key] = value
+        return self._write()
+
+    def _write(self):
+        try:
+            self._save(self.path, self.settings)
+        except RuntimeError as error:
+            if not self._reported:
+                self._reported = True
+                print(
+                    f"\nStartup config will not be updated: {error}",
+                    file=sys.stderr if self._stream is None else self._stream,
+                    flush=True,
+                )
+            return False
+        return True

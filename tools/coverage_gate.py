@@ -44,7 +44,7 @@ FLOORS = {
     "voice_codex/catalog.py": 95.0,
     "voice_codex/choosers.py": 94.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
-    "voice_codex/cli.py": 97.0,
+    "voice_codex/cli.py": 98.0,
     "voice_codex/codex.py": 97.0,
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 98.0,
@@ -57,7 +57,7 @@ FLOORS = {
     "voice_codex/playback.py": 98.0,
     "voice_codex/presentation.py": 100.0,
     "voice_codex/speech.py": 100.0,
-    "voice_codex/startup.py": 98.0,
+    "voice_codex/startup.py": 99.0,
     # This floor sat at 80 while the measurement moved between runs: five runs
     # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the
     # guard in _play was hit or missed depending on how the synthesis thread
