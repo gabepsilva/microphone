@@ -47,8 +47,8 @@ FLOORS = {
     "voice_codex/cli.py": 97.0,
     "voice_codex/codex.py": 97.0,
     "voice_codex/config.py": 100.0,
-    "voice_codex/domain.py": 97.0,
-    "voice_codex/listener.py": 99.0,
+    "voice_codex/domain.py": 98.0,
+    "voice_codex/listener.py": 100.0,
     # Recorded 2026-07-27 with the speech-provider split. Each measured the
     # same figure across three consecutive runs, so none of these carries the
     # thread-interleaving slack the tts.py note below describes: piper_tts.py

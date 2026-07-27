@@ -35,7 +35,7 @@ from .capture import (
 )
 from .codex import CodexConversation, CodexSettings
 from .config import save_startup_config
-from .domain import SpeakerGate
+from .domain import SpeakerGate, TurnSilenceClock
 from .listener import ConversationListener, TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -98,7 +98,12 @@ def main():
 
     from .tui import VoiceCodexTUI
 
-    tui = VoiceCodexTUI(build_session_state(args, selection), on_policy=gate.set_policy)
+    countdown = TurnSilenceClock(args.turn_silence)
+    tui = VoiceCodexTUI(
+        build_session_state(args, selection),
+        countdown=countdown,
+        on_policy=gate.set_policy,
+    )
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
@@ -124,6 +129,7 @@ def main():
         submitter.submit,
         transcript_display,
         on_speech=submitter.handle_speech,
+        countdown=countdown,
     )
     user_transcriber = metered_mic_transcriber(
         model_path=model_path,
@@ -152,6 +158,7 @@ def main():
             submitter.submit,
             transcript_display,
             on_speech=submitter.handle_speech,
+            countdown=countdown,
         )
         them_transcriber = PulseMonitorTranscriber(
             model_path=model_path,

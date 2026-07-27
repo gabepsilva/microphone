@@ -30,8 +30,9 @@ PLAYBACK = {"name": "alsa_output.pci", "description": "Speakers"}
 class FakeTUI:
     """Stand in for the Textual interface without mounting one."""
 
-    def __init__(self, session_state, on_policy=None):
+    def __init__(self, session_state, countdown=None, on_policy=None):
         self.session_state = session_state
+        self.countdown = countdown
         self.on_policy = on_policy
         self.hooks = SimpleNamespace()
         self.audio: dict[str, str] = {}

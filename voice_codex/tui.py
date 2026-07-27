@@ -120,6 +120,8 @@ class SessionState:
     tts_queue: list[str] = field(default_factory=list)
 
     turn_silence: float = 3.0
+    # Seconds until the pending turn is submitted, or None when none is.
+    turn_countdown: float | None = None
     confidence: float = 0.60
     language: str = "en"
     moonshine: str = "medium-streaming"
@@ -179,6 +181,22 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
     bar = Text()
     bar.append("■" * filled, style=style)
     bar.append("□" * (width - filled), style="#2f343b")
+    return bar
+
+
+def countdown_bar(remaining: float, window: float, width: int = 10) -> Text:
+    """Draw the silence a turn has left to wait, draining as it runs out.
+
+    Colour is the message: the wait is green until it is nearly over, then
+    amber, because the last moments are when the turn is about to be sent and
+    speaking again would still stop it.
+    """
+    left = 0.0 if window <= 0 else max(0.0, min(1.0, remaining / window))
+    filled = max(0, min(width, round(left * width)))
+    bar = Text()
+    bar.append("■" * filled, style="#6cc06c" if left > 0.25 else "#d7b562")
+    bar.append("□" * (width - filled), style="#2f343b")
+    bar.append(f" {remaining:.1f}s", style="#9aa3ad")
     return bar
 
 
@@ -324,6 +342,10 @@ class Sidebar(Vertical):
 
     def sync_audio(self) -> None:
         self.query_one("#panel-top", Static).update(Group(*self._top()))
+
+    def sync_session(self) -> None:
+        """Cheap per-frame repaint — only the panel holding the countdown."""
+        self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
 
     def _sync_select(
         self,
@@ -516,6 +538,13 @@ class Sidebar(Vertical):
         )
         return blocks
 
+    def _turn_silence(self) -> Text:
+        """Show the silence still to wait, or the window when none is running."""
+        state = self.state
+        if state.turn_countdown is None:
+            return Text(f"{state.turn_silence:.1f}s", style="#9aa3ad")
+        return countdown_bar(state.turn_countdown, state.turn_silence)
+
     def _bottom(self) -> list[RenderableType]:
         state = self.state
         blocks: list[RenderableType] = [Text()]
@@ -554,10 +583,7 @@ class Sidebar(Vertical):
         blocks.append(
             _kv(
                 [
-                    (
-                        "turn silence",
-                        Text(f"{state.turn_silence:.1f}s", style="#9aa3ad"),
-                    ),
+                    ("turn silence", self._turn_silence()),
                     ("confidence", Text(f"{state.confidence:.2f}", style="#9aa3ad")),
                     ("language", Text(state.language, style="#9aa3ad")),
                     ("moonshine", Text(state.moonshine, style="#9aa3ad")),
@@ -691,10 +717,16 @@ class VoiceCodexApp(App):
         Binding("ctrl+s", "save", "save transcript", priority=True),
     ]
 
-    def __init__(self, state: SessionState, hooks: TuiHooks) -> None:
+    # The countdown redraws ten times a second. A 20-cell bar over a 3s window
+    # only has 150ms of resolution per cell, so anything faster repaints the
+    # same picture; anything slower is visibly steppy.
+    COUNTDOWN_INTERVAL_SECONDS = 0.1
+
+    def __init__(self, state: SessionState, hooks: TuiHooks, countdown=None) -> None:
         super().__init__()
         self.state = state
         self.hooks = hooks
+        self.countdown = countdown
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
@@ -721,6 +753,7 @@ class VoiceCodexApp(App):
         self.query_one("#keys", Static).update(self._keys_text())
         self._sync_partial()
         self.set_interval(0.25, self._tick)
+        self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.query_one("#input", Input).focus()
 
     # -- chrome ------------------------------------------------------------
@@ -772,6 +805,20 @@ class VoiceCodexApp(App):
         # The clock and the live indicator sit in the sidebar's top panel.
         with suppress(NoMatches):
             self.query_one("#sidebar", Sidebar).sync_clock()
+
+    def _tick_countdown(self) -> None:
+        """Redraw the silence countdown, and only while there is one.
+
+        An idle session does no work at all here. The one repaint after the
+        countdown ends is what restores the configured window in its place,
+        so the check is against the state as well as the clock.
+        """
+        remaining = None if self.countdown is None else self.countdown.remaining()
+        if remaining is None and self.state.turn_countdown is None:
+            return
+        self.state.turn_countdown = remaining
+        with suppress(NoMatches):
+            self.query_one("#sidebar", Sidebar).sync_session()
 
     def refresh_sidebar(self) -> None:
         self.query_one("#sidebar", Sidebar).sync()
@@ -912,10 +959,12 @@ class VoiceCodexTUI:
     app are applied to the state object and appear once the UI mounts.
     """
 
-    def __init__(self, state: SessionState | None = None, **hooks) -> None:
+    def __init__(
+        self, state: SessionState | None = None, countdown=None, **hooks
+    ) -> None:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
-        self.app = VoiceCodexApp(self.state, self.hooks)
+        self.app = VoiceCodexApp(self.state, self.hooks, countdown)
         self._ready = threading.Event()
         self._app_thread: int | None = None
 

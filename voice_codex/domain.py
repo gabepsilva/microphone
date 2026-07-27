@@ -238,6 +238,54 @@ class EchoMemory:
         return any(EchoMatcher.matches(transcript, spoken) for spoken in recent)
 
 
+class TurnSilenceClock:
+    """Track how long each speaker's turn has left before it is submitted.
+
+    The listeners own the silence timers; this only records when each one is
+    due, so the interface can show the wait without a transcription thread
+    driving the display. Reads are a poll rather than a callback on purpose: a
+    countdown repaints ten times a second, and pushing that would cross
+    threads ten times a second mostly to report that nothing has changed.
+
+    A due deadline is dropped on the next read rather than by a timer of its
+    own. The listener clears its own entry when a turn is submitted, so this
+    only matters if that ever fails to happen — and a countdown wedged at zero
+    would be a worse failure than one that simply disappears.
+    """
+
+    def __init__(self, window: float, clock=time.monotonic) -> None:
+        self.window = window
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._deadlines: dict[str, float] = {}
+
+    def started(self, speaker: str) -> None:
+        """Record that a speaker's silence timer has just begun."""
+        due_at = self._clock() + self.window
+        with self._lock:
+            self._deadlines[speaker] = due_at
+
+    def cleared(self, speaker: str) -> None:
+        """Record that a speaker is no longer waiting to be submitted."""
+        with self._lock:
+            self._deadlines.pop(speaker, None)
+
+    def remaining(self) -> float | None:
+        """Seconds until the soonest pending turn fires, or None if none is.
+
+        The soonest wins because it is the one about to interrupt the silence;
+        a later speaker's timer is not what the session is waiting on.
+        """
+        now = self._clock()
+        with self._lock:
+            for speaker in [
+                speaker for speaker, due_at in self._deadlines.items() if due_at <= now
+            ]:
+                del self._deadlines[speaker]
+            due = min(self._deadlines.values(), default=None)
+        return None if due is None else due - now
+
+
 class SpeakerGate:
     """Decide which completed turns trigger a reply, as the policy changes.
 

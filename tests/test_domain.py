@@ -9,6 +9,7 @@ from voice_codex.domain import (
     SpeakerGate,
     TranscriptRouter,
     TurnGate,
+    TurnSilenceClock,
     resolve_response_policy,
 )
 
@@ -410,3 +411,110 @@ def test_transcript_router_keeps_context_until_a_reply_is_requested() -> None:
         ("User Voice", "Yes", "2026-07-26T12:00:03-04:00"),
     ]
     assert router.pending_context == []
+
+
+def silence_clock(window=3.0):
+    clock = FakeClock()
+    return TurnSilenceClock(window, clock=clock), clock
+
+
+def test_nothing_is_counting_down_before_a_turn_starts() -> None:
+    countdown, _ = silence_clock()
+
+    assert countdown.remaining() is None
+
+
+def test_a_started_turn_counts_down_the_full_window() -> None:
+    countdown, _ = silence_clock(3.0)
+
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == 3.0
+
+
+def test_the_countdown_shrinks_as_the_silence_runs() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(1.2)
+
+    assert countdown.remaining() == pytest.approx(1.8)
+
+
+def test_a_cleared_turn_stops_counting_down() -> None:
+    countdown, _ = silence_clock()
+    countdown.started("User Voice")
+
+    countdown.cleared("User Voice")
+
+    assert countdown.remaining() is None
+
+
+def test_clearing_a_speaker_that_never_started_is_harmless() -> None:
+    countdown, _ = silence_clock()
+
+    countdown.cleared("Them")
+
+    assert countdown.remaining() is None
+
+
+def test_restarting_a_turn_resets_its_window() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+    clock.advance(2.5)
+
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == 3.0
+
+
+def test_the_soonest_speaker_is_the_one_being_waited_on() -> None:
+    """A later timer is not what the session is about to act on."""
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    assert countdown.remaining() == pytest.approx(1.0)
+
+
+def test_clearing_the_soonest_speaker_falls_back_to_the_other() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    countdown.cleared("Them")
+
+    assert countdown.remaining() == pytest.approx(3.0)
+
+
+def test_a_turn_that_already_fired_stops_being_shown() -> None:
+    """A countdown wedged at zero would be worse than one that disappears."""
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(3.0)
+
+    assert countdown.remaining() is None
+
+
+def test_an_overdue_turn_is_dropped_rather_than_going_negative() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("User Voice")
+
+    clock.advance(30.0)
+
+    assert countdown.remaining() is None
+    assert countdown.remaining() is None
+
+
+def test_a_speaker_still_waiting_survives_another_one_expiring() -> None:
+    countdown, clock = silence_clock(3.0)
+    countdown.started("Them")
+    clock.advance(2.0)
+    countdown.started("User Voice")
+
+    clock.advance(1.5)
+
+    assert countdown.remaining() == pytest.approx(1.5)
