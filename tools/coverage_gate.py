@@ -21,6 +21,12 @@ from pathlib import Path
 COVERAGE_PATH = Path("coverage.json")
 
 # Recorded 2026-07-26. Raise as coverage improves; never lower.
+#
+# The voice_codex entries were re-recorded on 2026-07-27 when cli.py was split
+# into per-concern modules. The single 83% floor it used to carry was an
+# average, and averages are what this gate exists to stop: it hid a 26% wiring
+# root and a 58% listener behind well-covered choosers and Codex handling.
+# Splitting made both visible and both were tested rather than floored down.
 FLOORS = {
     # The gates themselves. tests/test_quality_gates.py plants a violation for
     # each and asserts it is caught, because a gate that matches nothing still
@@ -28,15 +34,26 @@ FLOORS = {
     "tools/context_budget.py": 93.0,
     "tools/coverage_gate.py": 75.0,
     "tools/mutation_gate.py": 78.0,
-    "tools/ratchet_gate.py": 88.0,
+    "tools/ratchet_gate.py": 90.0,
     "tools/test_integrity.py": 93.0,
+    "tools/worker_gate.py": 96.0,
     "voice-codex.py": 83.0,
     "voice-codex-tui.py": 83.0,
     "voice_codex/__init__.py": 100.0,
-    "voice_codex/cli.py": 83.0,
+    "voice_codex/capture.py": 86.0,
+    "voice_codex/catalog.py": 95.0,
+    "voice_codex/choosers.py": 92.0,
+    # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
+    "voice_codex/cli.py": 97.0,
+    "voice_codex/codex.py": 97.0,
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 97.0,
+    "voice_codex/listener.py": 99.0,
     "voice_codex/presentation.py": 100.0,
+    "voice_codex/startup.py": 98.0,
+    # The lowest floor here: the Edge pipeline's error and cancellation paths
+    # need a network fake per branch. Raise it, do not settle for it.
+    "voice_codex/tts.py": 80.0,
     "voice_codex/tui.py": 94.0,
 }
 

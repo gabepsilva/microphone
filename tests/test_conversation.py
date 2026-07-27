@@ -24,6 +24,13 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
 )
 
+from voice_codex.codex import (
+    CodexConversation,
+    CodexSettings,
+    CodexTurnRenderer,
+    item_root,
+)
+
 WAIT_SECONDS = 10
 
 
@@ -82,32 +89,90 @@ def turn_completed():
 
 
 class FakeDisplay:
-    """Record every presentation call in the order it arrived."""
+    """Record every presentation call in the order it arrived.
+
+    Every method is spelled out rather than caught by ``__getattr__``: a
+    catch-all fake records calls that do not exist, so a renamed or misspelled
+    display call would be swallowed here instead of failing.
+    """
 
     def __init__(self):
         self.calls: list[tuple] = []
 
-    def __getattr__(self, name):
-        def record(*args, **kwargs):
-            self.calls.append((name, *args) if args else (name,))
-            if kwargs:
-                self.calls[-1] = (name, kwargs)
+    def _record(self, name, *args, **kwargs):
+        self.calls.append((name, kwargs) if kwargs else (name, *args))
 
-        return record
+    def update(self, speaker, text):
+        self._record("update", speaker, text)
+
+    def commit(self, speaker, text):
+        self._record("commit", speaker, text)
+
+    def finish_turn(self, speaker):
+        self._record("finish_turn", speaker)
+
+    def close_speaker(self, speaker):
+        self._record("close_speaker", speaker)
+
+    def begin_codex(self):
+        self._record("begin_codex")
+
+    def codex_message_open(self, reply_to):
+        self._record("codex_message_open", reply_to)
+
+    def codex_delta(self, delta):
+        self._record("codex_delta", delta)
+
+    def codex_message_close(self):
+        self._record("codex_message_close")
+
+    def command_started(self, command):
+        self._record("command_started", command)
+
+    def command_output(self, delta):
+        self._record("command_output", delta)
+
+    def command_completed(self, exit_code):
+        self._record("command_completed", exit_code)
+
+    def tool_called(self, server, tool):
+        self._record("tool_called", server, tool)
+
+    def tool_completed(self, status):
+        self._record("tool_completed", status)
+
+    def token_usage(self, total_tokens):
+        self._record("token_usage", total_tokens)
+
+    def error(self, message):
+        self._record("error", message)
+
+    def note(self, text):
+        self._record("note", text)
+
+    def set_codex(self, **fields):
+        self._record("set_codex", **fields)
+
+    def set_codex_catalog(self, models, efforts_by_model, default_effort_by_model):
+        self._record(
+            "set_codex_catalog", models, efforts_by_model, default_effort_by_model
+        )
+
+    def end_codex(self):
+        self._record("end_codex")
 
     def names(self):
         return [call[0] for call in self.calls]
 
 
-def render(voice, events, chunker=None, reply_to="Them"):
+def render(events, chunker=None, reply_to="Them"):
     display = FakeDisplay()
-    voice.CodexTurnRenderer(display, reply_to, chunker).render(events)
+    CodexTurnRenderer(display, reply_to, chunker).render(events)
     return display
 
 
-def test_an_assistant_message_is_opened_streamed_and_closed(voice) -> None:
+def test_an_assistant_message_is_opened_streamed_and_closed() -> None:
     display = render(
-        voice,
         [
             started(message_item()),
             delta("Hello "),
@@ -125,8 +190,8 @@ def test_an_assistant_message_is_opened_streamed_and_closed(voice) -> None:
     ]
 
 
-def test_a_delta_without_a_start_still_opens_the_message(voice) -> None:
-    display = render(voice, [delta("Sudden text."), turn_completed()])
+def test_a_delta_without_a_start_still_opens_the_message() -> None:
+    display = render([delta("Sudden text."), turn_completed()])
 
     assert display.calls == [
         ("codex_message_open", "Them"),
@@ -135,15 +200,14 @@ def test_a_delta_without_a_start_still_opens_the_message(voice) -> None:
     ]
 
 
-def test_the_message_is_opened_once_across_many_deltas(voice) -> None:
-    display = render(voice, [delta("a"), delta("b"), delta("c")])
+def test_the_message_is_opened_once_across_many_deltas() -> None:
+    display = render([delta("a"), delta("b"), delta("c")])
 
     assert display.names().count("codex_message_open") == 1
 
 
-def test_a_command_closes_the_open_message_before_it_is_shown(voice) -> None:
+def test_a_command_closes_the_open_message_before_it_is_shown() -> None:
     display = render(
-        voice,
         [
             delta("Let me check."),
             started(command_item("ls -la")),
@@ -163,9 +227,8 @@ def test_a_command_closes_the_open_message_before_it_is_shown(voice) -> None:
     ]
 
 
-def test_a_tool_call_closes_the_open_message_before_it_is_shown(voice) -> None:
+def test_a_tool_call_closes_the_open_message_before_it_is_shown() -> None:
     display = render(
-        voice,
         [
             delta("Looking it up."),
             started(tool_item("files", "read")),
@@ -182,66 +245,65 @@ def test_a_tool_call_closes_the_open_message_before_it_is_shown(voice) -> None:
     ]
 
 
-def test_a_command_with_no_message_open_needs_no_close(voice) -> None:
-    display = render(voice, [started(command_item("pwd"))])
+def test_a_command_with_no_message_open_needs_no_close() -> None:
+    display = render([started(command_item("pwd"))])
 
     assert display.calls == [("command_started", "pwd")]
 
 
-def test_an_error_notification_is_shown(voice) -> None:
-    display = render(voice, [failure("model overloaded")])
+def test_an_error_notification_is_shown() -> None:
+    display = render([failure("model overloaded")])
 
     assert display.calls == [("error", "model overloaded")]
 
 
-def test_token_usage_is_reported_only_when_the_turn_completes(voice) -> None:
-    display = render(voice, [delta("Hi."), usage(1234)])
+def test_token_usage_is_reported_only_when_the_turn_completes() -> None:
+    display = render([delta("Hi."), usage(1234)])
 
     assert "token_usage" not in display.names()
 
-    display = render(voice, [delta("Hi."), usage(1234), turn_completed()])
+    display = render([delta("Hi."), usage(1234), turn_completed()])
 
     assert display.calls[-1] == ("token_usage", 1234)
 
 
-def test_the_latest_token_usage_wins(voice) -> None:
-    display = render(voice, [usage(10), usage(99), turn_completed()])
+def test_the_latest_token_usage_wins() -> None:
+    display = render([usage(10), usage(99), turn_completed()])
 
     assert display.calls == [("token_usage", 99)]
 
 
-def test_a_turn_without_usage_reports_none(voice) -> None:
-    display = render(voice, [delta("Hi."), turn_completed()])
+def test_a_turn_without_usage_reports_none() -> None:
+    display = render([delta("Hi."), turn_completed()])
 
     assert "token_usage" not in display.names()
 
 
-def test_a_wrapped_item_is_unwrapped_before_dispatch(voice) -> None:
-    display = render(voice, [started(SimpleNamespace(root=command_item("echo hi")))])
+def test_a_wrapped_item_is_unwrapped_before_dispatch() -> None:
+    display = render([started(SimpleNamespace(root=command_item("echo hi")))])
 
     assert display.calls == [("command_started", "echo hi")]
 
 
-def test_item_root_passes_through_an_unwrapped_item(voice) -> None:
+def test_item_root_passes_through_an_unwrapped_item() -> None:
     item = command_item()
 
-    assert voice.item_root(item) is item
+    assert item_root(item) is item
 
 
-def test_an_unrecognised_payload_is_ignored(voice) -> None:
-    display = render(voice, [event(SimpleNamespace(kind="something new"))])
+def test_an_unrecognised_payload_is_ignored() -> None:
+    display = render([event(SimpleNamespace(kind="something new"))])
 
     assert display.calls == []
 
 
-def test_speech_is_flushed_at_every_command_boundary(voice) -> None:
+def test_speech_is_flushed_at_every_command_boundary() -> None:
     from voice_codex.domain import SentenceChunker
 
     spoken: list[str] = []
     chunker = SentenceChunker(spoken.append)
 
     render(
-        voice,
         [
             delta("First sentence. Second one"),
             started(command_item()),
@@ -254,12 +316,11 @@ def test_speech_is_flushed_at_every_command_boundary(voice) -> None:
     assert spoken == ["First sentence.", "Second one", "resumes after."]
 
 
-def test_speech_is_flushed_when_the_turn_ends(voice) -> None:
+def test_speech_is_flushed_when_the_turn_ends() -> None:
     from voice_codex.domain import SentenceChunker
 
     spoken: list[str] = []
     render(
-        voice,
         [delta("No trailing punctuation"), turn_completed()],
         chunker=SentenceChunker(spoken.append),
     )
@@ -316,19 +377,28 @@ class FakeCodex:
         self.closed = True
 
 
+class RecordedConversation(CodexConversation):
+    """A conversation that keeps handles on the fakes it was built against."""
+
+    def __init__(self, codex, display, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fake_codex = codex
+        self.fake_display = display
+
+
 @pytest.fixture
-def conversation(voice, monkeypatch):
+def conversation(monkeypatch):
     codex = FakeCodex()
-    monkeypatch.setattr(voice, "Codex", lambda: codex)
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
     display = FakeDisplay()
-    built = voice.CodexConversation(
-        voice.CodexSettings(
+    built = RecordedConversation(
+        codex,
+        display,
+        CodexSettings(
             sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
         ),
         display,
     )
-    built.fake_codex = codex
-    built.fake_display = display
     yield built
     built.close()
 
@@ -443,9 +513,9 @@ def test_the_prompt_names_the_source_to_reply_to(conversation) -> None:
     assert '"text": "A question"' in prompt
 
 
-def test_interrupting_stops_the_active_turn_and_its_speech(voice, monkeypatch) -> None:
+def test_interrupting_stops_the_active_turn_and_its_speech(monkeypatch) -> None:
     codex = FakeCodex()
-    monkeypatch.setattr(voice, "Codex", lambda: codex)
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
     tts = SimpleNamespace(
         interrupted=0,
         closed=0,
@@ -455,8 +525,8 @@ def test_interrupting_stops_the_active_turn_and_its_speech(voice, monkeypatch) -
     interrupts: list[str] = []
     tts.interrupt = lambda: interrupts.append("tts")
     tts.close = lambda: interrupts.append("closed")
-    built = voice.CodexConversation(
-        voice.CodexSettings(
+    built = CodexConversation(
+        CodexSettings(
             sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
         ),
         FakeDisplay(),

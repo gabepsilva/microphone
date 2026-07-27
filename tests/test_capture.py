@@ -7,11 +7,23 @@ real reader and worker threads run.
 from __future__ import annotations
 
 import queue
+import shutil
 import struct
+import subprocess
 import threading
 
 import numpy as np
 import pytest
+
+from voice_codex.capture import (
+    AudioLevelReporter,
+    CaptureSettings,
+    PulseMonitorTranscriber,
+    audio_level,
+    decode_pcm,
+    drain_audio_queue,
+    parec_command,
+)
 
 WAIT_SECONDS = 10
 
@@ -109,49 +121,53 @@ class FakePipe:
         self.closed = True
 
 
+class RecordedMonitor(PulseMonitorTranscriber):
+    """A monitor transcriber that keeps a handle on its faked parec process."""
+
+    def __init__(self, process, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fake_process = process
+
+
 @pytest.fixture
-def capture(voice, monkeypatch):
+def capture(monkeypatch):
     """Build a monitor transcriber with parec and Moonshine faked."""
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice, "Transcriber", FakeTranscriber)
-    monkeypatch.setattr(voice.PulseMonitorTranscriber, "STARTUP_GRACE_SECONDS", 0)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("voice_codex.capture.Transcriber", FakeTranscriber)
+    monkeypatch.setattr(PulseMonitorTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
     def build(reads=(), exit_code=None, **kwargs):
         process = FakeParec(list(reads), exit_code)
-        monkeypatch.setattr(voice.subprocess, "Popen", lambda *a, **k: process)
-        monitor = voice.PulseMonitorTranscriber(
-            "model", "arch", "sink.monitor", **kwargs
-        )
-        monitor.fake_process = process
-        return monitor
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
+        return RecordedMonitor(process, "model", "arch", "sink.monitor", **kwargs)
 
     return build
 
 
-def test_silence_reports_no_level(voice) -> None:
-    assert voice.audio_level(np.zeros(0, dtype=np.float32)) == 0.0
-    assert voice.audio_level(np.zeros(64, dtype=np.float32)) == 0.0
+def test_silence_reports_no_level() -> None:
+    assert audio_level(np.zeros(0, dtype=np.float32)) == 0.0
+    assert audio_level(np.zeros(64, dtype=np.float32)) == 0.0
 
 
-def test_a_louder_signal_reports_a_higher_level(voice) -> None:
-    quiet = voice.audio_level(np.full(64, 0.02, dtype=np.float32))
-    loud = voice.audio_level(np.full(64, 0.15, dtype=np.float32))
+def test_a_louder_signal_reports_a_higher_level() -> None:
+    quiet = audio_level(np.full(64, 0.02, dtype=np.float32))
+    loud = audio_level(np.full(64, 0.15, dtype=np.float32))
 
     assert 0.0 < quiet < loud < 1.0
 
 
-def test_the_level_is_clipped_to_one(voice) -> None:
-    assert voice.audio_level(np.full(64, 0.9, dtype=np.float32)) == 1.0
+def test_the_level_is_clipped_to_one() -> None:
+    assert audio_level(np.full(64, 0.9, dtype=np.float32)) == 1.0
 
 
-def test_level_updates_are_rate_limited(voice) -> None:
+def test_level_updates_are_rate_limited() -> None:
     levels: list[float] = []
     display = type(
         "Display",
         (),
         {"set_audio": staticmethod(lambda channel, level: levels.append(level))},
     )()
-    reporter = voice.AudioLevelReporter(display, "them", interval=1000.0)
+    reporter = AudioLevelReporter(display, "them", interval=1000.0)
 
     reporter.update(np.full(64, 0.1, dtype=np.float32))
     reporter.update(np.full(64, 0.1, dtype=np.float32))
@@ -171,51 +187,51 @@ def test_level_updates_are_rate_limited(voice) -> None:
         (b"", []),
     ],
 )
-def test_pcm_decodes_to_normalized_samples(voice, raw, expected) -> None:
-    assert voice.decode_pcm(raw).tolist() == pytest.approx(expected)
+def test_pcm_decodes_to_normalized_samples(raw, expected) -> None:
+    assert decode_pcm(raw).tolist() == pytest.approx(expected)
 
 
-def test_decoded_samples_stay_within_the_normalized_range(voice) -> None:
-    decoded = voice.decode_pcm(pcm(32767, -32768, 0, 12345))
+def test_decoded_samples_stay_within_the_normalized_range() -> None:
+    decoded = decode_pcm(pcm(32767, -32768, 0, 12345))
 
     assert decoded.dtype == np.float32
     assert decoded.min() >= -1.0
     assert decoded.max() <= 1.0
 
 
-def test_a_backlog_is_coalesced_into_one_buffer(voice) -> None:
+def test_a_backlog_is_coalesced_into_one_buffer() -> None:
     audio_queue = queue.Queue()
     stop = object()
     audio_queue.put(b"second")
     audio_queue.put(b"third")
 
-    raw, stop_requested = voice.drain_audio_queue(audio_queue, stop, b"first")
+    raw, stop_requested = drain_audio_queue(audio_queue, stop, b"first")
 
     assert raw == b"firstsecondthird"
     assert stop_requested is False
 
 
-def test_a_stop_item_ends_the_backlog_and_is_reported(voice) -> None:
+def test_a_stop_item_ends_the_backlog_and_is_reported() -> None:
     audio_queue = queue.Queue()
     stop = object()
     audio_queue.put(b"second")
     audio_queue.put(stop)
     audio_queue.put(b"never read")
 
-    raw, stop_requested = voice.drain_audio_queue(audio_queue, stop, b"first")
+    raw, stop_requested = drain_audio_queue(audio_queue, stop, b"first")
 
     assert raw == b"firstsecond"
     assert stop_requested is True
 
 
-def test_an_empty_queue_yields_only_the_first_chunk(voice) -> None:
-    raw, stop_requested = voice.drain_audio_queue(queue.Queue(), object(), b"only")
+def test_an_empty_queue_yields_only_the_first_chunk() -> None:
+    raw, stop_requested = drain_audio_queue(queue.Queue(), object(), b"only")
 
     assert (raw, stop_requested) == (b"only", False)
 
 
-def test_the_parec_command_requests_raw_mono_pcm(voice) -> None:
-    command = voice.parec_command("sink.monitor", 16000)
+def test_the_parec_command_requests_raw_mono_pcm() -> None:
+    command = parec_command("sink.monitor", 16000)
 
     assert command[0] == "parec"
     assert "--device=sink.monitor" in command
@@ -224,11 +240,11 @@ def test_the_parec_command_requests_raw_mono_pcm(voice) -> None:
     assert "--channels=1" in command
 
 
-def test_capture_requires_parec(voice, monkeypatch) -> None:
-    monkeypatch.setattr(voice.shutil, "which", lambda name: None)
+def test_capture_requires_parec(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     with pytest.raises(RuntimeError, match="parec is required"):
-        voice.PulseMonitorTranscriber("model", "arch", "sink.monitor")
+        PulseMonitorTranscriber("model", "arch", "sink.monitor")
 
 
 def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
@@ -328,9 +344,9 @@ def test_a_listener_is_registered_with_the_stream(capture) -> None:
     assert monitor.stream.listeners == [listener]
 
 
-def test_capture_settings_reach_the_stream_and_the_reader(capture, voice) -> None:
+def test_capture_settings_reach_the_stream_and_the_reader(capture) -> None:
     monitor = capture(
-        capture=voice.CaptureSettings(samplerate=8000, blocksize=256, update_interval=1)
+        capture=CaptureSettings(samplerate=8000, blocksize=256, update_interval=1)
     )
 
     assert monitor.transcriber.update_interval == 1

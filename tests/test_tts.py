@@ -7,11 +7,20 @@ player sets rather than on a delay, so they finish as fast as the pipeline.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 
 import pytest
+
+from voice_codex.tts import (
+    EdgeSentenceTTS,
+    describe_tool_failure,
+    player_environment,
+    trim_command,
+)
 
 WAIT_SECONDS = 10
 
@@ -89,35 +98,37 @@ def playback():
 
 
 @pytest.fixture
-def tts(voice, monkeypatch, playback):
+def tts(monkeypatch, playback):
     """A started Edge TTS pipeline with every external process faked."""
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice.subprocess, "Popen", playback.popen)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
     monkeypatch.setattr(
-        voice.subprocess,
+        subprocess,
         "run",
         lambda command, **kwargs: SimpleNamespace(stdout=kwargs["input"] + b":trimmed"),
     )
-    engine = voice.EdgeSentenceTTS("en-US-AndrewNeural")
-    engine.edge_tts = SimpleNamespace(Communicate=FakeCommunicate)
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    engine = EdgeSentenceTTS("en-US-AndrewNeural")
     yield engine
     engine.close()
 
 
-def test_edge_tts_requires_its_helper_binaries(voice, monkeypatch) -> None:
-    monkeypatch.setattr(voice.shutil, "which", lambda name: None)
+def test_edge_tts_requires_its_helper_binaries(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     with pytest.raises(RuntimeError, match="requires ffplay"):
-        voice.EdgeSentenceTTS("en-US-AndrewNeural")
+        EdgeSentenceTTS("en-US-AndrewNeural")
 
 
-def test_edge_tts_requires_ffmpeg_for_silence_trimming(voice, monkeypatch) -> None:
+def test_edge_tts_requires_ffmpeg_for_silence_trimming(monkeypatch) -> None:
     monkeypatch.setattr(
-        voice.shutil, "which", lambda name: None if name == "ffmpeg" else "/usr/bin/x"
+        shutil, "which", lambda name: None if name == "ffmpeg" else "/usr/bin/x"
     )
 
     with pytest.raises(RuntimeError, match="requires ffmpeg"):
-        voice.EdgeSentenceTTS("en-US-AndrewNeural")
+        EdgeSentenceTTS("en-US-AndrewNeural")
 
 
 def test_sentences_are_played_in_the_order_they_were_spoken(tts, playback) -> None:
@@ -232,13 +243,13 @@ def test_a_closed_engine_refuses_new_speech(tts, playback) -> None:
     ],
 )
 def test_a_failing_helper_process_is_explained_with_its_stderr(
-    voice, stderr, expected
+    stderr, expected
 ) -> None:
-    assert voice.describe_tool_failure("ffplay broke", stderr) == expected
+    assert describe_tool_failure("ffplay broke", stderr) == expected
 
 
-def test_the_trim_command_pipes_audio_through_the_silence_filter(voice) -> None:
-    command = voice.trim_command("/usr/bin/ffmpeg", "silenceremove=x")
+def test_the_trim_command_pipes_audio_through_the_silence_filter() -> None:
+    command = trim_command("/usr/bin/ffmpeg", "silenceremove=x")
 
     assert command[0] == "/usr/bin/ffmpeg"
     assert command[command.index("-af") + 1] == "silenceremove=x"
@@ -246,28 +257,30 @@ def test_the_trim_command_pipes_audio_through_the_silence_filter(voice) -> None:
     assert command[-1] == "pipe:1"
 
 
-def test_playback_is_routed_to_a_chosen_sink(voice) -> None:
-    environment = voice.player_environment("alsa_output.pci", {"PATH": "/usr/bin"})
+def test_playback_is_routed_to_a_chosen_sink() -> None:
+    environment = player_environment("alsa_output.pci", {"PATH": "/usr/bin"})
 
     assert environment == {"PATH": "/usr/bin", "PULSE_SINK": "alsa_output.pci"}
 
 
-def test_playback_uses_the_default_sink_when_none_was_chosen(voice) -> None:
-    environment = voice.player_environment(None, {"PATH": "/usr/bin"})
+def test_playback_uses_the_default_sink_when_none_was_chosen() -> None:
+    environment = player_environment(None, {"PATH": "/usr/bin"})
 
     assert environment == {"PATH": "/usr/bin"}
 
 
-def test_the_chosen_sink_reaches_the_player(voice, monkeypatch, playback) -> None:
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice.subprocess, "Popen", playback.popen)
+def test_the_chosen_sink_reaches_the_player(monkeypatch, playback) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
     monkeypatch.setattr(
-        voice.subprocess,
+        subprocess,
         "run",
         lambda command, **kwargs: SimpleNamespace(stdout=kwargs["input"]),
     )
-    engine = voice.EdgeSentenceTTS("en-US-AndrewNeural", output_sink="meeting.sink")
-    engine.edge_tts = SimpleNamespace(Communicate=FakeCommunicate)
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    engine = EdgeSentenceTTS("en-US-AndrewNeural", output_sink="meeting.sink")
     try:
         engine.begin_turn()
         engine.speak("Routed.")
@@ -279,17 +292,19 @@ def test_the_chosen_sink_reaches_the_player(voice, monkeypatch, playback) -> Non
 
 
 def test_a_failing_trim_falls_back_to_the_untrimmed_audio(
-    voice, monkeypatch, playback, capsys
+    monkeypatch, playback, capsys
 ) -> None:
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice.subprocess, "Popen", playback.popen)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
 
     def failing_run(command, **_kwargs):
         raise subprocess.CalledProcessError(1, command, stderr=b"filter unavailable")
 
-    monkeypatch.setattr(voice.subprocess, "run", failing_run)
-    engine = voice.EdgeSentenceTTS("en-US-AndrewNeural")
-    engine.edge_tts = SimpleNamespace(Communicate=FakeCommunicate)
+    monkeypatch.setattr(subprocess, "run", failing_run)
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    engine = EdgeSentenceTTS("en-US-AndrewNeural")
     try:
         engine.begin_turn()
         engine.speak("Untrimmed.")
@@ -301,20 +316,20 @@ def test_a_failing_trim_falls_back_to_the_untrimmed_audio(
         engine.close()
 
 
-def test_a_player_that_exits_badly_is_reported(
-    voice, monkeypatch, playback, capsys
-) -> None:
+def test_a_player_that_exits_badly_is_reported(monkeypatch, playback, capsys) -> None:
     playback.returncode = 3
     playback.stderr = b"no such device"
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice.subprocess, "Popen", playback.popen)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
     monkeypatch.setattr(
-        voice.subprocess,
+        subprocess,
         "run",
         lambda command, **kwargs: SimpleNamespace(stdout=kwargs["input"]),
     )
-    engine = voice.EdgeSentenceTTS("en-US-AndrewNeural")
-    engine.edge_tts = SimpleNamespace(Communicate=FakeCommunicate)
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate)
+    )
+    engine = EdgeSentenceTTS("en-US-AndrewNeural")
     try:
         engine.begin_turn()
         engine.speak("Doomed.")
@@ -328,7 +343,7 @@ def test_a_player_that_exits_badly_is_reported(
 
 
 def test_a_synthesis_failure_does_not_stop_later_sentences(
-    voice, monkeypatch, playback, capsys
+    monkeypatch, playback, capsys
 ) -> None:
     class ExplodingCommunicate(FakeCommunicate):
         async def stream(self):
@@ -337,15 +352,17 @@ def test_a_synthesis_failure_does_not_stop_later_sentences(
             async for chunk in super().stream():
                 yield chunk
 
-    monkeypatch.setattr(voice.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(voice.subprocess, "Popen", playback.popen)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
     monkeypatch.setattr(
-        voice.subprocess,
+        subprocess,
         "run",
         lambda command, **kwargs: SimpleNamespace(stdout=kwargs["input"]),
     )
-    engine = voice.EdgeSentenceTTS("en-US-AndrewNeural")
-    engine.edge_tts = SimpleNamespace(Communicate=ExplodingCommunicate)
+    monkeypatch.setitem(
+        sys.modules, "edge_tts", SimpleNamespace(Communicate=ExplodingCommunicate)
+    )
+    engine = EdgeSentenceTTS("en-US-AndrewNeural")
     try:
         engine.begin_turn()
         engine.speak("boom")

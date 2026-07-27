@@ -36,6 +36,7 @@ bypassable. CI decides.
 | Mutation score | `make mutation` | Proves the domain tests detect corrupted behavior, not just execute it. |
 | Shell syntax | `make shellcheck` | Parse the privileged setup script before it is run. |
 | Workflow integrity | `make workflows` | Validate GitHub Actions syntax and expressions. |
+| Worker threads | `make worker-threads` | Every background thread is a daemon and every join on one is bounded. |
 | Threshold ratchet | `make ratchet` | Blocks a lowered floor, a narrowed mutation scope, or a deleted rule. |
 | Static policy/SAST | `make semgrep` | Blocks committed rules for dangerous APIs and project security policy. |
 | Static security | `make security-static` | Blocks Bandit medium/high findings and known dependency vulnerabilities. |
@@ -68,6 +69,12 @@ and prints what to do when it fails. This is the map, not the manual.
   and skips that name no issue.
 - **Gate self-tests** (`tests/test_quality_gates.py`) plant a violation for
   every gate, because a gate that matches nothing still reports green.
+- **Worker-thread contract** (`tools/worker_gate.py`) requires every
+  background thread to be a daemon and every join on one to pass a timeout.
+  Four classes follow this and nothing enforced it: it survived only because
+  all four shared a file, so whoever wrote the next one could see the other
+  three. Splitting `cli.py` removed that, and the failure it prevents — a
+  process that will not exit — raises nothing and loses no coverage.
 - **Context budget** (`tools/context_budget.py`) caps `AGENTS.md`, the only
   file loaded on every task. Everything else here ratchets upward; instructions
   are the one thing that must not. The cap is raisable, but only against a
@@ -80,14 +87,26 @@ gate was added and ratchet upward only. The 80% goal was reached by isolating
 the adapters from the runtime, one class per pull request, and the global floor
 now simply follows what the suite achieves.
 
-What is still uncovered is deliberate and worth naming, because it is what a
-future floor cannot reach without a different kind of test: the body of
-`main()`, which is process-lifetime wiring — it builds the TUI, the Codex
-client, the TTS engine, and the transcribers, then hands control to
-`run_session`. Every collaborator it wires is covered on its own. Executing
-`main` itself would require a fake for each of them at once, which asserts the
-shape of the wiring rather than any behavior. Coverage there would be a number,
-not evidence, so it is left alone.
+This document previously argued the opposite of what `tests/test_cli.py` now
+does, and the reversal is worth recording rather than quietly overwriting. The
+old position was that `main()` is process-lifetime wiring, that every
+collaborator it builds is covered on its own, and that faking all of them at
+once would assert the shape of the wiring rather than any behavior — a number,
+not evidence.
+
+Splitting `cli.py` into per-concern modules on 2026-07-27 changed that premise.
+The collaborators are still covered individually, but they are now separately
+movable, and the shape of the wiring became the thing a refactor breaks: an
+unbound hook, a channel never registered, or a transcriber built without its
+listener raises nothing, fails no other test, and ships. That is a behavior —
+"the session that starts is the session that was asked for" — and it is worth
+asserting precisely because nothing else can catch it. So `main` is now
+exercised with each adapter faked at `cli`'s own import boundary, asserting the
+connections rather than re-testing the parts.
+
+What remains uncovered is the Edge TTS pipeline's error and cancellation
+branches (`voice_codex/tts.py`, the lowest floor in the gate at 80%). Each
+needs a network fake per branch. That is a gap to close, not a decision.
 
 ## Security policy
 
