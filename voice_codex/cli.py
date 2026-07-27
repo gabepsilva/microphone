@@ -194,20 +194,52 @@ def input_devices():
     ]
 
 
+def prompt_until(prompt, resolve, retry):
+    """Read answers until ``resolve`` accepts one, re-prompting on rejection.
+
+    A rejected answer must not end startup: every startup question is asked
+    before any audio device is opened, so there is nothing to unwind, and the
+    person answering is at the keyboard.
+    """
+    while True:
+        answer = input(prompt).strip()
+        try:
+            return resolve(answer)
+        except (KeyError, ValueError):
+            print(retry)
+
+
+def prompt_number(prompt, low, high, retry):
+    """Read a number within a closed range, re-prompting until one arrives."""
+
+    def resolve(answer):
+        selected = int(answer)
+        if not low <= selected <= high:
+            raise ValueError(answer)
+        return selected
+
+    return prompt_until(prompt, resolve, retry)
+
+
+def select_microphone(devices, requested):
+    """Find a requested microphone by device index or exact name."""
+    requested_text = str(requested)
+    for index, device in devices:
+        if requested_text in (str(index), device["name"]):
+            return index, device
+    raise RuntimeError(
+        f"Microphone {requested!r} was not found. "
+        "Remove it from the startup config to select interactively."
+    )
+
+
 def choose_microphone(requested=None):
     devices = input_devices()
     if not devices:
         raise RuntimeError("No audio input devices were found.")
 
     if requested is not None:
-        requested_text = str(requested)
-        for index, device in devices:
-            if requested_text in (str(index), device["name"]):
-                return index, device
-        raise RuntimeError(
-            f"Microphone {requested!r} was not found. "
-            "Remove it from the startup config to select interactively."
-        )
+        return select_microphone(devices, requested)
 
     print("Available audio input devices:")
     for number, (index, device) in enumerate(devices, start=1):
@@ -217,15 +249,13 @@ def choose_microphone(requested=None):
         )
     print()
 
-    while True:
-        answer = input(f"Select a microphone (1-{len(devices)}): ").strip()
-        try:
-            selected = int(answer)
-        except ValueError:
-            selected = 0
-        if 1 <= selected <= len(devices):
-            return devices[selected - 1]
-        print(f"Please enter a number from 1 to {len(devices)}.")
+    selected = prompt_number(
+        f"Select a microphone (1-{len(devices)}): ",
+        1,
+        len(devices),
+        f"Please enter a number from 1 to {len(devices)}.",
+    )
+    return devices[selected - 1]
 
 
 def audio_outputs():
@@ -262,57 +292,77 @@ def audio_outputs():
     return outputs
 
 
-def choose_them_output(requested=None, require_isolation=False):  # noqa: C901,PLR0912 - pre-existing: PipeWire device selection fallbacks
-    """Choose an optional playback sink whose monitor is transcribed as Them."""
-    outputs = audio_outputs()
+ISOLATED_OUTPUT = "isolated"
+ISOLATED_ALIASES = ("isolated", "virtual")
 
-    if requested is not None:
-        if requested.lower() == "none":
-            return None
-        if requested.lower() in ("isolated", "virtual"):
-            return {"isolated": True}
-        for output in outputs:
-            if requested in (
-                output["name"],
-                output["monitor"],
-                output["description"],
-            ):
-                if require_isolation:
-                    raise RuntimeError(
-                        "Edge TTS cannot be used with a direct Them monitor. "
-                        "Use --them-output isolated or --them-output none."
-                    )
-                return output
+
+def find_audio_output(outputs, requested):
+    """Match a requested output against its sink name, monitor, or description."""
+    for output in outputs:
+        if requested in (output["name"], output["monitor"], output["description"]):
+            return output
+    return None
+
+
+def select_them_output(outputs, requested, require_isolation=False):
+    """Resolve a requested Them output without prompting."""
+    if requested.lower() == "none":
+        return None
+    if requested.lower() in ISOLATED_ALIASES:
+        return {ISOLATED_OUTPUT: True}
+    output = find_audio_output(outputs, requested)
+    if output is None:
         raise RuntimeError(
             f"Audio output {requested!r} was not found. "
             "Use --them-output isolated, --them-output none, or select one "
             "interactively."
         )
+    if require_isolation:
+        raise RuntimeError(
+            "Edge TTS cannot be used with a direct Them monitor. "
+            "Use --them-output isolated or --them-output none."
+        )
+    return output
+
+
+def choose_them_output(requested=None, require_isolation=False):
+    """Choose an optional playback sink whose monitor is transcribed as Them."""
+    outputs = audio_outputs()
+
+    if requested is not None:
+        return select_them_output(outputs, requested, require_isolation)
 
     print("\nAudio output to transcribe as Them:")
     print("   0) None")
     print("   1) Create isolated Voice Codex Meeting output (recommended)")
-    if not require_isolation:
-        for number, output in enumerate(outputs, start=2):
-            print(f"  {number:2d}) {output['description']}")
-    else:
+    if require_isolation:
+        # A direct monitor would transcribe Codex's own speech back as Them.
         outputs = []
         print("      Direct output monitors are hidden while Edge TTS is enabled.")
+    else:
+        for number, output in enumerate(outputs, start=2):
+            print(f"  {number:2d}) {output['description']}")
 
     print()
-    while True:
-        answer = input(f"Select an audio output (0-{len(outputs) + 1}): ").strip()
-        try:
-            selected = int(answer)
-        except ValueError:
-            selected = -1
-        if selected == 0:
-            return None
-        if selected == 1:
-            return {"isolated": True}
-        if 2 <= selected <= len(outputs) + 1:
-            return outputs[selected - 2]
-        print(f"Please enter a number from 0 to {len(outputs) + 1}.")
+    selected = prompt_number(
+        f"Select an audio output (0-{len(outputs) + 1}): ",
+        0,
+        len(outputs) + 1,
+        f"Please enter a number from 0 to {len(outputs) + 1}.",
+    )
+    if selected == 0:
+        return None
+    if selected == 1:
+        return {ISOLATED_OUTPUT: True}
+    return outputs[selected - 2]
+
+
+def select_playback_output(outputs, requested):
+    """Resolve a requested playback output without prompting."""
+    output = find_audio_output(outputs, requested)
+    if output is None:
+        raise RuntimeError(f"Playback output {requested!r} was not found.")
+    return output
 
 
 def choose_playback_output(requested=None):
@@ -322,28 +372,19 @@ def choose_playback_output(requested=None):
         raise RuntimeError("No PulseAudio/PipeWire audio outputs were found.")
 
     if requested is not None:
-        for output in outputs:
-            if requested in (
-                output["name"],
-                output["monitor"],
-                output["description"],
-            ):
-                return output
-        raise RuntimeError(f"Playback output {requested!r} was not found.")
+        return select_playback_output(outputs, requested)
 
     print("\nPhysical output for meeting audio and Codex TTS:")
     for number, output in enumerate(outputs, start=1):
         print(f"  {number:2d}) {output['description']}")
     print()
-    while True:
-        answer = input(f"Select a playback output (1-{len(outputs)}): ").strip()
-        try:
-            selected = int(answer)
-        except ValueError:
-            selected = 0
-        if 1 <= selected <= len(outputs):
-            return outputs[selected - 1]
-        print(f"Please enter a number from 1 to {len(outputs)}.")
+    selected = prompt_number(
+        f"Select a playback output (1-{len(outputs)}): ",
+        1,
+        len(outputs),
+        f"Please enter a number from 1 to {len(outputs)}.",
+    )
+    return outputs[selected - 1]
 
 
 class VirtualMeetingOutput:
@@ -438,14 +479,22 @@ def choose_codex_after(requested=None):
     print("   3) User Voice")
     print("   4) Codex will be quiet for voice")
     print()
-    while True:
-        answer = input("Select a response policy (1-4): ").strip()
-        try:
-            policy = resolve_response_policy(answer)
-        except KeyError:
-            print("Please enter a number from 1 to 4.")
-            continue
-        return policy.label, policy.speakers
+    policy = prompt_until(
+        "Select a response policy (1-4): ",
+        resolve_response_policy,
+        "Please enter a number from 1 to 4.",
+    )
+    return policy.label, policy.speakers
+
+
+TTS_ANSWERS = {
+    "1": False,
+    "no": False,
+    "n": False,
+    "2": True,
+    "yes": True,
+    "y": True,
+}
 
 
 def choose_tts(requested=None):
@@ -457,13 +506,11 @@ def choose_tts(requested=None):
     print("   1) No")
     print("   2) Yes")
     print()
-    while True:
-        answer = input("Select audio output (1-2): ").strip()
-        if answer in ("1", "no", "n"):
-            return False
-        if answer in ("2", "yes", "y"):
-            return True
-        print("Please enter 1 or 2.")
+    return prompt_until(
+        "Select audio output (1-2): ",
+        TTS_ANSWERS.__getitem__,
+        "Please enter 1 or 2.",
+    )
 
 
 class EdgeSentenceTTS:
@@ -1487,8 +1534,8 @@ def them_output_name(them_output):
     """Name the Them output the way a saved startup config records it."""
     if them_output is None:
         return "none"
-    if them_output.get("isolated"):
-        return "isolated"
+    if them_output.get(ISOLATED_OUTPUT):
+        return ISOLATED_OUTPUT
     return them_output["name"]
 
 
@@ -1553,7 +1600,7 @@ def resolve_startup_selection(args):
     them_output_setting = them_output_name(them_output)
     virtual_meeting = None
     playback_output = None
-    if them_output is not None and them_output.get("isolated"):
+    if them_output is not None and them_output.get(ISOLATED_OUTPUT):
         playback_output = choose_playback_output(args.playback_output)
         virtual_meeting = VirtualMeetingOutput(playback_output)
         them_output = virtual_meeting.transcript_output

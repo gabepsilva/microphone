@@ -73,8 +73,11 @@ and prints what to do when it fails. This is the map, not the manual.
   are the one thing that must not.
 
 Recorded only here: per-file floors are set at the value each file had when the
-gate was added and ratchet upward only, and the global floor follows toward 60%
-and then 80% as adapters are isolated from the runtime.
+gate was added and ratchet upward only, and the global floor follows toward 80%
+as adapters are isolated from the runtime. The 60% waypoint was passed once the
+startup path and the device choosers moved out of `cli.py`; what remains below
+the line is the three adapter classes — Edge TTS, the PulseAudio transcriber,
+and the Codex conversation — plus the thread-marshalling half of `tui.py`.
 
 ## Security policy
 
