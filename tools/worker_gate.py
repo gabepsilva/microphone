@@ -20,18 +20,26 @@ So the convention moves out of the code's layout and into a check:
     to the same target. Timer takes no daemon keyword, which is why both
     spellings are accepted.
   * ``join()`` on anything this file recognizes as a thread must pass a
-    timeout. Shutdown must stay bounded even when a worker is wedged.
+    timeout, and it must be a real one: ``join(None)`` and
+    ``join(timeout=None)`` block exactly as long as a bare ``join()``.
+    Shutdown must stay bounded even when a worker is wedged.
 
 Thread identity is tracked per top-level class or function by the source text
 of the assignment target, so ``" ".join(parts)`` is never mistaken for waiting
 on a worker: only expressions assigned from a Thread or Timer call are
 checked.
+
+Order within a scope is deliberately not checked. Setting ``.daemon`` after
+``.start()`` is a real mistake, but the interpreter raises ``RuntimeError`` on
+the spot, which is the loud failure this gate does not need to duplicate. What
+it exists for is the silent case: a thread that runs fine and hangs at exit.
 """
 
 from __future__ import annotations
 
 import ast
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 PACKAGE = Path("voice_codex")
@@ -58,15 +66,27 @@ def _has_daemon_keyword(call: ast.Call) -> bool:
     )
 
 
+def _assignments(scope: ast.AST) -> Iterator[tuple[list[ast.expr], ast.expr]]:
+    """Yield ``(targets, value)`` for annotated and plain assignments alike.
+
+    ``self.worker: Thread = Thread(...)`` binds a thread exactly as the
+    unannotated spelling does, and this repository type-checks, so the
+    annotated form is the one the next worker is likely to use.
+    """
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign):
+            yield node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            yield [node.target], node.value
+
+
 def _daemon_targets(scope: ast.AST) -> set[str]:
     """Collect every ``X.daemon = True`` target within one scope."""
     targets: set[str] = set()
-    for node in ast.walk(scope):
-        if not isinstance(node, ast.Assign):
+    for assigned, value in _assignments(scope):
+        if not (isinstance(value, ast.Constant) and value.value is True):
             continue
-        if not (isinstance(node.value, ast.Constant) and node.value.value is True):
-            continue
-        for target in node.targets:
+        for target in assigned:
             if isinstance(target, ast.Attribute) and target.attr == "daemon":
                 targets.add(ast.unparse(target.value))
     return targets
@@ -77,18 +97,18 @@ def _thread_targets(scope: ast.AST, failures: list[str], path: Path) -> set[str]
     daemonized = _daemon_targets(scope)
     threads: set[str] = set()
 
-    for node in ast.walk(scope):
-        if not isinstance(node, ast.Assign) or not _is_thread_call(node.value):
+    for assigned, value in _assignments(scope):
+        if not _is_thread_call(value):
             continue
-        call = node.value
+        call = value
         assert isinstance(call, ast.Call)
-        for target in node.targets:
+        for target in assigned:
             name = ast.unparse(target)
             threads.add(name)
             if _has_daemon_keyword(call) or name in daemonized:
                 continue
             failures.append(
-                f"{path}:{node.lineno}: {name} is a thread that is not a daemon. "
+                f"{path}:{call.lineno}: {name} is a thread that is not a daemon. "
                 f"Pass daemon=True, or set {name}.daemon = True, so a wedged "
                 f"worker cannot keep the process alive after the interface quits."
             )
@@ -120,6 +140,29 @@ def _check_inline_thread(call: ast.Call, failures: list[str], path: Path) -> Non
         )
 
 
+def _is_none(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _has_bounded_timeout(call: ast.Call) -> bool:
+    """Decide whether a ``join`` call can be waited on forever.
+
+    ``join(None)`` and ``join(timeout=None)`` are spelled like bounded waits
+    and behave like bare ``join()``: both block until the worker returns. A
+    timeout threaded through from an optional parameter reaches this same
+    place, so the argument has to be a value, not merely present.
+
+    ``join(**options)`` is rejected too. The gate cannot see what is in the
+    mapping, and a check that guesses in favor of the code it is guarding is
+    not a check. Nothing here spells it that way, and the fix if it ever comes
+    up is to pass the timeout explicitly.
+    """
+    for keyword in call.keywords:
+        if keyword.arg == "timeout":
+            return not _is_none(keyword.value)
+    return bool(call.args) and not _is_none(call.args[0])
+
+
 def _check_joins(
     scope: ast.AST, threads: set[str], failures: list[str], path: Path
 ) -> None:
@@ -132,8 +175,7 @@ def _check_joins(
         receiver = ast.unparse(func.value)
         if receiver not in threads:
             continue
-        has_timeout = any(keyword.arg == "timeout" for keyword in node.keywords)
-        if not has_timeout and not node.args:
+        if not _has_bounded_timeout(node):
             failures.append(
                 f"{path}:{node.lineno}: {receiver}.join() waits without a "
                 f"timeout. Shutdown must stay bounded even when the worker is "

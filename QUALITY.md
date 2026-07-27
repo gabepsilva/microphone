@@ -105,7 +105,7 @@ exercised with each adapter faked at `cli`'s own import boundary, asserting the
 connections rather than re-testing the parts.
 
 What remains uncovered is the Edge TTS pipeline's error and cancellation
-branches (`voice_codex/tts.py`, the lowest floor in the gate at 80%). Each
+branches (`voice_codex/tts.py`, the lowest floor in the package at 80%). Each
 needs a network fake per branch. That is a gap to close, not a decision.
 
 ## Security policy

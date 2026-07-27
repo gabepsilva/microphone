@@ -256,6 +256,55 @@ class Capture:
         self.worker.join()
 """
 
+EXPLICIT_NONE_JOIN_TIMEOUT = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self):
+        self.worker.join(timeout=None)
+"""
+
+POSITIONAL_NONE_JOIN_TIMEOUT = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self):
+        self.worker.join(None)
+"""
+
+UNPACKED_JOIN_KWARGS = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def close(self, **options):
+        self.worker.join(**options)
+"""
+
+ANNOTATED_NON_DAEMON_THREAD = """
+import threading
+
+
+class Capture:
+    def __init__(self):
+        self.worker: threading.Thread = threading.Thread(target=self._run)
+        self.worker.start()
+
+    def close(self):
+        self.worker.join()
+"""
+
 INLINE_NON_DAEMON_THREAD = """
 import threading
 
@@ -291,10 +340,13 @@ class Capture:
     def __init__(self):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.reader = threading.Thread(target=self._read, daemon=True)
+        self.drain: threading.Thread = threading.Thread(target=self._drain)
+        self.drain.daemon = True
 
     def close(self):
         self.reader.join(timeout=3)
         self.worker.join(timeout=10)
+        self.drain.join(5.0)
 
     def _text(self, words):
         return " ".join(word.strip() for word in words)
@@ -312,6 +364,10 @@ def run_session(tui):
         ("join with no timeout", UNBOUNDED_JOIN),
         ("inline non-daemon thread", INLINE_NON_DAEMON_THREAD),
         ("non-daemon timer", NON_DAEMON_TIMER),
+        ("join with an explicit None timeout", EXPLICIT_NONE_JOIN_TIMEOUT),
+        ("join with a positional None timeout", POSITIONAL_NONE_JOIN_TIMEOUT),
+        ("annotated non-daemon thread", ANNOTATED_NON_DAEMON_THREAD),
+        ("join whose timeout is hidden in **kwargs", UNPACKED_JOIN_KWARGS),
     ],
 )
 def test_worker_gate_rejects_a_thread_that_can_outlive_shutdown(label, source) -> None:

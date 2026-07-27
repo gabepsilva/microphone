@@ -36,7 +36,7 @@ FLOORS = {
     "tools/mutation_gate.py": 78.0,
     "tools/ratchet_gate.py": 90.0,
     "tools/test_integrity.py": 93.0,
-    "tools/worker_gate.py": 96.0,
+    "tools/worker_gate.py": 97.0,
     "voice-codex.py": 83.0,
     "voice-codex-tui.py": 83.0,
     "voice_codex/__init__.py": 100.0,
@@ -51,8 +51,17 @@ FLOORS = {
     "voice_codex/listener.py": 99.0,
     "voice_codex/presentation.py": 100.0,
     "voice_codex/startup.py": 98.0,
-    # The lowest floor here: the Edge pipeline's error and cancellation paths
-    # need a network fake per branch. Raise it, do not settle for it.
+    # The lowest floor in the package: the Edge pipeline's error and
+    # cancellation paths need a network fake per branch. Raise it, do not
+    # settle for it.
+    #
+    # It stays at 80 rather than the 81 this gate offers, because tts.py is
+    # the one file here whose measurement moves between runs: five runs of the
+    # same commit measured 80.99, 81.82, 81.82, 81.82, 81.40, with the guard
+    # in _play hit or missed depending on how the synthesis thread interleaves
+    # with shutdown. A floor at the top of that range fails a clean branch at
+    # random. Fixing the flap is the same work as raising the floor honestly:
+    # fake the network per branch instead of racing it.
     "voice_codex/tts.py": 80.0,
     "voice_codex/tui.py": 94.0,
 }
