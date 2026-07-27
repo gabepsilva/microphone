@@ -269,6 +269,7 @@ fail_under = 46
 source_paths = ["voice_codex/domain.py"]
 """
 BASE_SEMGREP = "rules:\n  - id: python-subprocess-shell-true\n"
+BASE_MAKEFILE = "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 90\n"
 
 BASE_FILES = {
     "tools/coverage_gate.py": BASE_COVERAGE_GATE,
@@ -276,6 +277,7 @@ BASE_FILES = {
     "tools/context_budget.py": BASE_CONTEXT_BUDGET,
     "pyproject.toml": BASE_PYPROJECT,
     "semgrep.yml": BASE_SEMGREP,
+    "Makefile": BASE_MAKEFILE,
 }
 
 
@@ -324,6 +326,16 @@ BASE_FILES = {
             "tools/context_budget.py",
             "BUDGETS = {}\n",
         ),
+        (
+            "lowered diff-coverage floor",
+            "Makefile",
+            "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 0\n",
+        ),
+        (
+            "deleted diff-coverage floor",
+            "Makefile",
+            "DIFF_BASE ?= origin/master\n",
+        ),
     ],
 )
 def test_ratchet_rejects_a_weakened_threshold(
@@ -345,9 +357,38 @@ def test_ratchet_allows_a_raised_floor(tmp_path, monkeypatch) -> None:
         'FLOORS = {"voice_codex/domain.py": 95.0}\nNEW_FILE_FLOOR = 80.0\n',
         encoding="utf-8",
     )
+    (repo / "Makefile").write_text(
+        "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 100\n", encoding="utf-8"
+    )
     monkeypatch.chdir(repo)
 
     assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "base_makefile"),
+    [
+        ("the base has no floor to compare against", "DIFF_BASE ?= origin/master\n"),
+        ("the base has no Makefile at all", None),
+    ],
+)
+def test_ratchet_allows_a_threshold_that_did_not_exist_before(
+    tmp_path, monkeypatch, label, base_makefile
+) -> None:
+    """Introducing a floor must not be mistaken for weakening one."""
+    gate = _load_gate("ratchet_gate")
+    base_files = dict(BASE_FILES)
+    if base_makefile is None:
+        del base_files["Makefile"]
+    else:
+        base_files["Makefile"] = base_makefile
+    repo = _fake_repo(tmp_path, base_files)
+    (repo / "Makefile").write_text(
+        "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 90\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0, f"ratchet blocked {label}"
 
 
 def test_ratchet_fails_loudly_when_the_base_ref_is_missing(

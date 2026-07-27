@@ -28,7 +28,7 @@ FLOORS = {
     "tools/context_budget.py": 93.0,
     "tools/coverage_gate.py": 75.0,
     "tools/mutation_gate.py": 78.0,
-    "tools/ratchet_gate.py": 86.0,
+    "tools/ratchet_gate.py": 88.0,
     "tools/test_integrity.py": 93.0,
     "voice-codex.py": 83.0,
     "voice-codex-tui.py": 83.0,
