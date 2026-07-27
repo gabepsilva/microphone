@@ -62,33 +62,37 @@ class SentenceChunker:
         self.max_chars = max_chars
         self.buffer = ""
 
+    def _split_once(self, text: str) -> tuple[str, str]:
+        """Take the longest chunk that fits, and return it with the rest.
+
+        The split prefers the last line or word break inside the cap. A break
+        in the first half is worse than none at all — it would emit a sliver
+        and leave the bulk of the text still over the cap — so the split falls
+        back to the cap itself.
+        """
+        split_at = max(
+            text.rfind("\n", 0, self.max_chars + 1),
+            text.rfind(" ", 0, self.max_chars + 1),
+        )
+        if split_at < self.max_chars // 2:
+            split_at = self.max_chars
+        return text[:split_at].strip(), text[split_at:].lstrip()
+
     def _emit_bounded(self, text: str) -> None:
+        """Emit text as capped chunks, the short remainder included."""
         while len(text) > self.max_chars:
-            split_at = max(
-                text.rfind("\n", 0, self.max_chars + 1),
-                text.rfind(" ", 0, self.max_chars + 1),
-            )
-            if split_at < self.max_chars // 2:
-                split_at = self.max_chars
-            chunk = text[:split_at].strip()
-            text = text[split_at:].lstrip()
+            chunk, text = self._split_once(text)
             if chunk:
                 self.emit(chunk)
         if text:
             self.emit(text)
 
     def _emit_long_chunks(self) -> None:
+        """Emit whole capped chunks, leaving a short remainder buffered."""
         while len(self.buffer) > self.max_chars:
-            split_at = max(
-                self.buffer.rfind("\n", 0, self.max_chars + 1),
-                self.buffer.rfind(" ", 0, self.max_chars + 1),
-            )
-            if split_at < self.max_chars // 2:
-                split_at = self.max_chars
-            text = self.buffer[:split_at].strip()
-            self.buffer = self.buffer[split_at:].lstrip()
-            if text:
-                self.emit(text)
+            chunk, self.buffer = self._split_once(self.buffer)
+            if chunk:
+                self.emit(chunk)
 
     def feed(self, text: str) -> None:
         self.buffer += text
