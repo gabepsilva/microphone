@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from .domain import EchoMemory, TurnGate
+from .domain import EchoMemory, SpeechActivity, TurnGate
 from .playback import AudioPlayer, describe_tool_failure
 
 
@@ -87,6 +87,7 @@ class EdgeSentenceTTS:
         self.shutdown_requested = threading.Event()
         self.turns = TurnGate()
         self.echo = EchoMemory()
+        self.activity = SpeechActivity()
         self.worker = threading.Thread(
             target=self._worker,
             name="EdgeTTSWorker",
@@ -119,6 +120,7 @@ class EdgeSentenceTTS:
         turn, accepting = self.turns.accepting_turn()
         if text and accepting and not self.shutdown_requested.is_set():
             self.echo.remember(text, retention=self.QUEUED_RETENTION_SECONDS)
+            self.activity.queued()
             self.sentences.put_nowait((turn, text))
 
     def interrupt(self):
@@ -136,6 +138,7 @@ class EdgeSentenceTTS:
                 self.sentences.put_nowait(queued)
                 break
 
+        self.activity.silenced()
         self.playback.stop()
 
     def is_likely_echo(self, text):
@@ -244,6 +247,7 @@ class EdgeSentenceTTS:
                 self.echo.remember(
                     text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True
                 )
+                self.activity.finished()
                 available_slots.release()
 
     async def _run_pipeline(self):
@@ -263,8 +267,13 @@ class EdgeSentenceTTS:
     def _worker(self):
         asyncio.run(self._run_pipeline())
 
+    def is_speaking(self):
+        """Report whether this engine still has speech to deliver."""
+        return self.activity.speaking
+
     def close(self):
         self.shutdown_requested.set()
+        self.activity.silenced()
         self.playback.stop()
         self.sentences.put_nowait(self.stop_item)
         self.worker.join(timeout=3)

@@ -7,6 +7,7 @@ from voice_codex.domain import (
     EchoMemory,
     SentenceChunker,
     SpeakerGate,
+    SpeechActivity,
     TranscriptRouter,
     TurnGate,
     TurnSilence,
@@ -601,3 +602,68 @@ def test_a_typed_window_is_read_back(typed, expected) -> None:
 def test_a_value_the_field_cannot_use_is_refused(typed) -> None:
     """Refused rather than clamped: a silent correction looks like a dropped key."""
     assert parse_turn_silence(typed) is None
+
+
+def test_an_engine_with_nothing_queued_is_not_speaking() -> None:
+    assert SpeechActivity().speaking is False
+
+
+def test_a_queued_sentence_counts_as_speaking() -> None:
+    activity = SpeechActivity()
+
+    activity.queued()
+
+    assert activity.speaking is True
+
+
+def test_speech_continues_across_the_gap_between_sentences() -> None:
+    """The gap between two sentences must not read as silence."""
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.finished()
+
+    assert activity.speaking is True
+
+
+def test_speech_ends_once_every_sentence_has_been_delivered() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.finished()
+    activity.finished()
+
+    assert activity.speaking is False
+
+
+def test_an_extra_completion_cannot_mute_the_next_sentence() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.finished()
+    activity.finished()
+
+    activity.queued()
+
+    assert activity.speaking is True
+
+
+def test_being_silenced_drops_everything_outstanding() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.queued()
+
+    activity.silenced()
+
+    assert activity.speaking is False
+
+
+def test_speech_can_start_again_after_being_silenced() -> None:
+    activity = SpeechActivity()
+    activity.queued()
+    activity.silenced()
+
+    activity.queued()
+
+    assert activity.speaking is True

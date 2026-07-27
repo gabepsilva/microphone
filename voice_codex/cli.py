@@ -100,16 +100,17 @@ def main():
 
     turn_silence = TurnSilence(args.turn_silence)
     countdown = TurnSilenceClock(turn_silence)
+    tts = build_speech(selection, args, playback_output)
     tui = VoiceCodexTUI(
         build_session_state(args, selection),
         countdown=countdown,
+        speech=tts,
         on_policy=gate.set_policy,
         on_turn_silence=turn_silence.set,
     )
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
-    tts = build_speech(selection, args, playback_output)
     conversation = CodexConversation(
         CodexSettings(
             sandbox=args.sandbox,

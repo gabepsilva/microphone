@@ -56,6 +56,8 @@ class SpeechEngine(Protocol):
 
     def is_likely_echo(self, text: str) -> bool: ...
 
+    def is_speaking(self) -> bool: ...
+
     def close(self) -> None: ...
 
 
@@ -160,6 +162,9 @@ class SwitchableSpeech:
 
     def is_likely_echo(self, text):
         return self._current().is_likely_echo(text)
+
+    def is_speaking(self):
+        return self._current().is_speaking()
 
     def set_provider(self, provider, voice=None):
         """Start replacing the engine; report whether the switch was started.

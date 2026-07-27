@@ -66,8 +66,8 @@ FLOORS = {
     # exactly that: every abort and shutdown path waits on an event the fake
     # player sets. Five runs of the current tree all measure 97.19, so this is
     # the honest floor rather than the top of a flapping range.
-    "voice_codex/tts.py": 97.0,
-    "voice_codex/tui.py": 94.0,
+    "voice_codex/tts.py": 98.0,
+    "voice_codex/tui.py": 95.0,
 }
 
 # A module added after this gate existed has no legacy excuse.

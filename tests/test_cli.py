@@ -30,9 +30,10 @@ PLAYBACK = {"name": "alsa_output.pci", "description": "Speakers"}
 class FakeTUI:
     """Stand in for the Textual interface without mounting one."""
 
-    def __init__(self, session_state, countdown=None, **hooks):
+    def __init__(self, session_state, countdown=None, speech=None, **hooks):
         self.session_state = session_state
         self.countdown = countdown
+        self.speech = speech
         self.hook_arguments = hooks
         self.hooks = SimpleNamespace(**hooks)
         self.audio: dict[str, str] = {}
@@ -86,6 +87,9 @@ class FakeTTS:
 
     def set_enabled(self, _enabled):
         return True
+
+    def is_speaking(self):
+        return False
 
 
 @pytest.fixture
@@ -320,3 +324,20 @@ def test_editing_the_window_reaches_the_listeners(wiring) -> None:
     assert tui.hook_arguments["on_turn_silence"](1.25) == 1.25
     assert [listener.turn_silence.seconds for _, listener in channels] == [1.25, 1.25]
     assert tui.countdown.window.seconds == 1.25
+
+
+def test_the_sidebar_can_see_whether_speech_is_still_playing(wiring) -> None:
+    """Without this the state field goes idle while audio is still coming out."""
+    wiring["tts_enabled"] = True
+
+    cli.main()
+    tui, _, conversation, _ = wiring["session"]
+
+    assert tui.speech is conversation.tts
+
+
+def test_a_silent_session_gives_the_sidebar_no_speech_to_poll(wiring) -> None:
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+
+    assert tui.speech is None
