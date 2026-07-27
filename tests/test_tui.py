@@ -444,3 +444,85 @@ def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
         name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.items()
     } == tui.POLICIES
     assert set(tui.POLICIES) == set(RESPONSE_POLICIES)
+
+
+def test_the_speech_picker_offers_every_provider(tui) -> None:
+    from voice_codex.speech import PROVIDER_LABELS
+
+    # The picker's labels are the speech boundary's, so a provider added there
+    # appears here without a second list to remember to update.
+    state = tui.SessionState()
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._speech_options() == [
+        (label, name) for name, label in PROVIDER_LABELS.items()
+    ]
+
+
+def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:
+    from voice_codex.speech import DEFAULT_PROVIDER, default_voice
+
+    state = tui.SessionState()
+
+    assert state.tts_provider == DEFAULT_PROVIDER
+    assert state.tts_voice == default_voice(DEFAULT_PROVIDER)
+
+
+def test_choosing_a_speech_provider_switches_the_engine_and_its_voice(tui) -> None:
+    from voice_codex.speech import default_voice
+
+    switched: list[str] = []
+    state = tui.SessionState(tts_provider="piper")
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(
+            on_tts_provider=lambda provider: switched.append(provider) or True
+        ),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#speech-select", Select).value = "edge"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert switched == ["edge"]
+    assert state.tts_provider == "edge"
+    assert state.tts_voice == default_voice("edge")
+
+
+def test_a_refused_speech_switch_leaves_the_engine_alone(tui) -> None:
+    shown: list[str] = []
+    state = tui.SessionState(tts_provider="piper")
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_tts_provider=lambda _provider: False),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#speech-select", Select).value = "edge"
+            await pilot.pause()
+            # The picker has to snap back: leaving it on the engine the host
+            # refused would name a provider the session is not using.
+            shown.append(app.query_one("#speech-select", Select).value)
+
+    asyncio.run(exercise())
+
+    assert state.tts_provider == "piper"
+    assert shown == ["piper"]
+
+
+def test_a_session_without_a_speech_hook_cannot_switch_provider(tui) -> None:
+    state = tui.SessionState(tts_provider="piper")
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#speech-select", Select).value = "edge"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert state.tts_provider == "piper"

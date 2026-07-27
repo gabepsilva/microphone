@@ -41,6 +41,7 @@ BASE_SELECTION = StartupSelection(
     device_index=3,
     device={"name": "Yeti"},
     tts_enabled=False,
+    tts_provider="piper",
     them_output=None,
     them_output_setting="none",
     playback_output=None,
@@ -66,7 +67,11 @@ def test_parser_defaults_match_the_documented_startup_choices(tmp_path) -> None:
         "gpt-5.6-luna",
         "low",
     )
-    assert (args.turn_silence, args.tts_voice) == (3.0, "en-US-AndrewNeural")
+    assert (args.turn_silence, args.tts_provider, args.tts_voice) == (
+        3.0,
+        "piper",
+        "en_US-lessac-medium",
+    )
     assert args.codex_fast is False
     assert (args.tts, args.codex_after, args.microphone) == (None, None, None)
 
@@ -133,6 +138,7 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     assert startup_settings(chosen) == {
         "microphone": "Yeti",
         "tts": "on",
+        "tts_provider": "piper",
         "them_output": "isolated",
         "playback_output": "alsa_output.pci",
         "codex_after": "both",
@@ -164,7 +170,7 @@ def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
     assert "Voice turn silence: 3.0s" in summary
     assert "Codex speed: Fast" in summary
     assert "Codex command access: full-access" in summary
-    assert "Codex audio: Edge TTS (en-US-AndrewNeural)" in summary
+    assert "Codex audio: Piper (local) (en_US-lessac-medium)" in summary
     assert "Meeting and TTS playback: Speakers" in summary
 
 
@@ -481,3 +487,35 @@ def test_every_policy_round_trips_through_a_saved_config() -> None:
         assert saved["codex_after"] == name
         # A saved name has to be a name the command line will take back.
         assert name in POLICY_NAMES
+
+
+def test_an_unknown_speech_provider_in_the_config_is_rejected(tmp_path) -> None:
+    config = write_config(tmp_path, 'tts_provider: "festival"\n')
+
+    with pytest.raises(SystemExit, match="2"):
+        parse_startup_args(["--config", config])
+
+
+def test_a_configured_speech_provider_brings_its_own_default_voice(tmp_path) -> None:
+    config = write_config(tmp_path, 'tts_provider: "edge"\n')
+
+    _, args = parse_startup_args(["--config", config])
+
+    assert (args.tts_provider, args.tts_voice) == ("edge", "en-US-AndrewNeural")
+
+
+def test_a_chosen_voice_survives_the_provider_default(tmp_path) -> None:
+    _, args = parse_startup_args(
+        ["--config", empty_config(tmp_path), "--tts-voice", "en_US-ryan-high"]
+    )
+
+    assert (args.tts_provider, args.tts_voice) == ("piper", "en_US-ryan-high")
+
+
+def test_the_startup_summary_reports_a_session_without_speech(tmp_path) -> None:
+    _, args = parse_startup_args(["--config", empty_config(tmp_path)])
+    stream = io.StringIO()
+
+    print_startup_summary(args, selection(tts_enabled=False), stream=stream)
+
+    assert "Codex audio: Off" in stream.getvalue()

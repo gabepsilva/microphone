@@ -24,6 +24,20 @@ Some runtime features also require operating-system tools: PipeWire/PulseAudio
 (`pactl` and `parec`) for output capture, and `ffmpeg`/`ffplay` for spoken
 responses. They are runtime integrations, not Python packages.
 
+## Speech
+
+Codex answers out loud through one of two engines, chosen with `--tts-provider`
+or from the sidebar while the session runs:
+
+- `piper` (default) synthesizes on this machine. It reaches the first word in
+  roughly a quarter the time Edge needs, because no part of the answer crosses
+  the network, and it keeps working offline. Its voice model downloads once, to
+  `~/.cache/voice-codex/piper`.
+- `edge` uses Microsoft's online voices.
+
+Each provider speaks with its own default voice; `--tts-voice` overrides it for
+the provider the session starts with.
+
 ## Running and presentation
 
 ```bash

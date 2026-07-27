@@ -12,7 +12,10 @@
    - Concise, conversational text for TTS.
    - Detailed Markdown, code, commands, paths, and logs for reading.
 
-6. Microsoft Edge TTS integration to give Codex a voice.
+6. Two interchangeable speech engines behind one interface, selectable from the
+   sidebar: Piper synthesizing locally (the default, and the fastest to the
+   first word) and Microsoft Edge synthesizing online. Per-provider voice
+   selection is not implemented yet; each engine speaks with its own default.
 
 7. Stream complete Codex sentences to TTS for lower latency.
 

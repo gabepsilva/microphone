@@ -8,7 +8,8 @@ others:
   * ``capture``  — microphone and sink-monitor audio into Moonshine
   * ``listener`` — transcription events into completed turns
   * ``codex``    — the Codex thread and its streamed turns
-  * ``tts``      — Edge speech for Codex responses
+  * ``speech``   — which synthesizer speaks Codex responses, and the two
+                   engines behind it in ``tts`` and ``piper_tts``
 
 ``startup`` resolves what the session will be before any of that is built,
 drawing on ``choosers`` for the interactive questions and ``catalog`` for the
@@ -36,6 +37,7 @@ from .codex import CodexConversation, CodexSettings
 from .config import save_startup_config
 from .domain import SpeakerGate
 from .listener import ConversationListener, TranscriptSubmitter, tts_switch
+from .speech import SwitchableSpeech, provider_switch
 from .startup import (
     build_session_state,
     parse_startup_args,
@@ -44,7 +46,29 @@ from .startup import (
     run_session,
     startup_settings,
 )
-from .tts import EdgeSentenceTTS
+
+
+def build_speech(selection, args, playback_output):
+    """Build the session's speech, or nothing when the session is silent."""
+    if not selection.tts_enabled:
+        return None
+    return SwitchableSpeech.start(
+        selection.tts_provider,
+        args.tts_voice,
+        output_sink=(playback_output["name"] if playback_output is not None else None),
+    )
+
+
+def attach_conversation_hooks(tui, conversation, tts):
+    """Point the interface's controls at the conversation and its speech."""
+    tui.hooks.on_user_text = lambda text: conversation.ingest(
+        "User Text", text, respond=True
+    )
+    tui.hooks.on_interrupt = conversation.interrupt
+    tui.hooks.on_codex_model = conversation.request_model
+    tui.hooks.on_codex_effort = conversation.request_reasoning_effort
+    tui.hooks.on_tts = tts_switch(tts)
+    tui.hooks.on_tts_provider = provider_switch(tts)
 
 
 def main():
@@ -78,16 +102,7 @@ def main():
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
-    tts = (
-        EdgeSentenceTTS(
-            args.tts_voice,
-            output_sink=(
-                playback_output["name"] if playback_output is not None else None
-            ),
-        )
-        if selection.tts_enabled
-        else None
-    )
+    tts = build_speech(selection, args, playback_output)
     conversation = CodexConversation(
         CodexSettings(
             sandbox=args.sandbox,
@@ -99,14 +114,7 @@ def main():
         tts,
     )
 
-    tui.hooks.on_user_text = lambda text: conversation.ingest(
-        "User Text", text, respond=True
-    )
-    tui.hooks.on_interrupt = conversation.interrupt
-    tui.hooks.on_codex_model = conversation.request_model
-    tui.hooks.on_codex_effort = conversation.request_reasoning_effort
-    tui.hooks.on_tts = tts_switch(tts)
-
+    attach_conversation_hooks(tui, conversation, tts)
     submitter = TranscriptSubmitter(conversation, gate, tts)
 
     user_listener = ConversationListener(

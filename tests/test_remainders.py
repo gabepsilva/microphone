@@ -151,6 +151,7 @@ def test_the_committed_example_config_is_valid_for_a_first_run() -> None:
     assert load_startup_config(ROOT / "voice.example.yaml") == {
         "microphone": None,
         "tts": None,
+        "tts_provider": None,
         "them_output": None,
         "playback_output": None,
         "codex_after": None,

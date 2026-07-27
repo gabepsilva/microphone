@@ -9,22 +9,15 @@ enforces both.
 from __future__ import annotations
 
 import asyncio
-import os
 import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from contextlib import suppress
 
 from .domain import EchoMemory, TurnGate
-
-
-def describe_tool_failure(headline, stderr):
-    """Explain a failed helper process, quoting its stderr when it wrote any."""
-    message = stderr.decode(errors="replace").strip() if stderr else ""
-    return f"\n{headline}{': ' + message if message else '.'}"
+from .playback import AudioPlayer, describe_tool_failure
 
 
 def trim_command(trimmer, silence_filter):
@@ -42,19 +35,6 @@ def trim_command(trimmer, silence_filter):
         "wav",
         "pipe:1",
     ]
-
-
-def play_command(player):
-    """Build the ffplay command that plays one synthesized sentence."""
-    return [player, "-nodisp", "-autoexit", "-loglevel", "quiet", "-i", "pipe:0"]
-
-
-def player_environment(output_sink, base_environment=None):
-    """Copy the environment, routing playback to a specific sink when given."""
-    environment = dict(os.environ if base_environment is None else base_environment)
-    if output_sink is not None:
-        environment["PULSE_SINK"] = output_sink
-    return environment
 
 
 class EdgeSentenceTTS:
@@ -100,16 +80,13 @@ class EdgeSentenceTTS:
 
         self.edge_tts = edge_tts
         self.voice = voice
-        self.player = player
         self.trimmer = trimmer
-        self.output_sink = output_sink
+        self.playback = AudioPlayer(player, output_sink=output_sink)
         self.sentences = queue.Queue()
         self.stop_item = object()
         self.shutdown_requested = threading.Event()
         self.turns = TurnGate()
         self.echo = EchoMemory()
-        self.player_lock = threading.Lock()
-        self.active_player = None
         self.worker = threading.Thread(
             target=self._worker,
             name="EdgeTTSWorker",
@@ -159,9 +136,7 @@ class EdgeSentenceTTS:
                 self.sentences.put_nowait(queued)
                 break
 
-        with self.player_lock:
-            if self.active_player is not None:
-                self.active_player.terminate()
+        self.playback.stop()
 
     def is_likely_echo(self, text):
         """Return True when a transcript resembles recently queued TTS."""
@@ -205,39 +180,7 @@ class EdgeSentenceTTS:
     def _play(self, turn, audio):
         if not audio or self._abandoned(turn):
             return
-        process = subprocess.Popen(
-            play_command(self.player),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=player_environment(self.output_sink),
-        )
-        with self.player_lock:
-            self.active_player = process
-        player_error = b""
-        try:
-            with suppress(BrokenPipeError):
-                _, player_error = process.communicate(input=audio)
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-            with self.player_lock:
-                if self.active_player is process:
-                    self.active_player = None
-        if process.returncode and not self._abandoned(turn):
-            print(
-                describe_tool_failure(
-                    f"Edge TTS player exited with code {process.returncode}",
-                    player_error,
-                ),
-                file=sys.stderr,
-                flush=True,
-            )
+        self.playback.play(audio, abandoned=lambda: self._abandoned(turn))
 
     def _release_if_abandoned(self, turn, available_slots):
         """Give back a prefetch slot held for speech nobody wants any more."""
@@ -322,8 +265,6 @@ class EdgeSentenceTTS:
 
     def close(self):
         self.shutdown_requested.set()
-        with self.player_lock:
-            if self.active_player is not None:
-                self.active_player.terminate()
+        self.playback.stop()
         self.sentences.put_nowait(self.stop_item)
         self.worker.join(timeout=3)
