@@ -215,3 +215,121 @@ def test_closing_twice_is_harmless(listener) -> None:
     listener.close()
 
     assert listener.recorded.closed == ["User Voice", "User Voice"]
+
+
+class RecordingCountdown:
+    """Record which speakers the listener reports as waiting."""
+
+    def __init__(self):
+        self.events: list[tuple[str, str]] = []
+
+    def started(self, speaker):
+        self.events.append(("started", speaker))
+
+    def cleared(self, speaker):
+        self.events.append(("cleared", speaker))
+
+    @property
+    def waiting(self):
+        """The speakers still counting down, in the order they started."""
+        pending: list[str] = []
+        for action, speaker in self.events:
+            if action == "started" and speaker not in pending:
+                pending.append(speaker)
+            elif action == "cleared" and speaker in pending:
+                pending.remove(speaker)
+        return pending
+
+
+def counting_listener(countdown=None):
+    """A listener reporting its silence timer to a recording countdown."""
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    countdown = RecordingCountdown() if countdown is None else countdown
+    listener = RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=3.0,
+        speaker="User Voice",
+        submit=lambda speaker, text: submitted.append((speaker, text)),
+        presentation=display,
+        countdown=countdown,
+    )
+    return listener, countdown
+
+
+def test_a_completed_line_starts_the_countdown() -> None:
+    listener, countdown = counting_listener()
+
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    assert countdown.waiting == ["User Voice"]
+    listener.close()
+
+
+def test_resuming_speech_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener.on_line_started(SimpleNamespace())
+
+    assert countdown.waiting == []
+
+
+def test_a_partial_transcript_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("still talking")))
+
+    assert countdown.waiting == []
+
+
+def test_a_submitted_turn_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener._flush(listener.timer_generation)
+
+    assert countdown.waiting == []
+    assert listener.submitted == [("User Voice", "all done")]
+
+
+def test_muting_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener.set_muted(True)
+
+    assert countdown.waiting == []
+
+
+def test_unmuting_does_not_resurrect_a_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+    listener.set_muted(True)
+
+    listener.set_muted(False)
+
+    assert countdown.waiting == []
+
+
+def test_closing_stops_the_countdown() -> None:
+    listener, countdown = counting_listener()
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+
+    listener.close()
+
+    assert countdown.waiting == []
+
+
+def test_a_listener_without_a_countdown_still_completes_a_turn(listener) -> None:
+    """The countdown is a display concern; a listener must not need one."""
+    assert listener.countdown is None
+
+    listener.on_line_completed(SimpleNamespace(line=line("all done")))
+    listener._flush(listener.timer_generation)
+
+    assert listener.submitted == [("User Voice", "all done")]
+    listener.close()

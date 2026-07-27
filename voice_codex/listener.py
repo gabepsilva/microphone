@@ -24,6 +24,7 @@ class ConversationListener(TranscriptEventListener):
         submit,
         presentation: TranscriptSink,
         on_speech=None,
+        countdown=None,
     ):
         self.confidence_threshold = confidence_threshold
         self.turn_silence = turn_silence
@@ -31,12 +32,19 @@ class ConversationListener(TranscriptEventListener):
         self.submit = submit
         self.presentation = presentation
         self.on_speech = on_speech
+        # Optional so a listener can run without a display attached to it.
+        self.countdown = countdown
         self.lock = threading.Lock()
         self.pending = []
         self.timer = None
         self.timer_generation = 0
         self.speech_callback_triggered = False
         self.muted = False
+
+    def _stop_counting(self):
+        """Take this speaker off the countdown the interface is showing."""
+        if self.countdown is not None:
+            self.countdown.cleared(self.speaker)
 
     def set_muted(self, muted):
         """Stop submitting microphone speech while preserving the listener."""
@@ -48,6 +56,8 @@ class ConversationListener(TranscriptEventListener):
                 if self.timer is not None:
                     self.timer.cancel()
                     self.timer = None
+        if muted:
+            self._stop_counting()
 
     def _is_muted(self):
         with self.lock:
@@ -69,6 +79,7 @@ class ConversationListener(TranscriptEventListener):
             text = " ".join(self.pending).strip()
             self.pending.clear()
             self.timer = None
+        self._stop_counting()
         if text:
             self.presentation.finish_turn(self.speaker)
             self.submit(self.speaker, text)
@@ -84,6 +95,8 @@ class ConversationListener(TranscriptEventListener):
         )
         self.timer.daemon = True
         self.timer.start()
+        if self.countdown is not None:
+            self.countdown.started(self.speaker)
 
     def _cancel_timer(self):
         with self.lock:
@@ -91,6 +104,7 @@ class ConversationListener(TranscriptEventListener):
             if self.timer is not None:
                 self.timer.cancel()
                 self.timer = None
+        self._stop_counting()
 
     def on_line_started(self, event):  # noqa: ARG002 - Textual/Codex callback signature is fixed
         # Speech has resumed. Keep all completed lines buffered and wait for
@@ -131,6 +145,7 @@ class ConversationListener(TranscriptEventListener):
             if self.timer is not None:
                 self.timer.cancel()
                 self.timer = None
+        self._stop_counting()
         self.presentation.close_speaker(self.speaker)
 
 

@@ -526,3 +526,121 @@ def test_a_session_without_a_speech_hook_cannot_switch_provider(tui) -> None:
     asyncio.run(exercise())
 
     assert state.tts_provider == "piper"
+
+
+def test_the_countdown_bar_drains_as_the_silence_runs_out(tui) -> None:
+    full = tui.countdown_bar(3.0, 3.0)
+    half = tui.countdown_bar(1.5, 3.0)
+    gone = tui.countdown_bar(0.0, 3.0)
+
+    assert full.plain == "■■■■■■■■■■ 3.0s"
+    assert half.plain == "■■■■■□□□□□ 1.5s"
+    assert gone.plain == "□□□□□□□□□□ 0.0s"
+
+
+def test_the_countdown_turns_amber_as_the_turn_is_about_to_be_sent(tui) -> None:
+    # The colour is the warning: speaking now still cancels the turn.
+    assert tui.countdown_bar(3.0, 3.0).spans[0].style == "#6cc06c"
+    assert tui.countdown_bar(0.6, 3.0).spans[0].style == "#d7b562"
+
+
+def test_a_countdown_longer_than_its_window_cannot_overfill(tui) -> None:
+    assert tui.countdown_bar(9.0, 3.0).plain == "■■■■■■■■■■ 9.0s"
+
+
+def test_a_zero_window_cannot_divide_by_itself(tui) -> None:
+    assert tui.countdown_bar(0.0, 0.0).plain == "□□□□□□□□□□ 0.0s"
+
+
+def test_the_sidebar_shows_the_window_when_no_turn_is_pending(tui) -> None:
+    sidebar = tui.Sidebar(tui.SessionState(turn_silence=2.5), tui.TuiHooks())
+
+    assert sidebar._turn_silence().plain == "2.5s"
+
+
+def test_the_sidebar_shows_the_countdown_while_a_turn_waits(tui) -> None:
+    state = tui.SessionState(turn_silence=3.0, turn_countdown=1.8)
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._turn_silence().plain == "■■■■■■□□□□ 1.8s"
+
+
+class FakeCountdown:
+    """A silence clock a test drives directly."""
+
+    def __init__(self, remaining=None):
+        self.value = remaining
+        self.reads = 0
+
+    def remaining(self):
+        self.reads += 1
+        return self.value
+
+
+def test_the_countdown_ticks_into_the_session_state(tui) -> None:
+    countdown = FakeCountdown(2.4)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown == 2.4
+
+
+def test_an_idle_session_repaints_nothing_for_the_countdown(tui) -> None:
+    """Ten frames a second of nothing is the cost this check exists to avoid."""
+    countdown = FakeCountdown(None)
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_session = lambda: painted.append(True)
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    # The mounted app runs its own countdown interval, so the poll count is
+    # not this test's to predict. That it polls at all, and repaints nothing
+    # when the answer is "no turn pending", is the whole property.
+    assert countdown.reads >= 1
+    assert painted == []
+    assert state.turn_countdown is None
+
+
+def test_the_end_of_a_countdown_is_painted_once_to_clear_it(tui) -> None:
+    countdown = FakeCountdown(None)
+    state = tui.SessionState(turn_countdown=0.2)
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(), countdown)
+    painted: list[bool] = []
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            sidebar.sync_session = lambda: painted.append(True)
+            app._tick_countdown()
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown is None
+    assert painted == [True]
+
+
+def test_a_session_without_a_countdown_clock_never_shows_one(tui) -> None:
+    state = tui.SessionState()
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            app._tick_countdown()
+
+    asyncio.run(exercise())
+
+    assert state.turn_countdown is None
