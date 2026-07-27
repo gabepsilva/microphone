@@ -40,7 +40,7 @@ FLOORS = {
     "voice-codex.py": 83.0,
     "voice-codex-tui.py": 83.0,
     "voice_codex/__init__.py": 100.0,
-    "voice_codex/capture.py": 86.0,
+    "voice_codex/capture.py": 87.0,
     "voice_codex/catalog.py": 95.0,
     "voice_codex/choosers.py": 94.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.

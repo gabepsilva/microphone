@@ -16,9 +16,9 @@ import numpy as np
 import pytest
 
 from voice_codex.capture import (
-    AudioLevelReporter,
     CaptureSettings,
     PulseMonitorTranscriber,
+    SoundActivityReporter,
     audio_level,
     decode_pcm,
     drain_audio_queue,
@@ -160,20 +160,71 @@ def test_the_level_is_clipped_to_one() -> None:
     assert audio_level(np.full(64, 0.9, dtype=np.float32)) == 1.0
 
 
-def test_level_updates_are_rate_limited() -> None:
-    levels: list[float] = []
-    display = type(
+def _recording_display(reports):
+    return type(
         "Display",
         (),
-        {"set_audio": staticmethod(lambda channel, level: levels.append(level))},
+        {"set_audio": staticmethod(lambda channel, active: reports.append(active))},
     )()
-    reporter = AudioLevelReporter(display, "them", interval=1000.0)
+
+
+def test_continuing_sound_is_reported_once() -> None:
+    """Steady speech is one report, not one per audio block."""
+    reports: list[bool] = []
+    reporter = SoundActivityReporter(_recording_display(reports), "them")
 
     reporter.update(np.full(64, 0.1, dtype=np.float32))
     reporter.update(np.full(64, 0.1, dtype=np.float32))
     reporter.update(np.full(64, 0.1, dtype=np.float32))
 
-    assert len(levels) == 1
+    assert reports == [True]
+
+
+def test_continuing_silence_is_never_reported() -> None:
+    reports: list[bool] = []
+    reporter = SoundActivityReporter(_recording_display(reports), "them")
+
+    reporter.update(np.zeros(64, dtype=np.float32))
+    reporter.update(np.zeros(64, dtype=np.float32))
+
+    assert reports == []
+
+
+def test_a_gap_shorter_than_the_release_does_not_report_silence() -> None:
+    """A pause between words must not drop the indicator."""
+    reports: list[bool] = []
+    clock = iter([0.0, 0.2, 0.3]).__next__
+    reporter = SoundActivityReporter(
+        _recording_display(reports), "mic", release=0.35, clock=clock
+    )
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))  # t=0.0, sound
+    reporter.update(np.zeros(64, dtype=np.float32))  # t=0.2, within release
+    reporter.update(np.zeros(64, dtype=np.float32))  # t=0.3, still within
+
+    assert reports == [True]
+
+
+def test_silence_past_the_release_reports_the_channel_quiet() -> None:
+    reports: list[bool] = []
+    clock = iter([0.0, 0.5]).__next__
+    reporter = SoundActivityReporter(
+        _recording_display(reports), "mic", release=0.35, clock=clock
+    )
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))  # t=0.0, sound
+    reporter.update(np.zeros(64, dtype=np.float32))  # t=0.5, past release
+
+    assert reports == [True, False]
+
+
+def test_sound_below_the_threshold_is_not_sound() -> None:
+    reports: list[bool] = []
+    reporter = SoundActivityReporter(_recording_display(reports), "mic", threshold=0.5)
+
+    reporter.update(np.full(64, 0.02, dtype=np.float32))
+
+    assert reports == []
 
 
 @pytest.mark.parametrize(

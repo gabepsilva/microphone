@@ -29,31 +29,59 @@ def audio_level(samples: np.ndarray) -> float:
     return min(1.0, rms * 5.0)
 
 
-class AudioLevelReporter:
-    """Rate-limit live audio-level updates sent to the transcript display."""
+# A channel counts as hearing something at or above this display level, and
+# keeps saying so for the release window after it drops back. Speech falls
+# below any threshold between words, so without the release the indicator
+# would flicker off in every syllable gap — reporting as often as the level
+# meter it replaced, which is the cost this whole approach exists to avoid.
+SOUND_THRESHOLD = 0.08
+SOUND_RELEASE_SECONDS = 0.35
 
-    def __init__(self, display, channel, interval=0.1):
+
+class SoundActivityReporter:
+    """Tell the display when a channel starts and stops hearing sound.
+
+    Only transitions are reported. A level changed on nearly every audio
+    block, and each report forced the interface to lay itself out again;
+    presence is stable, so a silent channel and a steadily-speaking one both
+    cost nothing to draw.
+    """
+
+    def __init__(
+        self,
+        display,
+        channel,
+        threshold: float = SOUND_THRESHOLD,
+        release: float = SOUND_RELEASE_SECONDS,
+        clock=time.monotonic,
+    ):
         self.display = display
         self.channel = channel
-        self.interval = interval
-        self.last_update = float("-inf")
+        self.threshold = threshold
+        self.release = release
+        self.clock = clock
+        self.active = False
+        self.loud_until = float("-inf")
 
     def update(self, samples: np.ndarray) -> None:
-        now = time.monotonic()
-        if now - self.last_update < self.interval:
+        now = self.clock()
+        if audio_level(samples) >= self.threshold:
+            self.loud_until = now + self.release
+        active = now < self.loud_until
+        if active == self.active:
             return
-        self.last_update = now
-        self.display.set_audio(self.channel, level=audio_level(samples))
+        self.active = active
+        self.display.set_audio(self.channel, active=active)
 
 
-def metered_mic_transcriber(*args, level_reporter: AudioLevelReporter, **kwargs):
+def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwargs):
     """Create microphone capture only when the audio runtime is starting."""
     from moonshine_voice import MicTranscriber
 
     class MeteredMicTranscriber(MicTranscriber):
         """Add a non-blocking level tap to Moonshine Voice microphone capture."""
 
-        def __init__(self, *args, level_reporter: AudioLevelReporter, **kwargs):
+        def __init__(self, *args, level_reporter: SoundActivityReporter, **kwargs):
             super().__init__(*args, **kwargs)
             self.level_reporter = level_reporter
 

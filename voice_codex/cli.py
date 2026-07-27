@@ -28,9 +28,9 @@ from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 
 from .capture import (
-    AudioLevelReporter,
     CaptureSettings,
     PulseMonitorTranscriber,
+    SoundActivityReporter,
     metered_mic_transcriber,
 )
 from .codex import CodexConversation, CodexSettings
@@ -185,7 +185,7 @@ def main():
         device=selection.device_index,
         samplerate=16000,
         channels=1,
-        level_reporter=AudioLevelReporter(tui, "mic"),
+        level_reporter=SoundActivityReporter(tui, "mic"),
     )
     user_transcriber.add_listener(user_listener)
 
@@ -210,7 +210,7 @@ def main():
             model_arch=downloaded_arch,
             monitor=them_output["monitor"],
             capture=CaptureSettings(update_interval=0.25),
-            level_reporter=AudioLevelReporter(tui, "them"),
+            level_reporter=SoundActivityReporter(tui, "them"),
         )
         them_transcriber.add_listener(them_listener)
         tui.hooks.on_them_mute = them_listener.set_muted
