@@ -45,6 +45,12 @@ or from the sidebar while the session runs:
 Each provider speaks with its own default voice; `--tts-voice` overrides it for
 the provider the session starts with.
 
+The sidebar's engine picker offers a third answer, `No voice reply`, which
+silences the session exactly as `Ctrl-T` does — the two are one setting, so
+either control moves the other. The engine is remembered while the voice is
+off, and choosing one again turns it back on. A session started with
+`--tts off` has no engine at all and stays on `No voice reply`.
+
 ## Running and presentation
 
 ```bash

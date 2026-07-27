@@ -14,8 +14,9 @@
 
 6. Two interchangeable speech engines behind one interface, selectable from the
    sidebar: Piper synthesizing locally (the default, and the fastest to the
-   first word) and Microsoft Edge synthesizing online. Per-provider voice
-   selection is not implemented yet; each engine speaks with its own default.
+   first word) and Microsoft Edge synthesizing online, plus "No voice reply"
+   for a session that should stay silent. Per-provider voice selection is not
+   implemented yet; each engine speaks with its own default.
 
 7. Stream complete Codex sentences to TTS for lower latency.
 

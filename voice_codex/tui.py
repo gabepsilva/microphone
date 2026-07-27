@@ -22,7 +22,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import ClassVar, cast
 
 # These must precede Textual imports. Textual needs Ctrl-C as an application
 # key so it can clear typed text before closing the app. The Kitty keyboard
@@ -38,7 +38,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import Input, Select, Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 from .domain import (
     CODEX,
@@ -48,7 +48,13 @@ from .domain import (
     USER_VOICE,
     parse_turn_silence,
 )
-from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, default_voice
+from .speech import (
+    DEFAULT_PROVIDER,
+    NO_VOICE,
+    NO_VOICE_LABEL,
+    PROVIDER_LABELS,
+    default_voice,
+)
 
 # --------------------------------------------------------------------------
 # Sources and palette
@@ -153,6 +159,7 @@ class TuiHooks:
     on_codex_model: Callable[[str], bool | None] | None = None
     on_codex_effort: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
+    on_them_mute: Callable[[bool], None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
     on_tts_provider: Callable[[str], bool | None] | None = None
     on_turn_silence: Callable[[float], float | None] | None = None
@@ -198,6 +205,10 @@ def meter(level: float, width: int = 20, style: str = "#6cc06c") -> Text:
 
 IDLE = "idle"
 SPEAKING = "speaking"
+
+# What a channel's mute box says about the channel it sits under.
+MUTE_LABEL = "mute"
+MUTED_LABEL = "muted"
 
 
 def codex_activity(stream_state: str, speaking: bool) -> str:
@@ -315,7 +326,26 @@ class Sidebar(Vertical):
         return [(effort, effort) for effort in self.state.codex_efforts]
 
     def _speech_options(self) -> list[tuple[str, str]]:
-        return [(label, name) for name, label in PROVIDER_LABELS.items()]
+        options = [(label, name) for name, label in PROVIDER_LABELS.items()]
+        options.append((NO_VOICE_LABEL, NO_VOICE))
+        return options
+
+    def _speech_selection(self) -> str:
+        """Name what the speech picker is showing.
+
+        A silenced session shows silence rather than the engine it would use
+        if it were speaking. The engine is still remembered underneath, which
+        is what the picker comes back to when the voice is turned on again.
+        """
+        return self.state.tts_provider if self.state.tts_enabled else NO_VOICE
+
+    def _mute_box(self, widget_id: str, channel: Channel) -> Checkbox:
+        return Checkbox(
+            MUTED_LABEL if channel.muted else MUTE_LABEL,
+            value=channel.muted,
+            id=widget_id,
+            compact=True,
+        )
 
     def _picker(
         self, widget_id: str, options: list[tuple[str, str]], current: str
@@ -337,7 +367,16 @@ class Sidebar(Vertical):
             yield self._picker(
                 "policy-select", self._policy_options(), self.state.policy
             )
-        yield Static(id="panel-top")
+        yield Static(id="panel-audio")
+        # Each channel's own mute box sits under its meter, so the control and
+        # the level it silences read as one thing.
+        with Vertical(id="mic-row"):
+            yield Static(id="panel-mic")
+            yield self._mute_box("mic-mute", self.state.mic)
+        with Vertical(id="them-row"):
+            yield Static(id="panel-them")
+            yield self._mute_box("them-mute", self.state.them)
+        yield Static(id="panel-out")
         with Vertical(id="model-row"):
             yield Static("AI model", id="model-label")
             yield self._picker(
@@ -352,7 +391,7 @@ class Sidebar(Vertical):
         with Vertical(id="speech-row"):
             yield Static("speech engine", id="speech-label")
             yield self._picker(
-                "speech-select", self._speech_options(), self.state.tts_provider
+                "speech-select", self._speech_options(), self._speech_selection()
             )
         yield Static(id="panel-bottom")
         with Horizontal(id="silence-row"):
@@ -371,6 +410,8 @@ class Sidebar(Vertical):
 
     def sync(self) -> None:
         self.sync_clock()
+        self.query_one("#panel-audio", Static).update(Group(*self._audio_head()))
+        self.query_one("#panel-out", Static).update(Group(*self._audio_foot()))
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
         self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
@@ -384,11 +425,32 @@ class Sidebar(Vertical):
             "#reasoning-select", self._effort_options(), self.state.codex_effort
         )
         self._sync_select(
-            "#speech-select", self._speech_options(), self.state.tts_provider
+            "#speech-select", self._speech_options(), self._speech_selection()
         )
+        self._sync_checkbox("#mic-mute", self.state.mic.muted)
+        self._sync_checkbox("#them-mute", self.state.them.muted)
 
     def sync_audio(self) -> None:
-        self.query_one("#panel-top", Static).update(Group(*self._top()))
+        self.query_one("#panel-mic", Static).update(
+            Group(*self._channel(self.state.mic, "#6ba7ff"))
+        )
+        self.query_one("#panel-them", Static).update(
+            Group(*self._channel(self.state.them, "#d7b562"))
+        )
+
+    def _sync_checkbox(self, selector: str, muted: bool) -> None:
+        """Show the mute state a channel is actually in.
+
+        The box carries the whole message — an offer to ``mute`` while the
+        channel is live, and a red ``muted`` once it is not.
+
+        The ``Checkbox.Changed`` this posts is answered by a handler that
+        compares the box against the state it came from, so a write made here
+        cannot loop back as a fresh mute request.
+        """
+        box = self.query_one(selector, Checkbox)
+        box.value = muted
+        box.label = MUTED_LABEL if muted else MUTE_LABEL
 
     def sync_codex(self) -> None:
         """Cheap per-frame repaint — only the panel naming what Codex is doing."""
@@ -455,6 +517,19 @@ class Sidebar(Vertical):
         if handler is not None:
             handler(str(event.value))
 
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Mute or unmute the channel whose box the user just ticked.
+
+        A box that already agrees with its channel is :meth:`_sync_checkbox`
+        repainting state the app has applied, not a request to change it.
+        """
+        channel = {"mic-mute": self.state.mic, "them-mute": self.state.them}.get(
+            event.checkbox.id or ""
+        )
+        if channel is None or channel.muted == event.value:
+            return
+        cast("VoiceCodexApp", self.app).set_channel_muted(channel, bool(event.value))
+
     def _policy_selected(self, value: str) -> None:
         if value == self.state.policy:
             return
@@ -463,19 +538,30 @@ class Sidebar(Vertical):
             self.hooks.on_policy(value)
 
     def _provider_selected(self, value: str) -> None:
-        """Ask the host to switch engines, and show the voice that comes with it.
+        """Ask the host to change how Codex answers — either engine, or silence.
 
-        The picker only moves if the host accepts the switch, so a session
-        started without speech shows the engine it is actually not using
-        rather than one it never built.
+        The picker only moves if the host accepts, so a session started
+        without speech shows the silence it is actually in rather than an
+        engine it never built. Choosing an engine while silent does both
+        things at once: the engine is switched first, because a session that
+        cannot switch should not be turned audible on the wrong one.
         """
-        if value == self.state.tts_provider:
+        if value == self._speech_selection():
             return
-        if not (self.hooks.on_tts_provider and self.hooks.on_tts_provider(value)):
+        app = cast("VoiceCodexApp", self.app)
+        if value == NO_VOICE:
+            app.set_tts_enabled(False)
+            self.sync()
+            return
+        if value != self.state.tts_provider and not (
+            self.hooks.on_tts_provider and self.hooks.on_tts_provider(value)
+        ):
             self.sync()
             return
         self.state.tts_provider = value
         self.state.tts_voice = default_voice(value)
+        if not self.state.tts_enabled:
+            app.set_tts_enabled(True)
         self.sync()
 
     def _adopt_efforts_for(self, model: str) -> None:
@@ -536,25 +622,27 @@ class Sidebar(Vertical):
             _kv([(live, Text(clock, style="#6f757e"))])
         )
 
-    def _top(self) -> list[RenderableType]:
-        state = self.state
-        blocks: list[RenderableType] = [Text()]
+    def _audio_head(self) -> list[RenderableType]:
+        return [Text(), Text("AUDIO", style="#5a6068")]
 
-        blocks.append(Text("AUDIO", style="#5a6068"))
-        for channel, style in ((state.mic, "#6ba7ff"), (state.them, "#d7b562")):
-            head = Table.grid(expand=True)
-            head.add_column(justify="left", no_wrap=True)
-            head.add_column(justify="right", ratio=1, overflow="ellipsis")
-            name = Text(channel.label, style=style)
-            if channel.muted:
-                name.append(" muted", style="#c96a5c")
-            head.add_row(name, Text(channel.device, style="#9aa3ad"))
-            blocks.append(head)
-            blocks.append(meter(0.0 if channel.muted else channel.level, style=style))
-        blocks.append(_kv([("out", Text(state.out_device, style="#9aa3ad"))]))
-        blocks.append(Text())
-        blocks.append(Text("CODEX", style="#5a6068"))
-        return blocks
+    def _channel(self, channel: Channel, style: str) -> list[RenderableType]:
+        """Name one capture channel, its device, and how loud it currently is."""
+        head = Table.grid(expand=True)
+        head.add_column(justify="left", no_wrap=True)
+        head.add_column(justify="right", ratio=1, overflow="ellipsis")
+        # The mute state is not restated here. The box below says it.
+        head.add_row(
+            Text(channel.label, style=style), Text(channel.device, style="#9aa3ad")
+        )
+        # A muted channel reads as silent because nothing it hears is used.
+        return [head, meter(0.0 if channel.muted else channel.level, style=style)]
+
+    def _audio_foot(self) -> list[RenderableType]:
+        return [
+            _kv([("out", Text(self.state.out_device, style="#9aa3ad"))]),
+            Text(),
+            Text("CODEX", style="#5a6068"),
+        ]
 
     def _codex(self) -> list[RenderableType]:
         state = self.state
@@ -741,6 +829,29 @@ class VoiceCodexApp(App):
         color: #9aa3ad;
     }
     #sidebar Static { height: auto; }
+    #mic-row, #them-row { height: auto; margin-bottom: 1; }
+    #sidebar Checkbox {
+        height: 1;
+        width: auto;
+        border: none;
+        padding: 0;
+        margin: 0;
+        background: #0f1113;
+        color: #6f757e;
+    }
+    #sidebar Checkbox:focus { color: #cdd6e4; background: #0f1113; }
+    /* An empty box hides its mark in the well; a ticked one shows it in the
+       same red the channel's "muted" label uses. Both states have to be
+       styled: overriding only one would make the two look identical. */
+    #sidebar Checkbox > .toggle--button {
+        background: #2f343b;
+        color: #2f343b;
+    }
+    #sidebar Checkbox.-on > .toggle--button {
+        background: #2f343b;
+        color: #c96a5c;
+    }
+    #sidebar Checkbox.-on { color: #c96a5c; }
     #panel-clock { margin-bottom: 1; }
     #model-row, #reasoning-row, #speech-row { height: auto; margin-bottom: 1; }
     #policy-row { height: auto; margin-bottom: 1; }
@@ -867,8 +978,14 @@ class VoiceCodexApp(App):
                 style=SOURCE_STYLES.get(state.partial_source, "#6f757e"),
             )
             line.append(state.partial_text, style="#8a929c")
+        elif state.mic.muted and state.them.muted:
+            line = Text(
+                "◌ mic and speaker muted — nothing transcribing", style="#6f757e"
+            )
         elif state.mic.muted:
             line = Text("◌ mic muted — Them still transcribing", style="#6f757e")
+        elif state.them.muted:
+            line = Text("◌ speaker muted — mic still hot", style="#6f757e")
         else:
             line = Text("◌ silence — mic hot, nothing pending", style="#6f757e")
         self.query_one("#partial", Static).update(line)
@@ -1009,33 +1126,49 @@ class VoiceCodexApp(App):
             self.hooks.on_policy(self.state.policy)
 
     def action_toggle_mute(self) -> None:
-        self.state.mic.muted = not self.state.mic.muted
+        self.set_channel_muted(self.state.mic, not self.state.mic.muted)
+
+    def set_channel_muted(self, channel: Channel, muted: bool) -> None:
+        """Stop or resume listening on one capture channel.
+
+        The hook is what actually blocks the audio: the mic hook drops what
+        the microphone hears, the speaker hook drops what the sink monitor
+        hears. Everything else here is the interface agreeing with it.
+        """
+        channel.muted = muted
+        hook = (
+            self.hooks.on_mute if channel is self.state.mic else self.hooks.on_them_mute
+        )
         self.refresh_sidebar()
         self._sync_partial()
         self.add_entry(
             Entry(
                 kind="note",
-                text="mic muted" if self.state.mic.muted else "mic live",
+                text=f"{channel.label} {'muted' if muted else 'live'}",
             )
         )
-        if self.hooks.on_mute:
-            self.hooks.on_mute(self.state.mic.muted)
+        if hook:
+            hook(muted)
 
     def action_toggle_tts(self) -> None:
-        enabled = not self.state.tts_enabled
+        self.set_tts_enabled(not self.state.tts_enabled)
+
+    def set_tts_enabled(self, enabled: bool) -> bool:
+        """Speak Codex responses or stop; report whether the session could.
+
+        Both the key binding and the sidebar's "No voice reply" arrive here,
+        so the queue, the note, and the picker say the same thing however the
+        voice was turned off.
+        """
         if self.hooks.on_tts and self.hooks.on_tts(enabled) is False:
             self.add_entry(Entry(kind="note", text="tts unavailable for this session"))
-            return
+            return False
         self.state.tts_enabled = enabled
-        if not self.state.tts_enabled:
+        if not enabled:
             self.state.tts_queue.clear()
         self.refresh_sidebar()
-        self.add_entry(
-            Entry(
-                kind="note",
-                text=f"tts {'on' if self.state.tts_enabled else 'off'}",
-            )
-        )
+        self.add_entry(Entry(kind="note", text=f"tts {'on' if enabled else 'off'}"))
+        return True
 
     def action_interrupt(self) -> None:
         if self.hooks.on_interrupt:

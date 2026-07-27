@@ -42,6 +42,13 @@ PROVIDER_LABELS = {
 
 PROVIDERS = tuple(PROVIDER_LABELS)
 
+# Silence is not a third engine — nothing here builds one — but the interface
+# offers it beside the two that are, because "which voice answers me" and
+# "should one answer at all" are the same question to whoever is asking. The
+# name lives here so the sidebar and its tests agree on one spelling.
+NO_VOICE = "none"
+NO_VOICE_LABEL = "No voice reply"
+
 
 class SpeechEngine(Protocol):
     """Speak Codex sentences, and stop when the user starts talking."""

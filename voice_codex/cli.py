@@ -217,6 +217,7 @@ def main():
             level_reporter=AudioLevelReporter(tui, "them"),
         )
         them_transcriber.add_listener(them_listener)
+        tui.hooks.on_them_mute = them_listener.set_muted
         tui.set_audio("them", device=them_output["description"])
     channels = [(user_transcriber, user_listener)]
     if them_transcriber is not None:
