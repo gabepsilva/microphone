@@ -27,6 +27,7 @@ from pathlib import Path
 
 COVERAGE_GATE = "tools/coverage_gate.py"
 MUTATION_GATE = "tools/mutation_gate.py"
+CONTEXT_BUDGET = "tools/context_budget.py"
 PYPROJECT = "pyproject.toml"
 SEMGREP_RULES = "semgrep.yml"
 
@@ -108,6 +109,28 @@ def _check_mutation_floor(base: str, failures: list[str]) -> None:
         failures.append(f"MUTATION_SCORE_FLOOR lowered {was:g} -> {now:g}.")
 
 
+def _check_context_budget(base: str, failures: list[str]) -> None:
+    """A cap that can be raised on demand is not a cap.
+
+    Raising it is the reflex the budget exists to interrupt, so it needs the
+    same deliberate review as lowering a coverage floor.
+    """
+    base_source = _read_base(base, CONTEXT_BUDGET)
+    if base_source is None:
+        return
+    was = _constant(base_source, "BUDGETS") or {}
+    now = _constant(Path(CONTEXT_BUDGET).read_text(encoding="utf-8"), "BUDGETS") or {}
+
+    for name, budget in was.items():
+        if name not in now:
+            failures.append(f"{name}: context budget removed.")
+        elif now[name] > budget:
+            failures.append(
+                f"{name}: context budget raised {budget} -> {now[name]}. "
+                "Move a rule into a gate message, a config comment, or a test."
+            )
+
+
 def _check_pyproject(base: str, failures: list[str]) -> None:
     base_source = _read_base(base, PYPROJECT)
     if base_source is None:
@@ -163,6 +186,7 @@ def main(argv: list[str]) -> int:
     failures: list[str] = []
     _check_coverage_floors(base, failures)
     _check_mutation_floor(base, failures)
+    _check_context_budget(base, failures)
     _check_pyproject(base, failures)
     _check_semgrep_rules(base, failures)
 
