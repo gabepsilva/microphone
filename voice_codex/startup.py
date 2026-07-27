@@ -25,7 +25,7 @@ from .choosers import (
     choose_tts,
 )
 from .config import load_startup_config
-from .domain import POLICY_NAMES, ResponsePolicy
+from .domain import POLICY_NAMES, ResponsePolicy, TurnSilence
 from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 
 DEFAULT_CONFIG_FILE = os.path.join(
@@ -164,8 +164,11 @@ def _validate_startup_args(parser, args):
         parser.error(f"startup config 'codex_after' must be one of {allowed}")
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
-    if args.turn_silence <= 0:
-        parser.error("--turn-silence must be greater than 0")
+    if not TurnSilence.MINIMUM <= args.turn_silence <= TurnSilence.MAXIMUM:
+        parser.error(
+            f"--turn-silence must be between {TurnSilence.MINIMUM} and "
+            f"{TurnSilence.MAXIMUM} seconds"
+        )
 
 
 def parse_startup_args(argv=None):

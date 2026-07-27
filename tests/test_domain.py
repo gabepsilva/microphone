@@ -9,7 +9,9 @@ from voice_codex.domain import (
     SpeakerGate,
     TranscriptRouter,
     TurnGate,
+    TurnSilence,
     TurnSilenceClock,
+    parse_turn_silence,
     resolve_response_policy,
 )
 
@@ -415,7 +417,7 @@ def test_transcript_router_keeps_context_until_a_reply_is_requested() -> None:
 
 def silence_clock(window=3.0):
     clock = FakeClock()
-    return TurnSilenceClock(window, clock=clock), clock
+    return TurnSilenceClock(TurnSilence(window), clock=clock), clock
 
 
 def test_nothing_is_counting_down_before_a_turn_starts() -> None:
@@ -518,3 +520,84 @@ def test_a_speaker_still_waiting_survives_another_one_expiring() -> None:
     clock.advance(1.5)
 
     assert countdown.remaining() == pytest.approx(1.5)
+
+
+def test_a_window_starts_at_the_value_it_was_given() -> None:
+    assert TurnSilence(2.5).seconds == 2.5
+
+
+def test_a_window_can_be_changed_while_the_session_runs() -> None:
+    silence = TurnSilence(3.0)
+
+    assert silence.set(1.5) == 1.5
+    assert silence.seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (0.0, TurnSilence.MINIMUM),
+        (-5.0, TurnSilence.MINIMUM),
+        (1000.0, TurnSilence.MAXIMUM),
+        (TurnSilence.MINIMUM, TurnSilence.MINIMUM),
+        (TurnSilence.MAXIMUM, TurnSilence.MAXIMUM),
+    ],
+)
+def test_a_window_is_held_inside_its_bounds(requested, expected) -> None:
+    assert TurnSilence(requested).seconds == expected
+    assert TurnSilence(3.0).set(requested) == expected
+
+
+def test_the_countdown_adopts_a_window_changed_between_turns() -> None:
+    """A new window applies to the next turn, not the one already waiting."""
+    silence = TurnSilence(3.0)
+    clock = FakeClock()
+    countdown = TurnSilenceClock(silence, clock=clock)
+    countdown.started("User Voice")
+
+    silence.set(1.0)
+
+    assert countdown.remaining() == 3.0
+    countdown.started("User Voice")
+    assert countdown.remaining() == 1.0
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("2.5", 2.5),
+        ("  2.5  ", 2.5),
+        ("2.5s", 2.5),
+        ("2.5 s", 2.5),
+        ("3", 3.0),
+        (str(TurnSilence.MINIMUM), TurnSilence.MINIMUM),
+        (str(TurnSilence.MAXIMUM), TurnSilence.MAXIMUM),
+    ],
+)
+def test_a_typed_window_is_read_back(typed, expected) -> None:
+    assert parse_turn_silence(typed) == expected
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "",
+        "   ",
+        "abc",
+        "s",
+        "2.5.1",
+        "--2",
+        "1e",
+        "nan",
+        "inf",
+        "-inf",
+        "0",
+        "-1",
+        "0.1",
+        "31",
+        "1000",
+    ],
+)
+def test_a_value_the_field_cannot_use_is_refused(typed) -> None:
+    """Refused rather than clamped: a silent correction looks like a dropped key."""
+    assert parse_turn_silence(typed) is None

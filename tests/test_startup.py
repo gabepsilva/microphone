@@ -519,3 +519,25 @@ def test_the_startup_summary_reports_a_session_without_speech(tmp_path) -> None:
     print_startup_summary(args, selection(tts_enabled=False), stream=stream)
 
     assert "Codex audio: Off" in stream.getvalue()
+
+
+@pytest.mark.parametrize("seconds", ["0.1", "31", "0"])
+def test_a_turn_silence_outside_the_editable_range_is_rejected(
+    tmp_path, seconds
+) -> None:
+    """The command line and the sidebar field enforce one range, not two."""
+    with pytest.raises(SystemExit, match="2"):
+        parse_startup_args(
+            ["--config", empty_config(tmp_path), "--turn-silence", seconds]
+        )
+
+
+@pytest.mark.parametrize("seconds", ["0.25", "30", "1.5"])
+def test_a_turn_silence_inside_the_editable_range_is_accepted(
+    tmp_path, seconds
+) -> None:
+    _, args = parse_startup_args(
+        ["--config", empty_config(tmp_path), "--turn-silence", seconds]
+    )
+
+    assert args.turn_silence == float(seconds)

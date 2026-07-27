@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from voice_codex.domain import TurnSilence
 from voice_codex.listener import ConversationListener
 
 
@@ -66,7 +67,7 @@ def listener():
         display,
         submitted,
         confidence_threshold=0.6,
-        turn_silence=3.0,
+        turn_silence=TurnSilence(3.0),
         speaker="User Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
@@ -250,7 +251,7 @@ def counting_listener(countdown=None):
         display,
         submitted,
         confidence_threshold=0.6,
-        turn_silence=3.0,
+        turn_silence=TurnSilence(3.0),
         speaker="User Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
