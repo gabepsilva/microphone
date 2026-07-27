@@ -1,0 +1,448 @@
+"""Startup argument, selection, and session-lifecycle behavior.
+
+These cover the logic extracted from ``main`` so it can be exercised without a
+microphone, a PipeWire server, or a Codex account.
+"""
+
+from __future__ import annotations
+
+import io
+from types import SimpleNamespace
+
+import pytest
+
+
+def write_config(tmp_path, body):
+    path = tmp_path / "voice.yaml"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def empty_config(tmp_path):
+    return write_config(tmp_path, "")
+
+
+def selection(voice, **overrides):
+    defaults = {
+        "device_index": 3,
+        "device": {"name": "Yeti"},
+        "tts_enabled": False,
+        "them_output": None,
+        "them_output_setting": "none",
+        "playback_output": None,
+        "policy_name": "Them",
+        "codex_speakers": frozenset({"Them"}),
+    }
+    return voice.StartupSelection(**{**defaults, **overrides})
+
+
+def test_parser_defaults_match_the_documented_startup_choices(voice, tmp_path) -> None:
+    _, args = voice.parse_startup_args(["--config", empty_config(tmp_path)])
+
+    assert (args.model, args.language, args.confidence) == (
+        "medium-streaming",
+        "en",
+        0.60,
+    )
+    assert (args.sandbox, args.codex_model, args.codex_reasoning) == (
+        "full-access",
+        "gpt-5.6-luna",
+        "low",
+    )
+    assert (args.turn_silence, args.tts_voice) == (3.0, "en-US-AndrewNeural")
+    assert args.codex_fast is False
+    assert (args.tts, args.codex_after, args.microphone) == (None, None, None)
+
+
+def test_command_line_overrides_the_startup_config_file(voice, tmp_path) -> None:
+    config = write_config(
+        tmp_path,
+        'microphone: "Config Mic"\ntts: "on"\ncodex_after: "user"\n',
+    )
+
+    _, args = voice.parse_startup_args(["--config", config, "--microphone", "Flag Mic"])
+
+    assert args.microphone == "Flag Mic"
+    assert (args.tts, args.codex_after) == ("on", "user")
+
+
+def test_an_unreadable_startup_config_exits_instead_of_prompting(
+    voice, tmp_path
+) -> None:
+    missing = str(tmp_path / "absent.yaml")
+
+    with pytest.raises(SystemExit, match="2"):
+        voice.parse_startup_args(["--config", missing])
+
+
+@pytest.mark.parametrize(
+    ("body", "argv"),
+    [
+        ('tts: "maybe"\n', []),
+        ('codex_after: "sometimes"\n', []),
+        ("", ["--confidence", "1.5"]),
+        ("", ["--confidence", "-0.1"]),
+        ("", ["--turn-silence", "0"]),
+        ("", ["--turn-silence", "-2"]),
+    ],
+)
+def test_out_of_range_startup_values_are_rejected(voice, tmp_path, body, argv) -> None:
+    config = write_config(tmp_path, body)
+
+    with pytest.raises(SystemExit, match="2"):
+        voice.parse_startup_args(["--config", config, *argv])
+
+
+@pytest.mark.parametrize(
+    ("them_output", "expected"),
+    [
+        (None, "none"),
+        ({"isolated": True}, "isolated"),
+        ({"name": "alsa_output.pci", "description": "Speakers"}, "alsa_output.pci"),
+    ],
+)
+def test_them_output_is_named_the_way_a_saved_config_records_it(
+    voice, them_output, expected
+) -> None:
+    assert voice.them_output_name(them_output) == expected
+
+
+@pytest.mark.parametrize(
+    ("speakers", "expected"),
+    [
+        ({"Them"}, "them"),
+        ({"User Voice", "Them"}, "both"),
+        ({"User Voice"}, "user"),
+        (set(), "quiet"),
+        ({"Nobody"}, "quiet"),
+    ],
+)
+def test_a_speaker_set_is_named_by_its_matching_policy(
+    voice, speakers, expected
+) -> None:
+    assert voice.codex_after_name(speakers) == expected
+
+
+def test_saved_settings_round_trip_back_to_the_same_selection(voice) -> None:
+    chosen = selection(
+        voice,
+        tts_enabled=True,
+        them_output_setting="isolated",
+        playback_output={"name": "alsa_output.pci", "description": "Speakers"},
+        codex_speakers=frozenset({"User Voice", "Them"}),
+    )
+
+    assert voice.startup_settings(chosen) == {
+        "microphone": "Yeti",
+        "tts": "on",
+        "them_output": "isolated",
+        "playback_output": "alsa_output.pci",
+        "codex_after": "both",
+    }
+
+
+def test_saved_settings_record_no_playback_output_when_none_was_chosen(voice) -> None:
+    assert voice.startup_settings(selection(voice))["playback_output"] is None
+
+
+def test_the_startup_summary_reports_the_resolved_choices(voice, tmp_path) -> None:
+    _, args = voice.parse_startup_args(
+        ["--config", empty_config(tmp_path), "--codex-fast"]
+    )
+    stream = io.StringIO()
+
+    voice.print_startup_summary(
+        args,
+        selection(
+            voice,
+            tts_enabled=True,
+            them_output={"description": "Voice Codex Meeting"},
+            playback_output={"name": "alsa", "description": "Speakers"},
+        ),
+        stream=stream,
+    )
+    summary = stream.getvalue()
+
+    assert "User microphone: Yeti" in summary
+    assert "Them audio output: Voice Codex Meeting" in summary
+    assert "Codex response policy: Them" in summary
+    assert "Voice turn silence: 3.0s" in summary
+    assert "Codex speed: Fast" in summary
+    assert "Codex command access: full-access" in summary
+    assert "Codex audio: Edge TTS (en-US-AndrewNeural)" in summary
+    assert "Meeting and TTS playback: Speakers" in summary
+
+
+def test_the_startup_summary_warns_when_tts_shares_a_direct_them_monitor(
+    voice, tmp_path
+) -> None:
+    _, args = voice.parse_startup_args(["--config", empty_config(tmp_path)])
+    stream = io.StringIO()
+
+    voice.print_startup_summary(
+        args,
+        selection(
+            voice,
+            tts_enabled=True,
+            them_output={"description": "Speakers monitor"},
+        ),
+        stream=stream,
+    )
+
+    assert "may transcribe Codex TTS" in stream.getvalue()
+
+
+def test_the_startup_summary_omits_the_warning_without_a_them_output(
+    voice, tmp_path
+) -> None:
+    _, args = voice.parse_startup_args(["--config", empty_config(tmp_path)])
+    stream = io.StringIO()
+
+    voice.print_startup_summary(args, selection(voice, tts_enabled=True), stream=stream)
+    summary = stream.getvalue()
+
+    assert "Them audio output: None" in summary
+    assert "may transcribe Codex TTS" not in summary
+    assert "Codex speed: Standard" in summary
+
+
+def test_the_sidebar_state_reflects_the_resolved_startup_choices(
+    voice, tmp_path
+) -> None:
+    _, args = voice.parse_startup_args(
+        [
+            "--config",
+            empty_config(tmp_path),
+            "--codex-fast",
+            "--codex-reasoning",
+            "high",
+        ]
+    )
+
+    state = voice.build_session_state(
+        args,
+        selection(voice, tts_enabled=True, codex_speakers=frozenset({"User Voice"})),
+    )
+
+    assert (state.policy, state.codex_tier, state.codex_effort) == (
+        "user",
+        "fast",
+        "high",
+    )
+    assert state.tts_enabled is True
+    assert (state.turn_silence, state.confidence) == (3.0, 0.60)
+    assert (state.moonshine, state.language) == ("medium-streaming", "en")
+
+
+def test_a_direct_them_monitor_is_selected_without_a_virtual_meeting(
+    voice, monkeypatch, tmp_path
+) -> None:
+    monitor = {"name": "sink", "monitor": "sink.monitor", "description": "Speakers"}
+    monkeypatch.setattr(
+        voice, "choose_microphone", lambda requested: (2, {"name": "M"})
+    )
+    monkeypatch.setattr(voice, "choose_tts", lambda requested: False)
+    monkeypatch.setattr(
+        voice, "choose_them_output", lambda requested, require_isolation: monitor
+    )
+    monkeypatch.setattr(
+        voice, "choose_codex_after", lambda requested: ("Them", {"Them"})
+    )
+    _, args = voice.parse_startup_args(["--config", empty_config(tmp_path)])
+
+    chosen, virtual_meeting = voice.resolve_startup_selection(args)
+
+    assert virtual_meeting is None
+    assert chosen.them_output is monitor
+    assert chosen.them_output_setting == "sink"
+    assert (chosen.device_index, chosen.tts_enabled) == (2, False)
+
+
+def test_an_isolated_them_output_builds_a_virtual_meeting_sink(
+    voice, monkeypatch, tmp_path, capsys
+) -> None:
+    playback = {"name": "alsa", "description": "Speakers"}
+    transcript_output = {"monitor": "meeting.monitor", "description": "Meeting"}
+    monkeypatch.setattr(
+        voice, "choose_microphone", lambda requested: (0, {"name": "M"})
+    )
+    monkeypatch.setattr(voice, "choose_tts", lambda requested: True)
+    monkeypatch.setattr(
+        voice,
+        "choose_them_output",
+        lambda requested, require_isolation: {"isolated": True},
+    )
+    monkeypatch.setattr(voice, "choose_playback_output", lambda requested: playback)
+    monkeypatch.setattr(
+        voice,
+        "VirtualMeetingOutput",
+        lambda output: SimpleNamespace(transcript_output=transcript_output),
+    )
+    monkeypatch.setattr(
+        voice, "choose_codex_after", lambda requested: ("User Voice", {"User Voice"})
+    )
+    _, args = voice.parse_startup_args(["--config", empty_config(tmp_path)])
+
+    chosen, virtual_meeting = voice.resolve_startup_selection(args)
+
+    assert virtual_meeting is not None
+    assert chosen.them_output is transcript_output
+    assert chosen.them_output_setting == "isolated"
+    assert chosen.playback_output is playback
+    assert "Voice Codex Meeting" in capsys.readouterr().err
+
+
+class FakeTTS:
+    def __init__(self, echoes=()):
+        self.echoes = set(echoes)
+        self.interrupted = 0
+
+    def is_likely_echo(self, text):
+        return text in self.echoes
+
+    def interrupt(self):
+        self.interrupted += 1
+
+
+class FakeConversation:
+    def __init__(self):
+        self.ingested = []
+
+    def ingest(self, speaker, text, respond):
+        self.ingested.append((speaker, text, respond))
+
+
+def test_the_submitter_answers_only_the_speakers_the_policy_allows(voice) -> None:
+    conversation = FakeConversation()
+    gate = voice.SpeakerGate({"Them"}, {"User Voice", "Them"})
+    submitter = voice.TranscriptSubmitter(conversation, gate, None)
+
+    submitter.submit("Them", "a question")
+    submitter.submit("User Voice", "thinking aloud")
+
+    assert conversation.ingested == [
+        ("Them", "a question", True),
+        ("User Voice", "thinking aloud", False),
+    ]
+
+
+def test_the_submitter_drops_a_transcript_of_codex_speaking(voice) -> None:
+    conversation = FakeConversation()
+    gate = voice.SpeakerGate({"Them"}, {"Them"})
+    stream = io.StringIO()
+    submitter = voice.TranscriptSubmitter(
+        conversation, gate, FakeTTS(echoes={"my own reply"}), stream=stream
+    )
+
+    submitter.submit("Them", "my own reply")
+    submitter.submit("Them", "a real question")
+
+    assert conversation.ingested == [("Them", "a real question", True)]
+    assert "ignored likely Codex TTS echo from Them" in stream.getvalue()
+
+
+def test_typed_text_is_never_treated_as_an_echo(voice) -> None:
+    conversation = FakeConversation()
+    gate = voice.SpeakerGate({"User Text"}, {"User Text"})
+    submitter = voice.TranscriptSubmitter(
+        conversation, gate, FakeTTS(echoes={"my own reply"})
+    )
+
+    submitter.submit("User Text", "my own reply")
+
+    assert conversation.ingested == [("User Text", "my own reply", True)]
+
+
+def test_real_speech_interrupts_playback_but_an_echo_does_not(voice) -> None:
+    tts = FakeTTS(echoes={"codex speaking"})
+    submitter = voice.TranscriptSubmitter(FakeConversation(), None, tts)
+
+    assert submitter.handle_speech("codex speaking") is False
+    assert tts.interrupted == 0
+    assert submitter.handle_speech("a person talking") is True
+    assert tts.interrupted == 1
+
+
+def test_speech_never_interrupts_when_tts_is_off(voice) -> None:
+    submitter = voice.TranscriptSubmitter(FakeConversation(), None, None)
+
+    assert submitter.handle_speech("a person talking") is False
+
+
+class FakeTranscriber:
+    def __init__(self, name, events):
+        self.name = name
+        self.events = events
+
+    def start(self):
+        self.events.append(f"start {self.name}")
+
+    def stop(self):
+        self.events.append(f"stop {self.name}")
+
+    def close(self):
+        self.events.append(f"close {self.name}")
+
+
+class FakeListener:
+    def __init__(self, name, events):
+        self.name = name
+        self.events = events
+
+    def close(self):
+        self.events.append(f"close listener {self.name}")
+
+
+def session_parts(voice, monkeypatch, run):
+    monkeypatch.setattr(voice, "probe_codex_models", list)
+    events: list[str] = []
+    tui = SimpleNamespace(
+        run=run,
+        note=lambda message: None,
+        set_codex_catalog=lambda *args: None,
+    )
+    channels = [
+        (FakeTranscriber("mic", events), FakeListener("mic", events)),
+        (FakeTranscriber("them", events), FakeListener("them", events)),
+    ]
+    conversation = SimpleNamespace(close=lambda: events.append("close conversation"))
+    return events, tui, channels, conversation
+
+
+def test_a_session_tears_every_channel_down_in_a_safe_order(voice, monkeypatch) -> None:
+    events, tui, channels, conversation = session_parts(
+        voice, monkeypatch, run=lambda: None
+    )
+    meeting = SimpleNamespace(close=lambda: events.append("close meeting"))
+
+    voice.run_session(tui, channels, conversation, meeting)
+
+    assert events == [
+        "start mic",
+        "start them",
+        "stop mic",
+        "stop them",
+        "close listener mic",
+        "close listener them",
+        "close mic",
+        "close them",
+        "close conversation",
+        "close meeting",
+    ]
+
+
+def test_an_interrupted_session_still_closes_everything(
+    voice, monkeypatch, capsys
+) -> None:
+    def interrupt():
+        raise KeyboardInterrupt
+
+    events, tui, channels, conversation = session_parts(
+        voice, monkeypatch, run=interrupt
+    )
+
+    voice.run_session(tui, channels, conversation, None)
+
+    assert "Stopping..." in capsys.readouterr().out
+    assert events[-1] == "close conversation"
+    assert events.count("close conversation") == 1

@@ -5,6 +5,7 @@ import pytest
 from voice_codex.domain import (
     EchoMatcher,
     SentenceChunker,
+    SpeakerGate,
     TranscriptRouter,
     resolve_response_policy,
 )
@@ -43,6 +44,40 @@ def test_echo_matching_is_case_and_punctuation_insensitive() -> None:
         "open the settings panel",
     )
     assert not EchoMatcher.matches("first unrelated", "second text")
+
+
+def test_speaker_gate_answers_only_the_selected_speakers() -> None:
+    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+
+    assert gate.should_respond("Them")
+    assert not gate.should_respond("User Voice")
+
+    gate.set_policy("both")
+
+    assert gate.should_respond("Them")
+    assert gate.should_respond("User Voice")
+
+
+def test_speaker_gate_never_answers_a_speaker_this_session_lacks() -> None:
+    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice"})
+
+    assert gate.active == frozenset({"User Voice"})
+    assert not gate.should_respond("Them")
+
+    gate.set_policy("them")
+
+    assert gate.active == frozenset()
+    assert not gate.should_respond("Them")
+    assert not gate.should_respond("User Voice")
+
+
+def test_speaker_gate_quiet_policy_answers_nobody() -> None:
+    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice", "Them"})
+
+    gate.set_policy("quiet")
+
+    assert not gate.should_respond("User Voice")
+    assert not gate.should_respond("Them")
 
 
 def test_transcript_router_keeps_context_until_a_reply_is_requested() -> None:

@@ -38,8 +38,10 @@ from openai_codex.generated.v2_all import (
 
 from .config import load_startup_config, save_startup_config
 from .domain import (
+    RESPONSE_POLICIES,
     EchoMatcher,
     SentenceChunker,
+    SpeakerGate,
     TranscriptRouter,
     resolve_response_policy,
 )
@@ -1342,7 +1344,8 @@ class CodexConversation:
             self.tts.interrupt()
 
 
-def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
+def build_parser():
+    """Build the command-line parser for the Voice Codex entry point."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -1426,17 +1429,25 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
         default="en-US-AndrewNeural",
         help="Edge TTS voice (default: en-US-AndrewNeural)",
     )
-    args = parser.parse_args()
-    if args.config is not None:
-        try:
-            loaded_settings = load_startup_config(args.config)
-        except RuntimeError as error:
-            parser.error(str(error))
-        for key, value in loaded_settings.items():
-            if getattr(args, key) is None:
-                setattr(args, key, value)
-        print(f"Loaded startup config: {args.config}", file=sys.stderr)
+    return parser
 
+
+def _apply_startup_config(parser, args):
+    """Fill options the command line left unset from the startup config file."""
+    if args.config is None:
+        return
+    try:
+        loaded_settings = load_startup_config(args.config)
+    except RuntimeError as error:
+        parser.error(str(error))
+    for key, value in loaded_settings.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    print(f"Loaded startup config: {args.config}", file=sys.stderr)
+
+
+def _validate_startup_args(parser, args):
+    """Reject values argparse cannot constrain, including config-file values."""
     if args.tts not in (None, "on", "off"):
         parser.error("startup config 'tts' must be 'on' or 'off'")
     if args.codex_after not in (None, "them", "both", "user", "quiet"):
@@ -1448,18 +1459,98 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
     if args.turn_silence <= 0:
         parser.error("--turn-silence must be greater than 0")
 
+
+def parse_startup_args(argv=None):
+    """Parse argv, merge the startup config beneath it, and validate the result."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _apply_startup_config(parser, args)
+    _validate_startup_args(parser, args)
+    return parser, args
+
+
+@dataclass(frozen=True)
+class StartupSelection:
+    """The interactive choices resolved before the runtime is wired together."""
+
+    device_index: int
+    device: dict
+    tts_enabled: bool
+    them_output: dict | None
+    them_output_setting: str
+    playback_output: dict | None
+    policy_name: str
+    codex_speakers: frozenset
+
+
+def them_output_name(them_output):
+    """Name the Them output the way a saved startup config records it."""
+    if them_output is None:
+        return "none"
+    if them_output.get("isolated"):
+        return "isolated"
+    return them_output["name"]
+
+
+def codex_after_name(codex_speakers):
+    """Name the response policy whose speaker set matches a resolved selection."""
+    for name, policy in RESPONSE_POLICIES.items():
+        if policy.speakers == frozenset(codex_speakers):
+            return name
+    return "quiet"
+
+
+def startup_settings(selection):
+    """Build the flat mapping saved by ``--save-config``."""
+    return {
+        "microphone": selection.device["name"],
+        "tts": "on" if selection.tts_enabled else "off",
+        "them_output": selection.them_output_setting,
+        "playback_output": (
+            selection.playback_output["name"]
+            if selection.playback_output is not None
+            else None
+        ),
+        "codex_after": codex_after_name(selection.codex_speakers),
+    }
+
+
+def print_startup_summary(args, selection, stream=sys.stderr):
+    """Report the resolved startup choices before the slow model load begins."""
+    them_output = selection.them_output
+    playback_output = selection.playback_output
+    print(f"\nUser microphone: {selection.device['name']}", file=stream)
+    if them_output is None:
+        print("Them audio output: None", file=stream)
+    else:
+        print(f"Them audio output: {them_output['description']}", file=stream)
+    print(f"Codex response policy: {selection.policy_name}", file=stream)
+    print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
+    print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
+    print(f"Codex command access: {args.sandbox}", file=stream)
+    print(
+        f"Codex audio: "
+        f"{'Edge TTS (' + args.tts_voice + ')' if selection.tts_enabled else 'Off'}",
+        file=stream,
+    )
+    if playback_output is not None:
+        print(
+            f"Meeting and TTS playback: {playback_output['description']}", file=stream
+        )
+    elif selection.tts_enabled and them_output is not None:
+        print(
+            "Warning: a non-isolated Them monitor may transcribe Codex TTS.",
+            file=stream,
+        )
+    print(f"Loading Moonshine {args.model} model...", file=stream)
+
+
+def resolve_startup_selection(args):
+    """Run the interactive choosers and capture what they resolved to."""
     device_index, device = choose_microphone(args.microphone)
     tts_enabled = choose_tts(args.tts)
-    them_output = choose_them_output(
-        args.them_output,
-        require_isolation=tts_enabled,
-    )
-    if them_output is None:
-        them_output_setting = "none"
-    elif them_output.get("isolated"):
-        them_output_setting = "isolated"
-    else:
-        them_output_setting = them_output["name"]
+    them_output = choose_them_output(args.them_output, require_isolation=tts_enabled)
+    them_output_setting = them_output_name(them_output)
     virtual_meeting = None
     playback_output = None
     if them_output is not None and them_output.get("isolated"):
@@ -1475,68 +1566,128 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
             file=sys.stderr,
         )
     policy_name, codex_speakers = choose_codex_after(args.codex_after)
-    if codex_speakers == {"Them"}:
-        codex_after_setting = "them"
-    elif codex_speakers == {"User Voice", "Them"}:
-        codex_after_setting = "both"
-    elif codex_speakers == {"User Voice"}:
-        codex_after_setting = "user"
-    else:
-        codex_after_setting = "quiet"
+    return (
+        StartupSelection(
+            device_index=device_index,
+            device=device,
+            tts_enabled=tts_enabled,
+            them_output=them_output,
+            them_output_setting=them_output_setting,
+            playback_output=playback_output,
+            policy_name=policy_name,
+            codex_speakers=frozenset(codex_speakers),
+        ),
+        virtual_meeting,
+    )
+
+
+def build_session_state(args, selection):
+    """Build the sidebar's view of the resolved startup choices."""
+    from .tui import SessionState
+
+    return SessionState(
+        policy=codex_after_name(selection.codex_speakers),
+        tts_enabled=selection.tts_enabled,
+        tts_voice=args.tts_voice,
+        turn_silence=args.turn_silence,
+        confidence=args.confidence,
+        language=args.language,
+        moonshine=args.model,
+        codex_model=args.codex_model,
+        codex_effort=args.codex_reasoning,
+        codex_tier="fast" if args.codex_fast else "standard",
+        codex_sandbox=args.sandbox,
+    )
+
+
+class TranscriptSubmitter:
+    """Send completed turns to Codex, discarding the assistant's own TTS echo.
+
+    Both microphones can hear Codex speaking. A transcript that matches recent
+    speech is dropped rather than answered, and a partial that matches it must
+    not interrupt playback either.
+    """
+
+    ECHO_PRONE_SPEAKERS = ("User Voice", "Them")
+
+    def __init__(self, conversation, gate, tts, stream=sys.stderr):
+        self.conversation = conversation
+        self.gate = gate
+        self.tts = tts
+        self.stream = stream
+
+    def submit(self, speaker, text):
+        if (
+            self.tts is not None
+            and speaker in self.ECHO_PRONE_SPEAKERS
+            and self.tts.is_likely_echo(text)
+        ):
+            print(
+                f"[ignored likely Codex TTS echo from {speaker}: {text}]",
+                file=self.stream,
+                flush=True,
+            )
+            return
+        self.conversation.ingest(
+            speaker,
+            text,
+            respond=self.gate.should_respond(speaker),
+        )
+
+    def handle_speech(self, partial):
+        """Interrupt playback for real speech; report whether it was real."""
+        if self.tts is None or self.tts.is_likely_echo(partial):
+            return False
+        self.tts.interrupt()
+        return True
+
+
+def run_session(tui, channels, conversation, virtual_meeting):
+    """Run the interface until it quits, then tear every channel down in order.
+
+    Transcribers stop before their listeners close so a listener cannot be fed
+    a partial turn after it has flushed, and every transcriber is closed only
+    once no listener can still be called back.
+    """
+    try:
+        for transcriber, _ in channels:
+            transcriber.start()
+        threading.Thread(
+            target=populate_codex_model_catalog,
+            args=(tui,),
+            name="CodexModelCatalog",
+            daemon=True,
+        ).start()
+        tui.run()
+    except KeyboardInterrupt:
+        print("\nStopping...", flush=True)
+    finally:
+        for transcriber, _ in channels:
+            transcriber.stop()
+        for _, listener in channels:
+            listener.close()
+        for transcriber, _ in channels:
+            transcriber.close()
+        conversation.close()
+        if virtual_meeting is not None:
+            virtual_meeting.close()
+
+
+def main():
+    parser, args = parse_startup_args()
+    selection, virtual_meeting = resolve_startup_selection(args)
+    them_output = selection.them_output
+    playback_output = selection.playback_output
 
     if args.save_config is not None:
-        startup_settings = {
-            "microphone": device["name"],
-            "tts": "on" if tts_enabled else "off",
-            "them_output": them_output_setting,
-            "playback_output": (
-                playback_output["name"] if playback_output is not None else None
-            ),
-            "codex_after": codex_after_setting,
-        }
         try:
-            save_startup_config(args.save_config, startup_settings)
+            save_startup_config(args.save_config, startup_settings(selection))
         except RuntimeError as error:
             parser.error(str(error))
         print(f"Saved startup config: {args.save_config}", file=sys.stderr)
     model_arch = getattr(ModelArch, args.model.replace("-", "_").upper())
 
-    print(f"\nUser microphone: {device['name']}", file=sys.stderr)
-    if them_output is None:
-        print("Them audio output: None", file=sys.stderr)
-    else:
-        print(
-            f"Them audio output: {them_output['description']}",
-            file=sys.stderr,
-        )
-    print(f"Codex response policy: {policy_name}", file=sys.stderr)
-    print(
-        f"Voice turn silence: {args.turn_silence:.1f}s",
-        file=sys.stderr,
-    )
-    print(
-        f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}",
-        file=sys.stderr,
-    )
-    print(
-        f"Codex command access: {args.sandbox}",
-        file=sys.stderr,
-    )
-    print(
-        f"Codex audio: {'Edge TTS (' + args.tts_voice + ')' if tts_enabled else 'Off'}",
-        file=sys.stderr,
-    )
-    if playback_output is not None:
-        print(
-            f"Meeting and TTS playback: {playback_output['description']}",
-            file=sys.stderr,
-        )
-    elif tts_enabled and them_output is not None:
-        print(
-            "Warning: a non-isolated Them monitor may transcribe Codex TTS.",
-            file=sys.stderr,
-        )
-    print(f"Loading Moonshine {args.model} model...", file=sys.stderr)
+    print_startup_summary(args, selection)
     model_path, downloaded_arch = get_model_for_language(
         wanted_language=args.language,
         wanted_model_arch=model_arch,
@@ -1545,32 +1696,11 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
     available_speakers = {"User Voice"}
     if them_output is not None:
         available_speakers.add("Them")
-    active_codex_speakers = codex_speakers & available_speakers
+    gate = SpeakerGate(selection.codex_speakers, available_speakers)
 
-    def set_response_policy(policy_name):
-        nonlocal active_codex_speakers
-        active_codex_speakers = (
-            resolve_response_policy(policy_name).speakers & available_speakers
-        )
+    from .tui import VoiceCodexTUI
 
-    from .tui import SessionState, VoiceCodexTUI
-
-    tui = VoiceCodexTUI(
-        SessionState(
-            policy=codex_after_setting,
-            tts_enabled=tts_enabled,
-            tts_voice=args.tts_voice,
-            turn_silence=args.turn_silence,
-            confidence=args.confidence,
-            language=args.language,
-            moonshine=args.model,
-            codex_model=args.codex_model,
-            codex_effort=args.codex_reasoning,
-            codex_tier="fast" if args.codex_fast else "standard",
-            codex_sandbox=args.sandbox,
-        ),
-        on_policy=set_response_policy,
-    )
+    tui = VoiceCodexTUI(build_session_state(args, selection), on_policy=gate.set_policy)
     if virtual_meeting is not None:
         tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
@@ -1581,7 +1711,7 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
                 playback_output["name"] if playback_output is not None else None
             ),
         )
-        if tts_enabled
+        if selection.tts_enabled
         else None
     )
     conversation = CodexConversation(
@@ -1603,43 +1733,21 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
         lambda enabled: False if tts is None else (tts.set_enabled(enabled) or True)
     )
 
-    def submit_transcript(speaker, text):
-        if (
-            tts is not None
-            and speaker in ("User Voice", "Them")
-            and tts.is_likely_echo(text)
-        ):
-            print(
-                f"[ignored likely Codex TTS echo from {speaker}: {text}]",
-                file=sys.stderr,
-                flush=True,
-            )
-            return
-        conversation.ingest(
-            speaker,
-            text,
-            respond=speaker in active_codex_speakers,
-        )
-
-    def handle_speech(partial):
-        if tts is None or tts.is_likely_echo(partial):
-            return False
-        tts.interrupt()
-        return True
+    submitter = TranscriptSubmitter(conversation, gate, tts)
 
     user_listener = ConversationListener(
         args.confidence,
         args.turn_silence,
         "User Voice",
-        submit_transcript,
+        submitter.submit,
         transcript_display,
-        on_speech=handle_speech,
+        on_speech=submitter.handle_speech,
     )
     user_transcriber = metered_mic_transcriber(
         model_path=model_path,
         model_arch=downloaded_arch,
         update_interval=0.25,
-        device=device_index,
+        device=selection.device_index,
         samplerate=16000,
         channels=1,
         level_reporter=AudioLevelReporter(tui, "mic"),
@@ -1647,7 +1755,7 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
     user_transcriber.add_listener(user_listener)
 
     tui.hooks.on_mute = user_listener.set_muted
-    tui.set_audio("mic", device=device["name"])
+    tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
     if playback_output is not None:
         tui.set_output(playback_output["description"])
@@ -1659,9 +1767,9 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
             args.confidence,
             args.turn_silence,
             "Them",
-            submit_transcript,
+            submitter.submit,
             transcript_display,
-            on_speech=handle_speech,
+            on_speech=submitter.handle_speech,
         )
         them_transcriber = PulseMonitorTranscriber(
             model_path=model_path,
@@ -1673,29 +1781,7 @@ def main():  # noqa: C901,PLR0912,PLR0915 - pre-existing: monolithic entrypoint
         )
         them_transcriber.add_listener(them_listener)
         tui.set_audio("them", device=them_output["description"])
-    try:
-        user_transcriber.start()
-        if them_transcriber is not None:
-            them_transcriber.start()
-        threading.Thread(
-            target=populate_codex_model_catalog,
-            args=(tui,),
-            name="CodexModelCatalog",
-            daemon=True,
-        ).start()
-        tui.run()
-    except KeyboardInterrupt:
-        print("\nStopping...", flush=True)
-    finally:
-        user_transcriber.stop()
-        if them_transcriber is not None:
-            them_transcriber.stop()
-        user_listener.close()
-        if them_listener is not None:
-            them_listener.close()
-        user_transcriber.close()
-        if them_transcriber is not None:
-            them_transcriber.close()
-        conversation.close()
-        if virtual_meeting is not None:
-            virtual_meeting.close()
+    channels = [(user_transcriber, user_listener)]
+    if them_transcriber is not None:
+        channels.append((them_transcriber, them_listener))
+    run_session(tui, channels, conversation, virtual_meeting)
