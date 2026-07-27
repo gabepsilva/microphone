@@ -29,6 +29,9 @@ this file only carries what no tool can check.
 - Do not add docstring linting (ruff `D`). It checks that a docstring exists,
   never that it is true, and the cheapest way to satisfy it is to restate the
   function name. `QUALITY.md` records the full reasoning.
+- `master` is protected: branch, then `gh pr create`. Wait for CI, fix what
+  fails, and merge only once it is green — never bypass with `--admin`, a
+  force push, or by removing a required check.
 - Explain any change to `pyproject.toml`, `uv.lock`, CI workflows, thresholds,
   or security policy in the PR description.
 
