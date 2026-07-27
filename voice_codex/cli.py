@@ -982,26 +982,84 @@ def metered_mic_transcriber(*args, level_reporter: AudioLevelReporter, **kwargs)
     return MeteredMicTranscriber(*args, level_reporter=level_reporter, **kwargs)
 
 
+@dataclass(frozen=True)
+class CaptureSettings:
+    """Audio capture parameters for one transcription channel."""
+
+    samplerate: int = 16000
+    blocksize: int = 4096
+    update_interval: float = 0.5
+
+
+# A frozen default shared by every channel that does not override it.
+DEFAULT_CAPTURE = CaptureSettings()
+
+
+def parec_command(monitor, samplerate):
+    """Build the parec command that streams a sink monitor as raw PCM."""
+    return [
+        "parec",
+        "--record",
+        "--raw",
+        f"--device={monitor}",
+        f"--rate={samplerate}",
+        "--format=s16le",
+        "--channels=1",
+        "--client-name=voice-codex",
+        "--stream-name=Them transcription",
+    ]
+
+
+def decode_pcm(raw_audio):
+    """Convert little-endian signed 16-bit PCM into normalized float samples."""
+    audio = np.frombuffer(raw_audio, dtype="<i2").astype(np.float32)
+    audio /= 32768.0
+    return audio
+
+
+def drain_audio_queue(audio_queue, stop_item, first):
+    """Coalesce everything already queued behind ``first`` into one buffer.
+
+    Batching keeps the transcriber's call rate independent of the capture
+    block size, so a backlog is caught up in a single call rather than one
+    call per block.
+    """
+    chunks = [first]
+    stop_requested = False
+    while True:
+        try:
+            queued = audio_queue.get_nowait()
+        except queue.Empty:
+            break
+        if queued is stop_item:
+            stop_requested = True
+            break
+        chunks.append(queued)
+    return b"".join(chunks), stop_requested
+
+
 class PulseMonitorTranscriber:
     """Feed a PulseAudio/PipeWire sink monitor into a Moonshine stream."""
 
-    def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
+    # parec exits rather than blocking when a monitor cannot be attached, so
+    # startup waits briefly and checks, instead of discovering it at the first
+    # silent read.
+    STARTUP_GRACE_SECONDS = 0.05
+
+    def __init__(
         self,
         model_path,
         model_arch,
         monitor,
-        update_interval=0.5,
-        samplerate=16000,
-        blocksize=4096,
+        capture=DEFAULT_CAPTURE,
         level_reporter=None,
     ):
         if shutil.which("parec") is None:
             raise RuntimeError("parec is required to capture an audio-output monitor.")
         self.transcriber = Transcriber(model_path, model_arch)
-        self.stream = self.transcriber.create_stream(update_interval)
+        self.stream = self.transcriber.create_stream(capture.update_interval)
         self.monitor = monitor
-        self.samplerate = samplerate
-        self.blocksize = blocksize
+        self.capture = capture
         self.level_reporter = level_reporter
         self.process = None
         self.reader = None
@@ -1018,7 +1076,7 @@ class PulseMonitorTranscriber:
             while (process := self.process) is not None:
                 if process.stdout is None:
                     break
-                chunk = process.stdout.read(self.blocksize * 2)
+                chunk = process.stdout.read(self.capture.blocksize * 2)
                 if not chunk:
                     break
                 self.audio_queue.put(chunk)
@@ -1030,24 +1088,14 @@ class PulseMonitorTranscriber:
             item = self.audio_queue.get()
             if item is self.stop_item:
                 return
-            chunks = [item]
-            stop_requested = False
-            while True:
-                try:
-                    queued = self.audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if queued is self.stop_item:
-                    stop_requested = True
-                    break
-                chunks.append(queued)
-            raw_audio = b"".join(chunks)
-            audio = np.frombuffer(raw_audio, dtype="<i2").astype(np.float32)
-            audio /= 32768.0
+            raw_audio, stop_requested = drain_audio_queue(
+                self.audio_queue, self.stop_item, item
+            )
+            audio = decode_pcm(raw_audio)
             if self.level_reporter is not None:
                 self.level_reporter.update(audio)
             try:
-                self.stream.add_audio(audio.tolist(), self.samplerate)
+                self.stream.add_audio(audio.tolist(), self.capture.samplerate)
             except Exception as error:
                 print(
                     f"Them transcription error: {error}",
@@ -1062,21 +1110,11 @@ class PulseMonitorTranscriber:
             return
         self.stream.start()
         self.process = subprocess.Popen(
-            [
-                "parec",
-                "--record",
-                "--raw",
-                f"--device={self.monitor}",
-                f"--rate={self.samplerate}",
-                "--format=s16le",
-                "--channels=1",
-                "--client-name=voice-codex",
-                "--stream-name=Them transcription",
-            ],
+            parec_command(self.monitor, self.capture.samplerate),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(0.05)
+        time.sleep(self.STARTUP_GRACE_SECONDS)
         if self.process.poll() is not None:
             self.stream.stop()
             raise RuntimeError(
@@ -1795,8 +1833,7 @@ def main():
             model_path=model_path,
             model_arch=downloaded_arch,
             monitor=them_output["monitor"],
-            update_interval=0.25,
-            samplerate=16000,
+            capture=CaptureSettings(update_interval=0.25),
             level_reporter=AudioLevelReporter(tui, "them"),
         )
         them_transcriber.add_listener(them_listener)
