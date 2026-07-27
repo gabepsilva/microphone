@@ -25,7 +25,7 @@ from .choosers import (
     choose_tts,
 )
 from .config import load_startup_config
-from .domain import RESPONSE_POLICIES
+from .domain import POLICY_NAMES, ResponsePolicy
 
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -105,7 +105,7 @@ def build_parser():
     )
     parser.add_argument(
         "--codex-after",
-        choices=("them", "both", "user", "quiet"),
+        choices=POLICY_NAMES,
         help="Which completed transcript turns trigger Codex; prompts when omitted",
     )
     parser.add_argument(
@@ -139,10 +139,9 @@ def _validate_startup_args(parser, args):
     """Reject values argparse cannot constrain, including config-file values."""
     if args.tts not in (None, "on", "off"):
         parser.error("startup config 'tts' must be 'on' or 'off'")
-    if args.codex_after not in (None, "them", "both", "user", "quiet"):
-        parser.error(
-            "startup config 'codex_after' must be 'them', 'both', 'user', or 'quiet'"
-        )
+    if args.codex_after is not None and args.codex_after not in POLICY_NAMES:
+        allowed = ", ".join(repr(name) for name in POLICY_NAMES)
+        parser.error(f"startup config 'codex_after' must be one of {allowed}")
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
     if args.turn_silence <= 0:
@@ -168,8 +167,7 @@ class StartupSelection:
     them_output: dict | None
     them_output_setting: str
     playback_output: dict | None
-    policy_name: str
-    codex_speakers: frozenset
+    policy: ResponsePolicy
 
 
 def them_output_name(them_output):
@@ -179,14 +177,6 @@ def them_output_name(them_output):
     if them_output.get(ISOLATED_OUTPUT):
         return ISOLATED_OUTPUT
     return them_output["name"]
-
-
-def codex_after_name(codex_speakers):
-    """Name the response policy whose speaker set matches a resolved selection."""
-    for name, policy in RESPONSE_POLICIES.items():
-        if policy.speakers == frozenset(codex_speakers):
-            return name
-    return "quiet"
 
 
 def startup_settings(selection):
@@ -200,7 +190,7 @@ def startup_settings(selection):
             if selection.playback_output is not None
             else None
         ),
-        "codex_after": codex_after_name(selection.codex_speakers),
+        "codex_after": selection.policy.name,
     }
 
 
@@ -213,7 +203,7 @@ def print_startup_summary(args, selection, stream=sys.stderr):
         print("Them audio output: None", file=stream)
     else:
         print(f"Them audio output: {them_output['description']}", file=stream)
-    print(f"Codex response policy: {selection.policy_name}", file=stream)
+    print(f"Codex response policy: {selection.policy.label}", file=stream)
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
     print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
     print(f"Codex command access: {args.sandbox}", file=stream)
@@ -254,7 +244,7 @@ def resolve_startup_selection(args):
             "Set Zoom or the meeting app's speaker to Voice Codex Meeting.",
             file=sys.stderr,
         )
-    policy_name, codex_speakers = choose_codex_after(args.codex_after)
+    policy = choose_codex_after(args.codex_after)
     return (
         StartupSelection(
             device_index=device_index,
@@ -263,8 +253,7 @@ def resolve_startup_selection(args):
             them_output=them_output,
             them_output_setting=them_output_setting,
             playback_output=playback_output,
-            policy_name=policy_name,
-            codex_speakers=frozenset(codex_speakers),
+            policy=policy,
         ),
         virtual_meeting,
     )
@@ -275,7 +264,7 @@ def build_session_state(args, selection):
     from .tui import SessionState
 
     return SessionState(
-        policy=codex_after_name(selection.codex_speakers),
+        policy=selection.policy.name,
         tts_enabled=selection.tts_enabled,
         tts_voice=args.tts_voice,
         turn_silence=args.turn_silence,

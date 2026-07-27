@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import threading
 
-from .domain import resolve_response_policy
+from .domain import RESPONSE_POLICIES, resolve_response_policy
 
 
 def input_devices():
@@ -305,23 +305,20 @@ class VirtualMeetingOutput:
 
 
 def choose_codex_after(requested=None):
-    """Return the transcript speakers whose completed turns trigger Codex."""
+    """Return the response policy whose speakers trigger a Codex reply."""
     if requested is not None:
-        policy = resolve_response_policy(requested)
-        return policy.label, policy.speakers
+        return resolve_response_policy(requested)
 
+    policies = list(RESPONSE_POLICIES.values())
     print("\nCodex should respond after:")
-    print("   1) Them")
-    print("   2) User Voice and Them")
-    print("   3) User Voice")
-    print("   4) Codex will be quiet for voice")
+    for number, policy in enumerate(policies, start=1):
+        print(f"  {number:2d}) {policy.label}")
     print()
-    policy = prompt_until(
-        "Select a response policy (1-4): ",
+    return prompt_until(
+        f"Select a response policy (1-{len(policies)}): ",
         resolve_response_policy,
-        "Please enter a number from 1 to 4.",
+        f"Please enter a number from 1 to {len(policies)}.",
     )
-    return policy.label, policy.speakers
 
 
 TTS_ANSWERS = {
