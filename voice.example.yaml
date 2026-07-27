@@ -8,3 +8,7 @@ tts_provider: null
 them_output: null
 playback_output: null
 codex_after: null
+# Left null, these take the built-in defaults: 3.0 seconds, gpt-5.6-luna, low.
+turn_silence: null
+codex_model: null
+codex_reasoning: null

@@ -28,6 +28,11 @@ from .config import load_startup_config
 from .domain import POLICY_NAMES, ResponsePolicy, TurnSilence
 from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 
+DEFAULT_TURN_SILENCE = 3.0
+DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
+DEFAULT_CODEX_EFFORT = "low"
+CODEX_EFFORTS = ("low", "medium", "high")
+
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "voice.yaml",
@@ -64,8 +69,7 @@ def build_parser():
     parser.add_argument(
         "--turn-silence",
         type=float,
-        default=3.0,
-        help="Quiet seconds before sending a turn to Codex (default: 3.0)",
+        help=f"Quiet seconds before sending a turn to Codex (default: {DEFAULT_TURN_SILENCE})",
     )
     parser.add_argument(
         "--sandbox",
@@ -79,14 +83,11 @@ def build_parser():
     )
     parser.add_argument(
         "--codex-model",
-        default="gpt-5.6-luna",
-        help="Codex model (default: gpt-5.6-luna)",
+        help=f"Codex model (default: {DEFAULT_CODEX_MODEL})",
     )
     parser.add_argument(
         "--codex-reasoning",
-        choices=("low", "medium", "high"),
-        default="low",
-        help="Codex reasoning effort (default: low)",
+        help=f"Codex reasoning effort (default: {DEFAULT_CODEX_EFFORT})",
     )
     parser.add_argument(
         "--codex-fast",
@@ -140,14 +141,23 @@ def _apply_startup_config(parser, args):
     print(f"Loaded startup config: {args.config}", file=sys.stderr)
 
 
-def _resolve_speech_defaults(args):
-    """Settle the provider, then the voice that provider speaks with.
+def _resolve_defaults(args):
+    """Fill in what neither the command line nor the config file supplied.
 
-    The voice default cannot be an argparse default because it depends on the
-    provider, which the config file may have supplied after parsing.
+    These cannot be argparse defaults. Anything argparse has already filled in
+    is not None, and the config file only fills what is still None — so an
+    argparse default would silently outrank the saved value it is meant to
+    stand in for. The voice has a second reason: its default depends on the
+    provider, which the config file may only have supplied a moment ago.
     """
-    if args.tts_provider is None:
-        args.tts_provider = DEFAULT_PROVIDER
+    for option, fallback in (
+        ("tts_provider", DEFAULT_PROVIDER),
+        ("turn_silence", DEFAULT_TURN_SILENCE),
+        ("codex_model", DEFAULT_CODEX_MODEL),
+        ("codex_reasoning", DEFAULT_CODEX_EFFORT),
+    ):
+        if getattr(args, option) is None:
+            setattr(args, option, fallback)
     if args.tts_voice is None:
         args.tts_voice = default_voice(args.tts_provider)
 
@@ -159,12 +169,24 @@ def _validate_startup_args(parser, args):
     if args.tts_provider is not None and args.tts_provider not in PROVIDERS:
         allowed = ", ".join(repr(name) for name in PROVIDERS)
         parser.error(f"startup config 'tts_provider' must be one of {allowed}")
+    if args.codex_reasoning is not None and args.codex_reasoning not in CODEX_EFFORTS:
+        allowed = ", ".join(repr(name) for name in CODEX_EFFORTS)
+        parser.error(f"startup config 'codex_reasoning' must be one of {allowed}")
+    # bool is a subclass of int, so a YAML `true` would otherwise pass as a
+    # one-second window rather than being rejected as the mistake it is.
+    if args.turn_silence is not None and (
+        isinstance(args.turn_silence, bool)
+        or not isinstance(args.turn_silence, int | float)
+    ):
+        parser.error("startup config 'turn_silence' must be a number")
     if args.codex_after is not None and args.codex_after not in POLICY_NAMES:
         allowed = ", ".join(repr(name) for name in POLICY_NAMES)
         parser.error(f"startup config 'codex_after' must be one of {allowed}")
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
-    if not TurnSilence.MINIMUM <= args.turn_silence <= TurnSilence.MAXIMUM:
+    if args.turn_silence is not None and not (
+        TurnSilence.MINIMUM <= args.turn_silence <= TurnSilence.MAXIMUM
+    ):
         parser.error(
             f"--turn-silence must be between {TurnSilence.MINIMUM} and "
             f"{TurnSilence.MAXIMUM} seconds"
@@ -177,7 +199,7 @@ def parse_startup_args(argv=None):
     args = parser.parse_args(argv)
     _apply_startup_config(parser, args)
     _validate_startup_args(parser, args)
-    _resolve_speech_defaults(args)
+    _resolve_defaults(args)
     return parser, args
 
 
@@ -204,8 +226,8 @@ def them_output_name(them_output):
     return them_output["name"]
 
 
-def startup_settings(selection):
-    """Build the flat mapping saved by ``--save-config``."""
+def startup_settings(selection, args):
+    """Build the flat mapping the config file holds."""
     return {
         "microphone": selection.device["name"],
         "tts": "on" if selection.tts_enabled else "off",
@@ -217,6 +239,9 @@ def startup_settings(selection):
             else None
         ),
         "codex_after": selection.policy.name,
+        "turn_silence": args.turn_silence,
+        "codex_model": args.codex_model,
+        "codex_reasoning": args.codex_reasoning,
     }
 
 

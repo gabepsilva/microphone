@@ -20,6 +20,13 @@ make hooks
 Git. The example keeps all choices interactive, so it is safe to copy on a new
 machine.
 
+The file is also where a session records itself: every setting the sidebar can
+change — response policy, speech on/off, speech engine, turn silence, Codex
+model and reasoning effort — is written back as you change it, so the next run
+starts where the last one left off. Command-line options still override it.
+Muting is deliberately not saved; it is how a session is being used at a
+moment, not how it is configured.
+
 Some runtime features also require operating-system tools: PipeWire/PulseAudio
 (`pactl` and `parec`) for output capture, and `ffmpeg`/`ffplay` for spoken
 responses. They are runtime integrations, not Python packages.

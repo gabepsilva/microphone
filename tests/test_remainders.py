@@ -145,14 +145,14 @@ def test_a_usable_model_survives_an_unusable_neighbour() -> None:
 
 
 def test_the_committed_example_config_is_valid_for_a_first_run() -> None:
-    """The example file ships unset values so a first run prompts for all of them."""
-    from voice_codex.config import load_startup_config
+    """The example ships every key unset, so a first run resolves them all.
 
-    assert load_startup_config(ROOT / "voice.example.yaml") == {
-        "microphone": None,
-        "tts": None,
-        "tts_provider": None,
-        "them_output": None,
-        "playback_output": None,
-        "codex_after": None,
-    }
+    Derived from the key list rather than restating it: a key added to the
+    config without a line in the example is one a new machine cannot discover,
+    and a second hand-written list here would not notice.
+    """
+    from voice_codex.config import STARTUP_CONFIG_KEYS, load_startup_config
+
+    assert load_startup_config(ROOT / "voice.example.yaml") == dict.fromkeys(
+        STARTUP_CONFIG_KEYS
+    )

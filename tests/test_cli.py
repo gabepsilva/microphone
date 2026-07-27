@@ -321,7 +321,7 @@ def test_editing_the_window_reaches_the_listeners(wiring) -> None:
     cli.main()
     tui, channels, _, _ = wiring["session"]
 
-    assert tui.hook_arguments["on_turn_silence"](1.25) == 1.25
+    assert tui.hooks.on_turn_silence(1.25) == 1.25
     assert [listener.turn_silence.seconds for _, listener in channels] == [1.25, 1.25]
     assert tui.countdown.window.seconds == 1.25
 
@@ -341,3 +341,78 @@ def test_a_silent_session_gives_the_sidebar_no_speech_to_poll(wiring) -> None:
     tui, _, _, _ = wiring["session"]
 
     assert tui.speech is None
+
+
+def saved_config(tmp_path):
+    """Read back what the session wrote to the file it started from."""
+    from voice_codex.config import load_startup_config
+
+    return load_startup_config(tmp_path / "voice.yaml")
+
+
+def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
+    wiring, tmp_path
+) -> None:
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+
+    tui.hooks.on_policy("user")
+
+    assert saved_config(tmp_path)["codex_after"] == "user"
+
+
+def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
+    wiring["tts_enabled"] = True
+
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+
+    tui.hooks.on_policy("them")
+    tui.hooks.on_codex_model("gpt-5.6-sol")
+    tui.hooks.on_codex_effort("high")
+    tui.hooks.on_turn_silence(1.25)
+    tui.hooks.on_tts(False)
+
+    saved = saved_config(tmp_path)
+    assert saved["codex_after"] == "them"
+    assert saved["codex_model"] == "gpt-5.6-sol"
+    assert saved["codex_reasoning"] == "high"
+    assert saved["turn_silence"] == 1.25
+    assert saved["tts"] == "off"
+
+
+def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
+    """A silent session cannot switch speech on, so it must not save that it did."""
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+    # Something else has to be saved first, or the file is never written at
+    # all and "it did not record the refusal" would pass for the wrong reason.
+    tui.hooks.on_policy("user")
+
+    assert tui.hooks.on_tts(True) is False
+
+    assert saved_config(tmp_path)["tts"] == "off"
+
+
+def test_a_clamped_window_is_saved_as_the_value_in_force(wiring, tmp_path) -> None:
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+
+    tui.hooks.on_turn_silence(0.01)
+
+    assert saved_config(tmp_path)["turn_silence"] == 0.25
+
+
+def test_a_session_reopens_with_what_the_last_one_left(wiring, tmp_path) -> None:
+    """The whole point: the file a session writes is the file it next reads."""
+    from voice_codex.startup import parse_startup_args
+
+    cli.main()
+    tui, _, _, _ = wiring["session"]
+    tui.hooks.on_turn_silence(1.25)
+    tui.hooks.on_codex_effort("high")
+
+    _, args = parse_startup_args(["--config", str(tmp_path / "voice.yaml")])
+
+    assert args.turn_silence == 1.25
+    assert args.codex_reasoning == "high"
