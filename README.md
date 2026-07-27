@@ -70,6 +70,18 @@ importable `voice_codex` package separates pure configuration and transcript
 domain logic from presentation and runtime integrations, so hardware and SDK
 boundaries can be tested with deterministic fakes.
 
+## Codex speed
+
+Sessions ask for Codex Fast mode by default. Everything downstream of the
+first token is already tuned for latency — sentences stream to speech as they
+complete, and Piper starts speaking one in about 158ms — but none of it can
+begin before Codex has produced that token, so the service tier is the part of
+the wait the rest of the pipeline cannot recover.
+
+It consumes more credits. `--no-codex-fast` asks for the standard tier
+instead, and `codex_fast: false` in `voice.yaml` makes that the default for a
+machine. The startup summary and the sidebar both name the tier in force.
+
 ## Turn silence
 
 The pause that ends a spoken turn is the largest delay in the loop, and the
