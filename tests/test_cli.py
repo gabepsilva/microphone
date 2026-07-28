@@ -11,6 +11,7 @@ Nothing here fakes ``main`` itself.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,6 +131,10 @@ def wiring(monkeypatch, tmp_path):
     def run_session(tui, channels, conversation, virtual_meeting):
         built["session"] = (tui, channels, conversation, virtual_meeting)
 
+    # The real lock is a file in the user's runtime directory, so leaving it
+    # unfaked makes every ``main`` test fail whenever a session happens to be
+    # running on the machine. The lock has its own tests below.
+    monkeypatch.setattr(cli, "acquire_single_instance_lock", lambda *a, **k: None)
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
@@ -535,6 +540,51 @@ def test_release_lock_is_a_noop_when_no_lock_is_held(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_INSTANCE_LOCK", None)
     cli._release_single_instance_lock()
     assert cli._INSTANCE_LOCK is None
+
+
+def test_the_lock_file_is_named_for_the_user_who_owns_it() -> None:
+    """A shared fallback directory must not hand one user another's lock."""
+    assert cli.LOCK_PATH.name == f"voice-codex-{os.getuid()}.lock"
+
+
+@pytest.mark.usefixtures("wiring")
+def test_asking_for_help_does_not_wait_on_the_single_instance_lock(monkeypatch) -> None:
+    """``--help`` describes the program; it starts no session to conflict with.
+
+    Taking the lock before parsing made every argument-only invocation fail
+    while a session was running, which is exactly when someone reads the help.
+    """
+
+    def already_running(*_args, **_kwargs):
+        raise RuntimeError("Another voice_codex session is already running.")
+
+    monkeypatch.setattr(cli, "acquire_single_instance_lock", already_running)
+    cli.sys.argv.append("--help")
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 0
+
+
+@pytest.mark.usefixtures("wiring")
+def test_the_lock_is_held_before_the_meeting_devices_are_built(monkeypatch) -> None:
+    """Sweeping stale sinks is only safe while no other session owns any."""
+    order: list[str] = []
+
+    monkeypatch.setattr(
+        cli, "acquire_single_instance_lock", lambda *_a, **_k: order.append("lock")
+    )
+    resolve = cli.resolve_startup_selection
+    monkeypatch.setattr(
+        cli,
+        "resolve_startup_selection",
+        lambda args: (order.append("resolve"), resolve(args))[1],
+    )
+
+    cli.main()
+
+    assert order == ["lock", "resolve"]
 
 
 @pytest.mark.usefixtures("wiring")

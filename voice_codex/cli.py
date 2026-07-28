@@ -58,8 +58,12 @@ from .startup import (
     startup_settings,
 )
 
+# The name carries the user ID because the fallback is a shared directory: on a
+# multi-user box a fixed name in /tmp is one user's lock file blocking every
+# other user's session, or refusing to open at all because they own it.
 LOCK_PATH = (
-    Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / "voice-codex.lock"
+    Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+    / f"voice-codex-{os.getuid()}.lock"
 )
 _INSTANCE_LOCK = None
 _LOCK_RELEASE_REGISTERED = False
@@ -206,8 +210,11 @@ def remembering_turn_silence(turn_silence, config):
 
 
 def main():
-    acquire_single_instance_lock()
     parser, args = parse_startup_args()
+    # Parsing comes first so `--help` and a rejected argument still answer while
+    # a session is running; the lock comes before the selection is resolved,
+    # which is where the virtual meeting devices are created and swept.
+    acquire_single_instance_lock()
     selection, virtual_meeting = resolve_startup_selection(args)
     them_output = selection.them_output
     playback_output = selection.playback_output
