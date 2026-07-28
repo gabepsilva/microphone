@@ -268,9 +268,11 @@ class RecordingCountdown:
 
     def __init__(self):
         self.events: list[tuple[str, str]] = []
+        self.windows: list[float | None] = []
 
-    def started(self, speaker):
+    def started(self, speaker, seconds=None):
         self.events.append(("started", speaker))
+        self.windows.append(seconds)
 
     def cleared(self, speaker):
         self.events.append(("cleared", speaker))
@@ -797,3 +799,209 @@ def test_the_prefire_channel_passes_each_moment_to_the_submitter() -> None:
     assert channel.commit("Them")
     assert channel.cancel("Them")
     assert conversation.prefired == [("Them", "what do you think")]
+
+
+# --------------------------------------------------------------------------
+# Holding a turn open for someone who is still talking
+#
+# Transcription arrives about half a second behind the speech, so a speaker
+# who resumes just before the deadline has nothing on the transcript to save
+# them. The level tap answers from the audio instead. These hold both halves:
+# that a turn is kept open while its speaker is audible, and that it is still
+# always sent, however long the channel refuses to go quiet.
+# --------------------------------------------------------------------------
+
+
+class StubPresence:
+    """Report whatever a test says the level tap is hearing."""
+
+    def __init__(self, speaking=True):
+        self.answer = speaking
+        self.asked = 0
+
+    def speaking(self):
+        self.asked += 1
+        return self.answer
+
+
+def listening_for_speech(speaking=True, window=3.0, **kwargs):
+    """A listener that consults a level tap when its deadline arrives."""
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    presence = StubPresence(speaking)
+    listener = RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(window),
+        speaker="User Voice",
+        submit=lambda speaker, text: submitted.append((speaker, text)),
+        presentation=display,
+        presence=presence,
+        **kwargs,
+    )
+    return listener, presence
+
+
+def reach_deadline(listener):
+    """Fire the pending deadline the way the timer thread would."""
+    listener.timer.cancel()
+    listener._flush(listener.timer_generation)
+
+
+def test_a_deadline_reached_while_the_speaker_is_audible_sends_nothing() -> None:
+    listener, _ = listening_for_speech(speaking=True)
+    listener.on_line_completed(SimpleNamespace(line=line("I was going to say")))
+
+    reach_deadline(listener)
+
+    assert listener.submitted == []
+    assert listener.pending == ["I was going to say"]
+    listener.close()
+
+
+def test_a_held_turn_is_re_armed_on_the_grace_rather_than_the_window() -> None:
+    """A whole window each time would answer a finished speaker far too late."""
+    listener, _ = listening_for_speech(speaking=True, window=3.0)
+    listener.on_line_completed(SimpleNamespace(line=line("one moment")))
+
+    reach_deadline(listener)
+
+    assert listener.timer is not None
+    assert listener.timer.interval == ConversationListener.EXTENSION_GRACE
+    listener.close()
+
+
+def test_a_deadline_reached_in_silence_sends_the_turn_as_before() -> None:
+    listener, presence = listening_for_speech(speaking=False)
+    listener.on_line_completed(SimpleNamespace(line=line("that is all")))
+
+    reach_deadline(listener)
+
+    assert listener.submitted == [("User Voice", "that is all")]
+    assert presence.asked == 1
+    listener.close()
+
+
+def test_a_turn_held_open_puts_the_grace_back_on_the_countdown() -> None:
+    """The wait visibly returns, which is what says the speaker was heard."""
+    countdown = RecordingCountdown()
+    listener, _ = listening_for_speech(speaking=True, countdown=countdown)
+    listener.on_line_completed(SimpleNamespace(line=line("hold on")))
+
+    reach_deadline(listener)
+
+    assert countdown.waiting == ["User Voice"]
+    assert countdown.windows == [3.0, ConversationListener.EXTENSION_GRACE]
+    listener.close()
+
+
+def test_a_channel_that_never_goes_quiet_still_sends_its_turn() -> None:
+    """A fan is sound too, and a room loud enough would never submit at all."""
+    listener, _ = listening_for_speech(speaking=True, window=3.0)
+    listener.on_line_completed(SimpleNamespace(line=line("said once")))
+
+    for _ in range(listener._extension_budget()):
+        reach_deadline(listener)
+        assert listener.submitted == []
+    reach_deadline(listener)
+
+    assert listener.submitted == [("User Voice", "said once")]
+    listener.close()
+
+
+def test_a_turn_is_never_held_open_for_longer_than_its_own_window() -> None:
+    """The budget scales with the wait, so a short window stays short."""
+    listener, _ = listening_for_speech(window=3.0)
+    brief, _ = listening_for_speech(window=0.5)
+
+    assert listener._extension_budget() == 6
+    assert brief._extension_budget() == 1
+    listener.close()
+    brief.close()
+
+
+def test_even_a_window_shorter_than_the_grace_may_be_held_open_once() -> None:
+    """Rounding the budget to zero would switch the whole thing off."""
+    listener, _ = listening_for_speech(window=TurnSilence.MINIMUM)
+
+    assert listener._extension_budget() == 1
+    listener.close()
+
+
+def test_transcription_catching_up_gives_the_budget_back() -> None:
+    """The extensions bought the words that have now arrived."""
+    listener, _ = listening_for_speech(speaking=True)
+    listener.on_line_completed(SimpleNamespace(line=line("first")))
+    reach_deadline(listener)
+    assert listener.extensions == 1
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("and then")))
+
+    assert listener.extensions == 0
+    listener.close()
+
+
+def test_an_empty_buffer_is_never_held_open() -> None:
+    """There is no turn to protect, and the countdown would never clear."""
+    listener, presence = listening_for_speech(speaking=True)
+    listener.on_line_completed(SimpleNamespace(line=line("")))
+
+    listener._flush(listener.timer_generation)
+
+    assert listener.timer is None
+    assert presence.asked == 0
+    listener.close()
+
+
+def test_an_immediate_flush_is_never_held_open() -> None:
+    """The caller has already decided not to wait for this speaker."""
+    listener, presence = listening_for_speech(speaking=True)
+    listener.on_line_completed(SimpleNamespace(line=line("context for the reply")))
+
+    listener.flush_now()
+
+    assert listener.submitted == [("User Voice", "context for the reply")]
+    assert presence.asked == 0
+    listener.close()
+
+
+def test_holding_a_turn_open_abandons_the_guess_it_had_already_made() -> None:
+    """A guess made mid-sentence is answering half of one."""
+    guess = RecordingPrefire()
+    listener, _ = listening_for_speech(speaking=True, prefire=guess)
+    listener.on_line_completed(SimpleNamespace(line=line("what do you think")))
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    assert guess.started == [("User Voice", "what do you think")]
+
+    reach_deadline(listener)
+
+    assert guess.cancelled == ["User Voice"]
+    assert listener.prefired is False
+    assert guess.committed == []
+    listener.close()
+
+
+def test_a_held_turn_does_not_guess_again_during_its_grace() -> None:
+    """The reason it was held is that the speaker is probably mid-sentence."""
+    listener, _ = listening_for_speech(speaking=True, prefire=RecordingPrefire())
+    listener.on_line_completed(SimpleNamespace(line=line("still going")))
+    listener.prefire_timer.cancel()
+
+    reach_deadline(listener)
+
+    assert listener.prefire_timer is None
+    listener.close()
+
+
+def test_muting_forgets_what_a_turn_was_held_open_on() -> None:
+    listener, _ = listening_for_speech(speaking=True)
+    listener.on_line_completed(SimpleNamespace(line=line("mid sentence")))
+    reach_deadline(listener)
+    assert listener.extensions == 1
+
+    listener.set_muted(True)
+
+    assert listener.extensions == 0
+    listener.close()

@@ -35,7 +35,13 @@ from .capture import (
 )
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
-from .domain import PrefirePlan, SpeakerGate, TurnSilence, TurnSilenceClock
+from .domain import (
+    PrefirePlan,
+    SpeakerGate,
+    SpeakerPresence,
+    TurnSilence,
+    TurnSilenceClock,
+)
 from .listener import TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -57,6 +63,50 @@ def build_speech(selection, args, playback_output):
         args.tts_voice,
         output_sink=(playback_output["name"] if playback_output is not None else None),
     )
+
+
+def sound_taps(tui, them_output):
+    """The two level taps, built before the listeners that read them.
+
+    Each channel's listener reads the other's tap: the microphone has to know
+    when the meeting sink is playing to tell the far end coming out of the
+    speakers from the person sitting in the room.
+    """
+    them = None if them_output is None else SoundActivityReporter(tui, "them")
+    return SoundActivityReporter(tui, "mic"), them
+
+
+def speaker_gate(selection, them_output):
+    """Build the response policy, limited to the speakers this session has.
+
+    The gate is told what exists rather than inferring it, because selecting
+    "both" in a session with no Them output must not make Them replies
+    possible.
+    """
+    available_speakers = {"User Voice"}
+    if them_output is not None:
+        available_speakers.add("Them")
+    return SpeakerGate(selection.policy.speakers, available_speakers)
+
+
+def microphone_presence(mic_activity, them_activity, tts):
+    """Decide when the microphone is hearing the person sitting in front of it.
+
+    Everything the speakers play reaches an open microphone, so on a laptop the
+    tap goes busy for the assistant's own reply and for the far end as readily
+    as for the user — and a turn held open by those would be held open for as
+    long as they went on. Both are already known here: the speech engine says
+    when it still owes a sentence, and the meeting sink's own tap says when the
+    far end is playing.
+
+    On a headset neither ever fires, and the suppressors cost nothing.
+    """
+    suppressors = []
+    if tts is not None:
+        suppressors.append(tts.is_speaking)
+    if them_activity is not None:
+        suppressors.append(lambda: them_activity.hearing_sound)
+    return SpeakerPresence(mic_activity, suppressors)
 
 
 def remembering(hook, config, key, encode=lambda value: value):
@@ -138,10 +188,7 @@ def main():
         wanted_model_arch=model_arch,
     )
 
-    available_speakers = {"User Voice"}
-    if them_output is not None:
-        available_speakers.add("Them")
-    gate = SpeakerGate(selection.policy.speakers, available_speakers)
+    gate = speaker_gate(selection, them_output)
 
     from .tui import VoiceCodexTUI
 
@@ -181,12 +228,18 @@ def main():
         ),
     )
 
+    # Built before the listeners because each one reads the other's tap: the
+    # microphone has to know when the meeting sink is playing to tell the far
+    # end's voice from the person in the room.
+    mic_activity, them_activity = sound_taps(tui, them_output)
+
     user_listener = submitter.channel(
         args.confidence,
         turn_silence,
         "User Voice",
         transcript_display,
         countdown=countdown,
+        presence=microphone_presence(mic_activity, them_activity, tts),
     )
     user_transcriber = metered_mic_transcriber(
         model_path=model_path,
@@ -195,7 +248,7 @@ def main():
         device=selection.device_index,
         samplerate=16000,
         channels=1,
-        level_reporter=SoundActivityReporter(tui, "mic"),
+        level_reporter=mic_activity,
     )
     user_transcriber.add_listener(user_listener)
 
@@ -214,13 +267,22 @@ def main():
             "Them",
             transcript_display,
             countdown=countdown,
+            # No suppressors: a monitored sink carries what the meeting app
+            # wrote and nothing else. Speech is only allowed to share it with
+            # an isolated output, so Codex is never on this tap to mistake.
+            presence=SpeakerPresence(them_activity),
         )
         them_transcriber = PulseMonitorTranscriber(
             model_path=model_path,
             model_arch=downloaded_arch,
             monitor=them_output["monitor"],
-            capture=CaptureSettings(update_interval=0.25),
-            level_reporter=SoundActivityReporter(tui, "them"),
+            # A smaller block only to sharpen the tap: this channel decides
+            # whether the far end is talking a whole block at a time, and the
+            # 4096 default put that a quarter of a second behind the
+            # microphone's. Transcription is unaffected — it runs off
+            # ``update_interval``, not off the read size.
+            capture=CaptureSettings(update_interval=0.25, blocksize=1024),
+            level_reporter=them_activity,
         )
         them_transcriber.add_listener(them_listener)
         tui.hooks.on_them_mute = them_listener.set_muted

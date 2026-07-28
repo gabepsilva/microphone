@@ -455,9 +455,17 @@ class TurnSilenceClock:
         self._lock = threading.Lock()
         self._deadlines: dict[str, float] = {}
 
-    def started(self, speaker: str) -> None:
-        """Record that a speaker's silence timer has just begun."""
-        due_at = self._clock() + self.window.seconds
+    def started(self, speaker: str, seconds: float | None = None) -> None:
+        """Record that a speaker's silence timer has just begun.
+
+        The duration comes from the caller rather than from the window,
+        because a turn held open for a speaker who is still talking runs on a
+        short grace instead — and a countdown showing the full window there
+        would promise a wait the listener is not going to take. It falls back
+        to the window for callers arming the ordinary one.
+        """
+        window = self.window.seconds if seconds is None else seconds
+        due_at = self._clock() + window
         with self._lock:
             self._deadlines[speaker] = due_at
 
@@ -480,6 +488,38 @@ class TurnSilenceClock:
                 del self._deadlines[speaker]
             due = min(self._deadlines.values(), default=None)
         return None if due is None else due - now
+
+
+class SpeakerPresence:
+    """Whether a channel is hearing its own speaker, at this moment.
+
+    The silence timer keys off transcription events, and those arrive about
+    half a second after someone starts talking: the model needs that much
+    audio before it will commit to a word. A speaker who resumes inside that
+    half second has their turn sent out from under them, because nothing the
+    timer can see has happened yet.
+
+    The level tap answers the same question from the audio itself, without
+    waiting for a word. What it cannot do is say *whose* sound it is — an open
+    microphone hears the assistant's own speech and the far end coming out of
+    the speakers as readily as the person sitting in front of it. The
+    suppressors are the things known to be making sound that is not this
+    speaker; while any of them holds, the tap is evidence of nothing and the
+    answer is no.
+
+    A monitored sink needs none of them: it carries what the meeting app wrote
+    and nothing else. An open microphone needs both.
+    """
+
+    def __init__(self, source, suppressors=()) -> None:
+        self.source = source
+        self.suppressors = tuple(suppressors)
+
+    def speaking(self) -> bool:
+        """Report whether this speaker is audibly talking right now."""
+        if not self.source.hearing_sound:
+            return False
+        return not any(suppressed() for suppressed in self.suppressors)
 
 
 class SpeakerGate:

@@ -227,6 +227,58 @@ def test_sound_below_the_threshold_is_not_sound() -> None:
     assert reports == []
 
 
+# --------------------------------------------------------------------------
+# Asking the tap directly
+#
+# The silence timer reads this to decide whether a speaker is still talking,
+# so what matters is that a read is answered from the release deadline rather
+# than from whatever the last block happened to report.
+# --------------------------------------------------------------------------
+
+
+def test_a_quiet_channel_is_hearing_nothing() -> None:
+    reporter = SoundActivityReporter(_recording_display([]), "mic")
+
+    assert reporter.hearing_sound is False
+
+
+def test_a_channel_with_sound_on_it_is_hearing_something() -> None:
+    reporter = SoundActivityReporter(_recording_display([]), "mic")
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))
+
+    assert reporter.hearing_sound is True
+
+
+def test_the_channel_is_still_heard_through_a_gap_between_words() -> None:
+    clock = iter([0.0, 0.2]).__next__
+    reporter = SoundActivityReporter(
+        _recording_display([]), "mic", release=0.35, clock=clock
+    )
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))  # t=0.0, sound
+
+    assert reporter.hearing_sound is True  # t=0.2, inside the release
+
+
+def test_a_release_that_expired_between_blocks_reads_quiet() -> None:
+    """The read is recomputed, not taken from the last block's verdict.
+
+    No audio arrives while a timer is deciding whether to wait longer, so a
+    read that trusted the last transition would report a speaker as still
+    talking for as long as the channel stayed quiet enough to stop reporting.
+    """
+    clock = iter([0.0, 0.5]).__next__
+    reporter = SoundActivityReporter(
+        _recording_display([]), "mic", release=0.35, clock=clock
+    )
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))  # t=0.0, sound
+
+    assert reporter.active is True  # what the last block reported
+    assert reporter.hearing_sound is False  # t=0.5, the release has run out
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

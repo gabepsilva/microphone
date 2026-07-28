@@ -16,6 +16,13 @@ from .presentation import TranscriptSink
 
 
 class ConversationListener(TranscriptEventListener):
+    # A deadline reached while its speaker is still audible is pushed back by
+    # this much rather than by another whole window: the transcription that
+    # will cancel it properly is about half a second behind the speech, so the
+    # grace only has to outlast that, and a speaker who really has stopped is
+    # answered a grace late instead of a window late.
+    EXTENSION_GRACE = 0.5
+
     def __init__(  # noqa: PLR0913 - pre-existing: audio adapter wiring
         self,
         confidence_threshold,
@@ -26,6 +33,7 @@ class ConversationListener(TranscriptEventListener):
         on_speech=None,
         countdown=None,
         prefire=None,
+        presence=None,
     ):
         self.confidence_threshold = confidence_threshold
         self.turn_silence = turn_silence
@@ -39,12 +47,16 @@ class ConversationListener(TranscriptEventListener):
         # is what ``--no-codex-prefire`` asks for and what the tests compare
         # every pre-fired path against.
         self.prefire = prefire
+        # Optional so a channel with no level tap behind it — and every test
+        # that predates one — waits the window out exactly as before.
+        self.presence = presence
         self.lock = threading.Lock()
         self.pending = []
         self.timer = None
         self.prefire_timer = None
         self.prefired = False
         self.timer_generation = 0
+        self.extensions = 0
         self.speech_callback_triggered = False
         self.muted = False
 
@@ -79,6 +91,7 @@ class ConversationListener(TranscriptEventListener):
             if muted:
                 self.pending.clear()
                 self._stop_timers()
+                self.extensions = 0
         if muted:
             self._drop_prefire()
             self._stop_counting()
@@ -96,15 +109,30 @@ class ConversationListener(TranscriptEventListener):
             ).strip()
         return line.text.strip()
 
-    def _flush(self, generation):
+    def _flush(self, generation, extendable=True):
+        text = ""
         with self.lock:
             if generation != self.timer_generation:
                 return
-            text = " ".join(self.pending).strip()
-            self.pending.clear()
-            self.timer = None
+            extended = extendable and self._extending()
+            if extended:
+                self.extensions += 1
+                # Re-armed while the lock is still held, so the turn is never
+                # momentarily left with no deadline on it at all.
+                self._start_timer(self.EXTENSION_GRACE, speculate=False)
+            else:
+                text = " ".join(self.pending).strip()
+                self.pending.clear()
+                self.timer = None
             prefired = self.prefired
             self.prefired = False
+        if extended:
+            # The speaker is still going, so a speculative answer to what they
+            # had said by now would be answering half a sentence. The countdown
+            # was re-armed above, which is what puts the wait back on screen.
+            if prefired and self.prefire is not None:
+                self.prefire.cancel(self.speaker)
+            return
         self._stop_counting()
         if not text:
             return
@@ -141,14 +169,44 @@ class ConversationListener(TranscriptEventListener):
         delay = self.prefire.delay(window)
         return delay if 0 < delay < window else None
 
-    def _start_timer(self):
-        window = self.turn_silence.seconds
+    def _extension_budget(self) -> int:
+        """How many graces one turn may be held open for.
+
+        Bounded by the window itself, so however noisy a room is, a turn waits
+        at most twice the silence it was configured with before it is sent. A
+        level tap cannot tell speech from a fan, and without a ceiling a room
+        loud enough to hold the tap open would never submit anything at all.
+        """
+        return max(1, int(self.turn_silence.seconds / self.EXTENSION_GRACE))
+
+    def _extending(self) -> bool:
+        """Whether this deadline should be pushed back rather than fired.
+
+        Caller holds the lock. An empty buffer is never extended: there is no
+        turn to protect, and holding one open would keep a speaker on the
+        countdown for sound that is never going to become words.
+        """
+        return (
+            self.presence is not None
+            and bool(self.pending)
+            and self.extensions < self._extension_budget()
+            and self.presence.speaking()
+        )
+
+    def _start_timer(self, window=None, speculate=True):
+        """Arm the deadline, and the speculative turn that runs ahead of it.
+
+        ``window`` is given only for an extension, which runs on a grace
+        rather than the configured wait, and which does not speculate: the
+        reason it was extended is that the speaker is probably mid-sentence.
+        """
+        window = self.turn_silence.seconds if window is None else window
         self._stop_timers()
         generation = self.timer_generation
         self.timer = threading.Timer(window, self._flush, args=(generation,))
         self.timer.daemon = True
         self.timer.start()
-        delay = self._prefire_delay(window)
+        delay = self._prefire_delay(window) if speculate else None
         if delay is not None:
             self.prefire_timer = threading.Timer(
                 delay, self._speculate, args=(generation,)
@@ -156,11 +214,14 @@ class ConversationListener(TranscriptEventListener):
             self.prefire_timer.daemon = True
             self.prefire_timer.start()
         if self.countdown is not None:
-            self.countdown.started(self.speaker)
+            self.countdown.started(self.speaker, window)
 
     def _cancel_timer(self):
         with self.lock:
             self._stop_timers()
+            # Transcription has caught up with the speech the tap heard, so
+            # whatever the extensions were spent on has been paid for.
+            self.extensions = 0
         self._drop_prefire()
         self._stop_counting()
 
@@ -172,11 +233,15 @@ class ConversationListener(TranscriptEventListener):
         been overtaken: whatever this listener has buffered is context for the
         reply being built now, and holding it until this speaker's own timer
         fires would deliver it one request too late.
+
+        For the same reason this never extends. Holding the buffer back
+        because its speaker is still audible is exactly what the caller has
+        already decided not to wait for.
         """
         with self.lock:
             self._stop_timers()
             generation = self.timer_generation
-        self._flush(generation)
+        self._flush(generation, extendable=False)
 
     def on_line_started(self, event):  # noqa: ARG002 - Textual/Codex callback signature is fixed
         # Speech has resumed. Keep all completed lines buffered and wait for
@@ -209,6 +274,9 @@ class ConversationListener(TranscriptEventListener):
                 self.pending.append(text)
                 self.presentation.commit(self.speaker, text)
             if self.pending:
+                # A completed line is a fresh window, so the budget it may be
+                # held open on starts over with it.
+                self.extensions = 0
                 self._start_timer()
 
     def close(self):
@@ -268,13 +336,14 @@ class TranscriptSubmitter:
         """Register a channel whose buffer may be swept into a reply's context."""
         self.listeners.append(listener)
 
-    def channel(
+    def channel(  # noqa: PLR0913 - audio adapter wiring, as the listener itself
         self,
         confidence_threshold,
         turn_silence,
         speaker,
         presentation,
         countdown=None,
+        presence=None,
     ):
         """Build a listener for a speaker and register it in one step.
 
@@ -292,6 +361,7 @@ class TranscriptSubmitter:
             on_speech=self.handle_speech,
             countdown=countdown,
             prefire=self._prefire_channel(),
+            presence=presence,
         )
         self.add_listener(listener)
         return listener
