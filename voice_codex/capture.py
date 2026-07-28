@@ -94,6 +94,25 @@ class SoundActivityReporter:
         return self.clock() < self.loud_until
 
 
+# Moonshine hands back every line the stream has ever produced on every
+# transcription update, and by default each one carries its audio. Parsing
+# that means rebuilding one Python float per sample, for the whole session,
+# four times per second of audio — 215ms per update at 52 lines, against 3ms
+# for the recognition itself, and all of it holding the GIL while the
+# interface is trying to repaint. Nothing here reads ``line.audio_data``, so
+# the whole cost is waste, and turning it off keeps a long session as cheap
+# as a fresh one.
+TRANSCRIBER_OPTIONS = {"return_audio_data": "false"}
+
+
+def transcriber_options(options=None):
+    """Merge caller options over the defaults every channel shares."""
+    merged = dict(TRANSCRIBER_OPTIONS)
+    if options:
+        merged.update(options)
+    return merged
+
+
 def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwargs):
     """Create microphone capture only when the audio runtime is starting."""
     from moonshine_voice import MicTranscriber
@@ -112,6 +131,7 @@ def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwar
 
             return super()._open_input_stream(samplerate, metered_callback)
 
+    kwargs["options"] = transcriber_options(kwargs.get("options"))
     return MeteredMicTranscriber(*args, level_reporter=level_reporter, **kwargs)
 
 
@@ -189,7 +209,9 @@ class PulseMonitorTranscriber:
     ):
         if shutil.which("parec") is None:
             raise RuntimeError("parec is required to capture an audio-output monitor.")
-        self.transcriber = Transcriber(model_path, model_arch)
+        self.transcriber = Transcriber(
+            model_path, model_arch, options=transcriber_options()
+        )
         self.stream = self.transcriber.create_stream(capture.update_interval)
         self.monitor = monitor
         self.capture = capture

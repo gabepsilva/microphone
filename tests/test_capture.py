@@ -10,7 +10,9 @@ import queue
 import shutil
 import struct
 import subprocess
+import sys
 import threading
+import types
 
 import numpy as np
 import pytest
@@ -22,7 +24,9 @@ from voice_codex.capture import (
     audio_level,
     decode_pcm,
     drain_audio_queue,
+    metered_mic_transcriber,
     parec_command,
+    transcriber_options,
 )
 
 WAIT_SECONDS = 10
@@ -63,9 +67,10 @@ class FakeStream:
 
 
 class FakeTranscriber:
-    def __init__(self, model_path, model_arch):
+    def __init__(self, model_path, model_arch, options=None):
         self.model_path = model_path
         self.model_arch = model_arch
+        self.options = options
         self.stream = FakeStream()
         self.closed = False
         self.update_interval = None
@@ -348,6 +353,46 @@ def test_capture_requires_parec(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="parec is required"):
         PulseMonitorTranscriber("model", "arch", "sink.monitor")
+
+
+def test_monitor_capture_leaves_line_audio_in_the_recognizer(capture) -> None:
+    """Every update re-parses the whole transcript, so lines must stay cheap.
+
+    Moonshine returns each line's audio as one Python float per sample on
+    every update, for every line the session has produced. Nothing reads it,
+    and parsing it is what made a long session cost more than a fresh one.
+    """
+    monitor = capture()
+
+    assert monitor.transcriber.options["return_audio_data"] == "false"
+
+
+def test_capture_options_extend_the_shared_defaults() -> None:
+    """A channel that needs its own option keeps the shared ones too."""
+    assert transcriber_options({"spelling_model_path": "/models/spelling.ort"}) == {
+        "return_audio_data": "false",
+        "spelling_model_path": "/models/spelling.ort",
+    }
+
+
+def test_microphone_capture_leaves_line_audio_in_the_recognizer(monkeypatch) -> None:
+    """The microphone channel carries the same cost, and the same fix."""
+    recorded = {}
+
+    class FakeMicTranscriber:
+        def __init__(self, **kwargs):
+            recorded.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "moonshine_voice",
+        types.SimpleNamespace(MicTranscriber=FakeMicTranscriber),
+    )
+
+    reporter = SoundActivityReporter(display=None, channel="mic")
+    metered_mic_transcriber(model_path="model", level_reporter=reporter)
+
+    assert recorded["options"]["return_audio_data"] == "false"
 
 
 def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
