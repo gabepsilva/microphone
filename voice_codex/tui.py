@@ -33,11 +33,14 @@ os.environ.pop("TEXTUAL_DISABLE_KITTY_KEY", None)
 from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
+from textual import events
 from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.message import Message
+from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Checkbox, Input, Select, Static
 
 from .domain import (
@@ -309,6 +312,47 @@ class EntryRow(Vertical):
         """
         for body in self.query(".entry-body").results(Static):
             body.update(render_entry_body(self.entry))
+
+
+class Transcript(VerticalScroll):
+    """The transcript's scroll region, which reports scrolling by hand.
+
+    Only a window of the history is mounted, so the app has to know when the
+    view is being moved deliberately: reading back is what pages older rows
+    in, and arriving at the bottom is what returns the view to the live end.
+
+    What it listens to is the hand — the wheel, and the scrollbar's own drag
+    and click messages — never the scroll position. The app moves the view
+    itself constantly to follow new output, and mounting or dropping rows
+    moves it again a frame later as the layout settles. Watching the position
+    cannot tell any of that from a reader scrolling, and answering the app's
+    own scrolling with a page-in would have the interface chasing itself.
+    """
+
+    class ScrolledBack(Message):
+        """The view was moved by hand towards older entries."""
+
+    class ScrolledForward(Message):
+        """The view was moved by hand towards newer entries."""
+
+    def on_mouse_scroll_up(self, _event: events.MouseScrollUp) -> None:
+        self.post_message(self.ScrolledBack())
+
+    def on_mouse_scroll_down(self, _event: events.MouseScrollDown) -> None:
+        self.post_message(self.ScrolledForward())
+
+    def on_scroll_up(self, _event: ScrollUp) -> None:
+        self.post_message(self.ScrolledBack())
+
+    def on_scroll_down(self, _event: ScrollDown) -> None:
+        self.post_message(self.ScrolledForward())
+
+    def on_scroll_to(self, event: ScrollTo) -> None:
+        """Report the scrollbar handle being dragged, which the wheel misses."""
+        if event.y is None:
+            return
+        moved = self.ScrolledBack if event.y < self.scroll_y else self.ScrolledForward
+        self.post_message(moved())
 
 
 class Sidebar(Vertical):
@@ -937,6 +981,14 @@ class VoiceCodexApp(App):
     # the save hook exports.
     MAX_MOUNTED_ROWS = 300
 
+    # Scrolling back mounts older entries a page at a time, and gives the far
+    # end of the window back once the mounted run reaches its ceiling. History
+    # is therefore reachable however long the session runs, at a layout cost
+    # that stays bounded — the ceiling is what is spent to buy the scrollback,
+    # and it only applies while the view is held back off the live end.
+    SCROLLBACK_PAGE_ROWS = 100
+    MAX_SCROLLBACK_ROWS = 600
+
     # Codex streams faster than a terminal can usefully redraw. Deltas land on
     # the entry immediately and the row is repainted on this interval instead
     # of once per token, which bounds the repaints a long answer costs without
@@ -958,6 +1010,13 @@ class VoiceCodexApp(App):
         self._command_row: EntryRow | None = None
         # Rows whose entry has changed since the last repaint, oldest first.
         self._dirty: list[EntryRow] = []
+        # Which slice of ``entries`` is mounted, and whether the view is
+        # following the live end. While it is, ``_window_end`` is the length
+        # of the record; while it is not, new entries land in the record and
+        # wait there, and the window moves only where the reader takes it.
+        self._window: list[EntryRow] = []
+        self._window_start = 0
+        self._tailing = True
 
     # -- layout ------------------------------------------------------------
 
@@ -965,7 +1024,7 @@ class VoiceCodexApp(App):
         with Horizontal(id="body"):
             with Vertical(id="left"):
                 yield Static("TRANSCRIPT", id="transcript-label")
-                yield VerticalScroll(id="transcript")
+                yield Transcript(id="transcript")
                 yield Static(id="partial")
                 with Horizontal(id="promptbar"):
                     yield Static(
@@ -1087,32 +1146,164 @@ class VoiceCodexApp(App):
         entry.stamp = entry.stamp or self._stamp()
         self.entries.append(entry)
         row = EntryRow(entry)
-        transcript = self.query_one("#transcript", VerticalScroll)
+        if not self._tailing:
+            # The view is held back in history. The entry is in the record and
+            # will be mounted when the view returns to the live end; mounting
+            # it now would grow the content under what is being read.
+            return row
+        transcript = self.query_one("#transcript", Transcript)
         transcript.mount(row)
-        self._trim_rows(transcript)
+        self._window.append(row)
+        self._trim_rows()
         transcript.scroll_end(animate=False)
         return row
 
-    def _trim_rows(self, transcript: VerticalScroll) -> None:
+    @property
+    def _window_end(self) -> int:
+        """One past the newest entry the window holds."""
+        return self._window_start + len(self._window)
+
+    def _held_open_by(self, row: EntryRow) -> bool:
+        """Is this row still being written to?
+
+        The open Codex message and the running command are re-rendered in place
+        as their output arrives. Unmounting either would leave a stream writing
+        to a row nobody can see.
+        """
+        return row is self._streaming or row is self._command_row
+
+    def _trim_rows(self) -> None:
         """Unmount the oldest rows once the transcript outgrows its window.
 
-        Scrollback is what this spends: entries past the window can no longer
-        be scrolled back to on screen. Nothing is lost from the record — the
-        entries themselves are all still held, and saving still writes every
-        one of them.
+        Only widgets are dropped. Every entry stays in ``self.entries``, saving
+        still writes all of them, and scrolling back mounts them again — the
+        window is where the history is shown, not where it is kept.
 
-        A row that is still being written to is never unmounted, however old
-        it is. The open Codex message and the running command are re-rendered
-        in place as their output arrives, and removing either would leave the
-        stream writing to a row nobody can see.
+        A row still being written to is never unmounted, and neither is anything
+        newer than it, because the mounted rows have to stay one unbroken run of
+        entries for scrolling to extend them at either end. So an open Codex
+        message holds the window open past its size until it closes, and the
+        next trim collects what it held.
         """
-        rows = list(transcript.query(EntryRow))
-        for row in rows[: len(rows) - self.MAX_MOUNTED_ROWS]:
-            if row is self._streaming or row is self._command_row:
-                continue
-            if row in self._dirty:
-                self._dirty.remove(row)
+        while len(self._window) > self.MAX_MOUNTED_ROWS:
+            if self._held_open_by(self._window[0]):
+                return
+            self._window.pop(0).remove()
+            self._window_start += 1
+
+    # -- scrollback --------------------------------------------------------
+
+    def on_transcript_scrolled_back(self, _: Transcript.ScrolledBack) -> None:
+        """Stop following the live end, and page older entries in at the top."""
+        self._tailing = False
+        self.call_after_refresh(self._page_in_older)
+
+    def on_transcript_scrolled_forward(self, _: Transcript.ScrolledForward) -> None:
+        self.call_after_refresh(self._page_in_newer)
+
+    async def _page_in_older(self) -> None:
+        """Mount the previous page of entries once the view nears the top.
+
+        Mounting above the view would push what is being read down the screen,
+        so the row at the top is noted first and scrolled back under the eye
+        afterwards. Anchoring to that row rather than to a height keeps it exact
+        however tall the rows mounted above it turn out to be.
+        """
+        transcript = self.query_one("#transcript", Transcript)
+        if self._window_start == 0 or not self._near_top(transcript):
+            return
+        anchor = self._top_row(transcript)
+        start = max(0, self._window_start - self.SCROLLBACK_PAGE_ROWS)
+        rows = [
+            self._row_for(entry) for entry in self.entries[start : self._window_start]
+        ]
+        await transcript.mount_all(rows, before=0)
+        self._window[:0] = rows
+        self._window_start = start
+        self.call_after_refresh(self._hold_view, transcript, anchor)
+
+    async def _page_in_newer(self) -> None:
+        """Arriving at the bottom means the live end, however far back it is.
+
+        Not the next page down: walking forward a page at a time would take as
+        many turns of the wheel as the reader spent coming up, and would leave
+        them at the bottom of a window that is not the bottom of the session
+        with nothing to say so.
+        """
+        transcript = self.query_one("#transcript", Transcript)
+        if not transcript.is_vertical_scroll_end:
+            return
+        if self._window_end < len(self.entries):
+            await self._move_window_to_live_end(transcript)
+        self._tailing = True
+        self._trim_rows()
+        transcript.scroll_end(animate=False)
+
+    async def _move_window_to_live_end(self, transcript: Transcript) -> None:
+        """Put the window back over the newest entries, wherever it had gone.
+
+        What overlaps the window it already had is kept mounted rather than
+        mounted again, and the window is stretched back over any row still
+        being written to, so nothing open is ever dropped from under a stream.
+        """
+        start = max(0, len(self.entries) - self.MAX_MOUNTED_ROWS)
+        open_rows = [
+            index for index, row in enumerate(self._window) if self._held_open_by(row)
+        ]
+        if open_rows:
+            start = min(start, self._window_start + open_rows[0])
+        stale = max(0, start - self._window_start)
+        for row in self._window[:stale]:
             row.remove()
+        del self._window[:stale]
+        self._window_start = max(start, self._window_start)
+        arrived = [self._row_for(entry) for entry in self.entries[self._window_end :]]
+        self._window.extend(arrived)
+        await transcript.mount_all(arrived)
+
+    def _hold_view(self, transcript: Transcript, anchor: EntryRow | None) -> None:
+        """Put the row that was at the top back at the top."""
+        if anchor is not None and anchor.is_mounted:
+            transcript.scroll_to_widget(anchor, top=True, animate=False)
+        self._drop_newest_overflow()
+
+    def _near_top(self, transcript: Transcript) -> bool:
+        """Is the view close enough to the top to want the page above it?
+
+        A screen ahead of the edge, so the rows are already mounted by the time
+        the scrolling that asked for them arrives there.
+        """
+        return transcript.scroll_offset.y <= transcript.size.height
+
+    def _top_row(self, transcript: Transcript) -> EntryRow | None:
+        top = transcript.content_region.y
+        for row in self._window:
+            if row.region.bottom > top:
+                return row
+        return None
+
+    def _row_for(self, entry: Entry) -> EntryRow:
+        """The row for an entry: the one being written to, or a fresh one.
+
+        A row created while the view was held back was never mounted, and the
+        stream is still writing to it. Mounting that row rather than a second
+        one for the same entry is what makes the writing appear when the entry
+        finally comes into view.
+        """
+        for row in (self._streaming, self._command_row):
+            if row is not None and row.entry is entry:
+                return row
+        return EntryRow(entry)
+
+    def _drop_newest_overflow(self) -> None:
+        """Give the far end of the window back after paging older rows in.
+
+        The rows dropped are below the view, so nothing on screen moves.
+        """
+        while len(self._window) > self.MAX_SCROLLBACK_ROWS:
+            if self._held_open_by(self._window[-1]):
+                return
+            self._window.pop().remove()
 
     def mark_dirty(self, row: EntryRow) -> None:
         """Note that a row needs repainting at the next flush."""
@@ -1130,8 +1321,12 @@ class VoiceCodexApp(App):
         for row in self._dirty:
             row.sync()
         self._dirty.clear()
+        if not self._tailing:
+            # Reading history. A row growing at the live end must not drag the
+            # view off what is being read.
+            return
         with suppress(NoMatches):
-            self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+            self.query_one("#transcript", Transcript).scroll_end(animate=False)
 
     def _selected_transcript_entries(self) -> list[Entry]:
         selections = self.screen.selections
