@@ -25,6 +25,7 @@ class ConversationListener(TranscriptEventListener):
         presentation: TranscriptSink,
         on_speech=None,
         countdown=None,
+        prefire=None,
     ):
         self.confidence_threshold = confidence_threshold
         self.turn_silence = turn_silence
@@ -34,9 +35,15 @@ class ConversationListener(TranscriptEventListener):
         self.on_speech = on_speech
         # Optional so a listener can run without a display attached to it.
         self.countdown = countdown
+        # Optional so a session can wait out the whole window instead, which
+        # is what ``--no-codex-prefire`` asks for and what the tests compare
+        # every pre-fired path against.
+        self.prefire = prefire
         self.lock = threading.Lock()
         self.pending = []
         self.timer = None
+        self.prefire_timer = None
+        self.prefired = False
         self.timer_generation = 0
         self.speech_callback_triggered = False
         self.muted = False
@@ -46,17 +53,34 @@ class ConversationListener(TranscriptEventListener):
         if self.countdown is not None:
             self.countdown.cleared(self.speaker)
 
+    def _stop_timers(self):
+        """Cancel both timers and retire their generation. Caller holds the lock."""
+        self.timer_generation += 1
+        for timer in (self.timer, self.prefire_timer):
+            if timer is not None:
+                timer.cancel()
+        self.timer = None
+        self.prefire_timer = None
+
+    def _drop_prefire(self):
+        """Abandon a speculative turn this listener started. Lock not held."""
+        if self.prefire is None:
+            return
+        with self.lock:
+            outstanding = self.prefired
+            self.prefired = False
+        if outstanding:
+            self.prefire.cancel(self.speaker)
+
     def set_muted(self, muted):
         """Stop submitting microphone speech while preserving the listener."""
         with self.lock:
             self.muted = muted
             if muted:
-                self.timer_generation += 1
                 self.pending.clear()
-                if self.timer is not None:
-                    self.timer.cancel()
-                    self.timer = None
+                self._stop_timers()
         if muted:
+            self._drop_prefire()
             self._stop_counting()
 
     def _is_muted(self):
@@ -79,31 +103,65 @@ class ConversationListener(TranscriptEventListener):
             text = " ".join(self.pending).strip()
             self.pending.clear()
             self.timer = None
+            prefired = self.prefired
+            self.prefired = False
         self._stop_counting()
-        if text:
-            self.presentation.finish_turn(self.speaker)
-            self.submit(self.speaker, text)
+        if not text:
+            return
+        self.presentation.finish_turn(self.speaker)
+        # A speculative turn that survived to here was right: the window
+        # closed without the speaker resuming, so it is the reply. Submitting
+        # again would answer the same words twice.
+        if prefired and self.prefire is not None and self.prefire.commit(self.speaker):
+            return
+        self.submit(self.speaker, text)
+
+    def _speculate(self, generation):
+        """Start answering before the window closes, if it is still this turn."""
+        with self.lock:
+            if generation != self.timer_generation:
+                return
+            self.prefire_timer = None
+            text = " ".join(self.pending).strip()
+            if not text or self.prefired:
+                return
+            self.prefired = True
+        if self.prefire is None or not self.prefire.start(self.speaker, text):
+            with self.lock:
+                self.prefired = False
+
+    def _prefire_delay(self, window):
+        """Seconds to wait before guessing this turn is over, or None to wait.
+
+        A guess that would land at or after the deadline is not a guess; it is
+        a slower way of doing what the deadline already does.
+        """
+        if self.prefire is None:
+            return None
+        delay = self.prefire.delay(window)
+        return delay if 0 < delay < window else None
 
     def _start_timer(self):
-        if self.timer is not None:
-            self.timer.cancel()
-        self.timer_generation += 1
-        self.timer = threading.Timer(
-            self.turn_silence.seconds,
-            self._flush,
-            args=(self.timer_generation,),
-        )
+        window = self.turn_silence.seconds
+        self._stop_timers()
+        generation = self.timer_generation
+        self.timer = threading.Timer(window, self._flush, args=(generation,))
         self.timer.daemon = True
         self.timer.start()
+        delay = self._prefire_delay(window)
+        if delay is not None:
+            self.prefire_timer = threading.Timer(
+                delay, self._speculate, args=(generation,)
+            )
+            self.prefire_timer.daemon = True
+            self.prefire_timer.start()
         if self.countdown is not None:
             self.countdown.started(self.speaker)
 
     def _cancel_timer(self):
         with self.lock:
-            self.timer_generation += 1
-            if self.timer is not None:
-                self.timer.cancel()
-                self.timer = None
+            self._stop_timers()
+        self._drop_prefire()
         self._stop_counting()
 
     def flush_now(self):
@@ -116,10 +174,7 @@ class ConversationListener(TranscriptEventListener):
         fires would deliver it one request too late.
         """
         with self.lock:
-            self.timer_generation += 1
-            if self.timer is not None:
-                self.timer.cancel()
-                self.timer = None
+            self._stop_timers()
             generation = self.timer_generation
         self._flush(generation)
 
@@ -158,12 +213,35 @@ class ConversationListener(TranscriptEventListener):
 
     def close(self):
         with self.lock:
-            self.timer_generation += 1
-            if self.timer is not None:
-                self.timer.cancel()
-                self.timer = None
+            self._stop_timers()
+        self._drop_prefire()
         self._stop_counting()
         self.presentation.close_speaker(self.speaker)
+
+
+class PrefireChannel:
+    """The four moments a speculative turn has, as one listener sees them.
+
+    A listener knows when a turn is probably over, when it turned out to be
+    over, and when it turned out not to be. It does not know about echo
+    gating, response policy, or Codex threads. This is the seam between the
+    two: schedule on one side, consequences on the other.
+    """
+
+    def __init__(self, submitter):
+        self.submitter = submitter
+
+    def delay(self, window):
+        return self.submitter.prefire_plan.delay(window)
+
+    def start(self, speaker, text) -> bool:
+        return self.submitter.prefire(speaker, text)
+
+    def commit(self, speaker) -> bool:
+        return self.submitter.commit_prefire(speaker)
+
+    def cancel(self, speaker) -> bool:
+        return self.submitter.cancel_prefire(speaker)
 
 
 class TranscriptSubmitter:
@@ -176,11 +254,14 @@ class TranscriptSubmitter:
 
     ECHO_PRONE_SPEAKERS = ("User Voice", "Them")
 
-    def __init__(self, conversation, gate, tts, stream=sys.stderr):
+    def __init__(self, conversation, gate, tts, stream=sys.stderr, prefire_plan=None):
         self.conversation = conversation
         self.gate = gate
         self.tts = tts
         self.stream = stream
+        # Absent when the session waits out every window in full, which is
+        # what ``--no-codex-prefire`` selects.
+        self.prefire_plan = prefire_plan
         self.listeners = []
 
     def add_listener(self, listener):
@@ -188,7 +269,12 @@ class TranscriptSubmitter:
         self.listeners.append(listener)
 
     def channel(
-        self, confidence_threshold, turn_silence, speaker, presentation, countdown=None
+        self,
+        confidence_threshold,
+        turn_silence,
+        speaker,
+        presentation,
+        countdown=None,
     ):
         """Build a listener for a speaker and register it in one step.
 
@@ -205,9 +291,40 @@ class TranscriptSubmitter:
             presentation,
             on_speech=self.handle_speech,
             countdown=countdown,
+            prefire=self._prefire_channel(),
         )
         self.add_listener(listener)
         return listener
+
+    def _prefire_channel(self):
+        return None if self.prefire_plan is None else PrefireChannel(self)
+
+    def _is_echo(self, speaker, text) -> bool:
+        """Report whether a transcript is Codex hearing itself speak."""
+        return (
+            self.tts is not None
+            and speaker in self.ECHO_PRONE_SPEAKERS
+            and self.tts.is_likely_echo(text)
+        )
+
+    def prefire(self, speaker, text) -> bool:
+        """Start answering a turn the silence window has not yet confirmed.
+
+        The same two gates a real submission passes apply here. A speculative
+        turn answering the assistant's own echo, or answering a speaker the
+        policy stays silent for, would be a turn nobody could have wanted —
+        and unlike a late reply, nothing downstream would catch it.
+        """
+        if not self.gate.should_respond(speaker) or self._is_echo(speaker, text):
+            return False
+        self._sweep_context(speaker)
+        return self.conversation.prefire(speaker, text)
+
+    def commit_prefire(self, speaker) -> bool:
+        return self.conversation.commit_prefire(speaker)
+
+    def cancel_prefire(self, speaker) -> bool:
+        return self.conversation.cancel_prefire(speaker)
 
     def _sweep_context(self, replying_to):
         """Flush the channels that only supply context, so this reply carries it.
@@ -224,11 +341,7 @@ class TranscriptSubmitter:
                 listener.flush_now()
 
     def submit(self, speaker, text):
-        if (
-            self.tts is not None
-            and speaker in self.ECHO_PRONE_SPEAKERS
-            and self.tts.is_likely_echo(text)
-        ):
+        if self._is_echo(speaker, text):
             print(
                 f"[ignored likely Codex TTS echo from {speaker}: {text}]",
                 file=self.stream,

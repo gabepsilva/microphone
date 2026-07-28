@@ -3,13 +3,16 @@ from __future__ import annotations
 import pytest
 
 from voice_codex.domain import (
+    CodexRequest,
     EchoMatcher,
     EchoMemory,
+    PrefirePlan,
     SentenceChunker,
     SpeakerGate,
     SpeechActivity,
     TranscriptRouter,
     TurnGate,
+    TurnLatencyEstimator,
     TurnSilence,
     TurnSilenceClock,
     parse_turn_silence,
@@ -703,3 +706,233 @@ def test_context_within_the_bound_is_carried_whole() -> None:
 
     assert request is not None
     assert [entry.text for entry in request.entries] == ["first", "second", "third"]
+
+
+# --------------------------------------------------------------------------
+# Speaking before the sentence ends
+# --------------------------------------------------------------------------
+
+
+def test_the_opening_clause_is_spoken_without_waiting_for_the_sentence() -> None:
+    """The first chunk is the one a listener is waiting through silence for."""
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("That depends on whether you want it fast, but I can check.")
+
+    assert emitted == ["That depends on whether you want it fast,"]
+
+
+def test_only_the_opening_chunk_breaks_at_a_clause() -> None:
+    """Once speech is playing a fragment costs prosody and buys nothing."""
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("Yes it is working correctly. ")
+    chunker.feed("The second one is much longer, and it keeps going.")
+
+    assert emitted == ["Yes it is working correctly."]
+    assert chunker.buffer == "The second one is much longer, and it keeps going."
+
+
+def test_a_clause_shorter_than_the_minimum_is_not_spoken_alone() -> None:
+    """ "Sure," on its own is a worse start than the wait it saves."""
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("Sure, ")
+
+    assert emitted == []
+
+
+def test_an_early_comma_is_passed_over_rather_than_ending_the_chunk() -> None:
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("Yes, that is the one you asked about, and here is why.")
+
+    assert emitted == ["Yes, that is the one you asked about,"]
+
+
+def test_clause_breaking_can_be_turned_off_entirely() -> None:
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append, first_clause_min_chars=None)
+
+    chunker.feed("That depends on whether you want it fast, but I can check.")
+
+    assert emitted == []
+
+
+def test_a_sentence_break_beats_a_clause_break_in_the_same_feed() -> None:
+    """Both rules can match at once; the sentence is the better chunk."""
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("It works, and it is fast. And there is more to say here.")
+
+    assert emitted == ["It works, and it is fast."]
+
+
+# --------------------------------------------------------------------------
+# Learning how long Codex takes to speak
+# --------------------------------------------------------------------------
+
+
+def test_the_estimator_starts_at_its_seed() -> None:
+    assert TurnLatencyEstimator(seed=0.9).estimate == pytest.approx(0.9)
+
+
+def test_one_sample_moves_the_estimate_part_of_the_way() -> None:
+    """A moving average, not a replacement: one slow turn must not relocate it."""
+    estimator = TurnLatencyEstimator(seed=1.0, smoothing=0.25)
+
+    estimator.record(0.0)
+
+    assert estimator.estimate == pytest.approx(0.75)
+
+
+def test_repeated_samples_converge_on_what_codex_is_actually_doing() -> None:
+    estimator = TurnLatencyEstimator(seed=2.0, smoothing=0.5)
+
+    for _ in range(20):
+        estimator.record(0.6)
+
+    assert estimator.estimate == pytest.approx(0.6, abs=1e-3)
+
+
+def test_a_slower_sample_raises_the_estimate() -> None:
+    estimator = TurnLatencyEstimator(seed=0.5, smoothing=0.5)
+
+    estimator.record(1.5)
+
+    assert estimator.estimate == pytest.approx(1.0)
+
+
+# --------------------------------------------------------------------------
+# When to guess that a turn is over
+# --------------------------------------------------------------------------
+
+
+def test_the_guess_is_timed_so_the_reply_lands_as_the_window_closes() -> None:
+    plan = PrefirePlan(TurnLatencyEstimator(seed=0.6))
+
+    assert plan.delay(1.0) == pytest.approx(0.4)
+
+
+def test_a_slow_estimate_cannot_fire_the_moment_a_speaker_pauses() -> None:
+    """Capped by fraction, so the guess still waits out most of a long pause."""
+    plan = PrefirePlan(TurnLatencyEstimator(seed=10.0), max_lead_fraction=0.65)
+
+    assert plan.delay(1.0) == pytest.approx(0.35)
+
+
+def test_a_short_window_still_leaves_a_moment_to_interrupt() -> None:
+    plan = PrefirePlan(TurnLatencyEstimator(seed=10.0), minimum_delay=0.15)
+
+    assert plan.delay(0.25) == pytest.approx(0.15)
+
+
+def test_a_long_window_waits_out_all_of_it_but_the_estimate() -> None:
+    plan = PrefirePlan(TurnLatencyEstimator(seed=0.7))
+
+    assert plan.delay(30.0) == pytest.approx(29.3)
+
+
+def test_the_delay_tracks_the_estimator_as_it_learns() -> None:
+    estimator = TurnLatencyEstimator(seed=1.0, smoothing=1.0)
+    plan = PrefirePlan(estimator)
+
+    before = plan.delay(2.0)
+    estimator.record(0.4)
+
+    assert before == pytest.approx(1.0)
+    assert plan.delay(2.0) == pytest.approx(1.6)
+
+
+# --------------------------------------------------------------------------
+# Speculating on a turn that is not yet over
+# --------------------------------------------------------------------------
+
+
+def test_speculating_leaves_the_context_it_carried_pending() -> None:
+    """Abandoning a guess must cost nothing, so nothing is consumed to make it."""
+    router = TranscriptRouter()
+    router.ingest("Them", "context", "T1", False)
+
+    request = router.speculate("User Voice", "a question", "T2")
+
+    assert [entry.text for entry in request.entries] == ["context", "a question"]
+    assert [entry.text for entry in router.pending_context] == [
+        "context",
+        "a question",
+    ]
+
+
+def test_an_abandoned_speculation_is_carried_by_the_next_request() -> None:
+    router = TranscriptRouter()
+    router.speculate("User Voice", "half a sentence", "T1")
+
+    request = router.ingest("User Voice", "the whole sentence", "T2", True)
+
+    assert request is not None
+    assert [entry.text for entry in request.entries] == [
+        "half a sentence",
+        "the whole sentence",
+    ]
+
+
+def test_committing_consumes_only_what_the_request_carried() -> None:
+    """Context arriving mid-flight belongs to the next reply, not this one."""
+    router = TranscriptRouter()
+    request = router.speculate("User Voice", "a question", "T1")
+    router.ingest("Them", "arrived while answering", "T2", False)
+
+    router.commit(request)
+
+    assert [entry.text for entry in router.pending_context] == [
+        "arrived while answering"
+    ]
+
+
+def test_committing_survives_the_context_bound_trimming_the_front() -> None:
+    """The boundary is found by identity, so a moved prefix cannot mislead it."""
+    router = TranscriptRouter(max_pending_context=2)
+    request = router.speculate("User Voice", "a question", "T1")
+    router.ingest("Them", "later", "T2", False)
+    router.ingest("Them", "latest", "T3", False)
+
+    router.commit(request)
+
+    assert [entry.text for entry in router.pending_context] == ["later", "latest"]
+
+
+def test_committing_twice_does_not_consume_a_later_turn() -> None:
+    router = TranscriptRouter()
+    request = router.speculate("User Voice", "a question", "T1")
+    router.commit(request)
+    router.ingest("Them", "afterwards", "T2", False)
+
+    router.commit(request)
+
+    assert [entry.text for entry in router.pending_context] == ["afterwards"]
+
+
+def test_identical_text_does_not_confuse_the_commit_boundary() -> None:
+    """Entries compare equal by value; only the one actually sent may be dropped."""
+    router = TranscriptRouter()
+    request = router.speculate("Them", "yes", "T1")
+    router.ingest("Them", "yes", "T1", False)
+
+    router.commit(request)
+
+    assert len(router.pending_context) == 1
+
+
+def test_committing_a_request_that_carried_nothing_consumes_nothing() -> None:
+    """A reply built from no entries has no prefix to drop."""
+    router = TranscriptRouter()
+    router.ingest("Them", "context", "T1", False)
+
+    router.commit(CodexRequest("Them", ()))
+
+    assert [entry.text for entry in router.pending_context] == ["context"]
