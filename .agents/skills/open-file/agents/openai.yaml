@@ -1,0 +1,4 @@
+interface:
+  display_name: "Open File"
+  short_description: "Open a file on screen"
+  default_prompt: "Use $open-file to open a file on screen."

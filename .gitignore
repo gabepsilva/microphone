@@ -18,4 +18,6 @@ transcription/
 voice.yaml
 
 # Claude Code scratch worktrees — a second copy of the package, not source.
-.claude/
+# Skills are source: they link to the canonical copies under .agents/skills/.
+.claude/*
+!.claude/skills/
