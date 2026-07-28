@@ -11,6 +11,7 @@ Nothing here fakes ``main`` itself.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -450,3 +451,101 @@ def test_a_session_reopens_with_what_the_last_one_left(wiring, tmp_path) -> None
 
     assert args.turn_silence == 1.25
     assert args.codex_reasoning == "high"
+
+
+def test_a_single_instance_lock_is_acquired_once(monkeypatch, tmp_path) -> None:
+    """The process should only open and lock once."""
+    calls: list[tuple[int, int]] = []
+
+    class FakeLockFile:
+        def __init__(self):
+            self.closed = False
+
+        def fileno(self):
+            return 7
+
+        def close(self):
+            self.closed = True
+
+    lock_file = FakeLockFile()
+    monkeypatch.setattr(cli, "_INSTANCE_LOCK", None)
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda _path, *_args, **_kwargs: lock_file,
+    )
+    monkeypatch.setattr(cli.fcntl, "flock", lambda fd, mode: calls.append((fd, mode)))
+
+    cli.acquire_single_instance_lock(tmp_path / "voice.lock")
+    cli.acquire_single_instance_lock(tmp_path / "voice.lock")
+
+    assert calls == [(7, cli.fcntl.LOCK_EX | cli.fcntl.LOCK_NB)]
+    assert cli._INSTANCE_LOCK is lock_file
+
+
+def test_a_running_session_blocks_a_second_lock(monkeypatch, tmp_path) -> None:
+    """Contention should fail with a clear runtime error."""
+
+    class FakeLockFile:
+        def __init__(self):
+            self.closed = False
+
+        def fileno(self):
+            return 11
+
+        def close(self):
+            self.closed = True
+
+    lock_file = FakeLockFile()
+    monkeypatch.setattr(cli, "_INSTANCE_LOCK", None)
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda _path, *_args, **_kwargs: lock_file,
+    )
+
+    def blocked_lock(_fd, _mode):
+        raise BlockingIOError
+
+    monkeypatch.setattr(cli.fcntl, "flock", blocked_lock)
+
+    with pytest.raises(RuntimeError, match="already running"):
+        cli.acquire_single_instance_lock(tmp_path / "voice.lock")
+
+    assert lock_file.closed is True
+    assert cli._INSTANCE_LOCK is None
+
+
+def test_releasing_a_single_instance_lock_closes_the_file(monkeypatch) -> None:
+    closed: list[bool] = []
+
+    class FakeLockFile:
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(cli, "_INSTANCE_LOCK", FakeLockFile())
+
+    cli._release_single_instance_lock()
+
+    assert closed == [True]
+    assert cli._INSTANCE_LOCK is None
+
+
+def test_release_lock_is_a_noop_when_no_lock_is_held(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_INSTANCE_LOCK", None)
+    cli._release_single_instance_lock()
+    assert cli._INSTANCE_LOCK is None
+
+
+@pytest.mark.usefixtures("wiring")
+def test_a_save_config_failure_is_reported_via_parser_error(monkeypatch) -> None:
+    target = Path("/tmp/saved-config.yaml")
+    cli.sys.argv.extend(["--save-config", str(target)])
+    monkeypatch.setattr(
+        cli,
+        "save_startup_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cannot save")),
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()

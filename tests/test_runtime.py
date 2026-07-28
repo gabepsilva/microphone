@@ -62,13 +62,21 @@ def test_audio_outputs_parses_pactl_json(monkeypatch) -> None:
 
 def test_virtual_meeting_output_unloads_its_loopback_and_sink(monkeypatch) -> None:
     commands: list[list[str]] = []
+    next_module_id = 0
 
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pactl")
 
+    def load_id():
+        nonlocal next_module_id
+        next_module_id += 1
+        return next_module_id
+
     def run(command, **kwargs):  # noqa: ARG001 - fake mirrors subprocess.run signature
         commands.append(command)
+        if command[:4] == ["pactl", "--format=json", "list", "modules"]:
+            return SimpleNamespace(stdout="[]")
         if command[1] == "load-module":
-            return SimpleNamespace(stdout=str(len(commands)))
+            return SimpleNamespace(stdout=str(load_id()))
         return SimpleNamespace()
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -81,6 +89,57 @@ def test_virtual_meeting_output_unloads_its_loopback_and_sink(monkeypatch) -> No
         ["pactl", "unload-module", "2"],
         ["pactl", "unload-module", "1"],
     ]
+
+
+def test_virtual_meeting_output_cleans_stale_modules_before_creation(
+    monkeypatch,
+) -> None:
+    commands: list[list[str]] = []
+    module_listing = [
+        {
+            "index": 91,
+            "name": "module-null-sink",
+            "argument": "sink_name=voice_codex_meeting_111",
+        },
+        {
+            "index": 92,
+            "name": "module-loopback",
+            "argument": "source=voice_codex_meeting_111.monitor sink=alsa_output.pci",
+        },
+        {
+            "index": 93,
+            "name": "module-null-sink",
+            "argument": "sink_name=another_app_sink",
+        },
+    ]
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pactl")
+
+    def run(command, **kwargs):  # noqa: ARG001 - fake mirrors subprocess.run signature
+        commands.append(command)
+        if command[:4] == ["pactl", "--format=json", "list", "modules"]:
+            return SimpleNamespace(stdout=json.dumps(module_listing))
+        if command[1] == "load-module":
+            return SimpleNamespace(stdout=str(200 + len(commands)))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    meeting = VirtualMeetingOutput({"name": "headphones"})
+    meeting.close()
+
+    assert ["pactl", "unload-module", "91"] in commands
+    assert ["pactl", "unload-module", "92"] in commands
+    assert ["pactl", "unload-module", "93"] not in commands
+    first_load = next(
+        index for index, c in enumerate(commands) if c[1] == "load-module"
+    )
+    first_unload = next(
+        index
+        for index, c in enumerate(commands)
+        if c == ["pactl", "unload-module", "91"]
+    )
+    assert first_unload < first_load
 
 
 def test_sound_activity_reporter_names_the_channel_it_speaks_for() -> None:
