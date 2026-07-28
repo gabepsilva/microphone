@@ -58,6 +58,10 @@ ErrorNotification: Any
 ItemCompletedNotification: Any
 ItemStartedNotification: Any
 McpToolCallThreadItem: Any
+ReasoningSummary: Any
+ReasoningSummaryPartAddedNotification: Any
+ReasoningSummaryTextDeltaNotification: Any
+ReasoningThreadItem: Any
 ThreadTokenUsageUpdatedNotification: Any
 TurnCompletedNotification: Any
 
@@ -71,6 +75,8 @@ def load_codex_sdk() -> None:
     global CommandExecutionThreadItem, ErrorNotification
     global ItemCompletedNotification, ItemStartedNotification
     global McpToolCallThreadItem, ReasoningEffort
+    global ReasoningSummary, ReasoningSummaryPartAddedNotification
+    global ReasoningSummaryTextDeltaNotification, ReasoningThreadItem
     global ThreadTokenUsageUpdatedNotification, TurnCompletedNotification
 
     if _sdk_loaded:
@@ -86,6 +92,10 @@ def load_codex_sdk() -> None:
         ItemStartedNotification,
         McpToolCallThreadItem,
         ReasoningEffort,
+        ReasoningSummary,
+        ReasoningSummaryPartAddedNotification,
+        ReasoningSummaryTextDeltaNotification,
+        ReasoningThreadItem,
         ThreadTokenUsageUpdatedNotification,
         TurnCompletedNotification,
     )
@@ -145,10 +155,14 @@ def item_root(item):
 class CodexTurnRenderer:
     """Render one streamed Codex turn into the transcript and into speech.
 
-    Codex interleaves assistant text with command and tool activity. An open
-    assistant message is closed before any of that appears, and the sentence
-    chunker is flushed at the same point, so a spoken sentence never spans a
-    command boundary.
+    Codex interleaves assistant text with reasoning, command and tool
+    activity. An open assistant message is closed before any of that appears,
+    and the sentence chunker is flushed at the same point, so a spoken
+    sentence never spans a command boundary.
+
+    Reasoning is shown but never spoken, and never times a turn: it is a
+    summary of how the answer was reached, not the answer, and it starts
+    arriving well before the first word the listener hears.
     """
 
     def __init__(
@@ -182,6 +196,10 @@ class CodexTurnRenderer:
             self._delta(payload.delta)
         elif isinstance(payload, CommandExecutionOutputDeltaNotification):
             self.display.command_output(payload.delta)
+        elif isinstance(payload, ReasoningSummaryTextDeltaNotification):
+            self.display.reasoning_delta(payload.delta)
+        elif isinstance(payload, ReasoningSummaryPartAddedNotification):
+            self._summary_part(payload.summary_index)
         elif isinstance(payload, ItemCompletedNotification):
             self._item_completed(item_root(payload.item))
         elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
@@ -208,8 +226,20 @@ class CodexTurnRenderer:
         self.message_open = False
         self._flush_speech()
 
+    def _summary_part(self, summary_index):
+        """Separate one summary paragraph from the next.
+
+        The first part opens the section the item started, so only the ones
+        after it are breaks.
+        """
+        if summary_index:
+            self.display.reasoning_delta("\n\n")
+
     def _item_started(self, item):
-        if isinstance(item, AgentMessageThreadItem):
+        if isinstance(item, ReasoningThreadItem):
+            self._close_message()
+            self.display.reasoning_started()
+        elif isinstance(item, AgentMessageThreadItem):
             self._open_message()
         elif isinstance(item, CommandExecutionThreadItem):
             self._close_message()
@@ -229,7 +259,9 @@ class CodexTurnRenderer:
             self.chunker.feed(delta)
 
     def _item_completed(self, item):
-        if isinstance(item, AgentMessageThreadItem):
+        if isinstance(item, ReasoningThreadItem):
+            self.display.reasoning_completed()
+        elif isinstance(item, AgentMessageThreadItem):
             self._close_message()
         elif isinstance(item, CommandExecutionThreadItem):
             self.display.command_completed(item.exit_code)
@@ -265,6 +297,13 @@ class CodexSettings:
 # would be a silent session rather than a slow one.
 FALLBACK_EFFORT = "low"
 _EFFORT_REFUSAL = ('"param": "reasoning.effort"', "unsupported_value")
+
+# How much of its reasoning the model is asked to narrate. Nothing arrives
+# without asking, and ``auto`` leaves the length to the model: a model that
+# has little to say about a one-line answer says little. Raw reasoning text is
+# a separate stream the endpoint does not offer, so a summary is all there is
+# to show.
+REASONING_SUMMARY = "auto"
 
 # Asked once per thread, before anyone is waiting on it. Short because its
 # answer is discarded; the point is the round trip, not the words.
@@ -496,6 +535,7 @@ class CodexConversation:
         return self.thread.turn(
             prompt,
             effort=ReasoningEffort(self.reasoning_effort),
+            summary=ReasoningSummary(REASONING_SUMMARY),
             sandbox=self.sandbox,
             approval_mode=ApprovalMode.deny_all,
         )

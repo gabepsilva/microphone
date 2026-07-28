@@ -20,11 +20,15 @@ from openai_codex.generated.v2_all import (
     ItemCompletedNotification,
     ItemStartedNotification,
     McpToolCallThreadItem,
+    ReasoningSummaryPartAddedNotification,
+    ReasoningSummaryTextDeltaNotification,
+    ReasoningThreadItem,
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
 )
 
 from voice_codex.codex import (
+    REASONING_SUMMARY,
     WARMUP_PROMPT,
     CodexConversation,
     CodexSettings,
@@ -53,6 +57,22 @@ def command_item(command="ls -la", exit_code=0):
 def tool_item(server="files", tool="read", status="completed"):
     return McpToolCallThreadItem.model_construct(
         server=server, tool=tool, status=status
+    )
+
+
+def reasoning_item():
+    return ReasoningThreadItem.model_construct()
+
+
+def summary_delta(text):
+    return event(ReasoningSummaryTextDeltaNotification.model_construct(delta=text))
+
+
+def summary_part(summary_index):
+    return event(
+        ReasoningSummaryPartAddedNotification.model_construct(
+            summary_index=summary_index
+        )
     )
 
 
@@ -127,6 +147,15 @@ class FakeDisplay:
 
     def codex_message_close(self):
         self._record("codex_message_close")
+
+    def reasoning_started(self):
+        self._record("reasoning_started")
+
+    def reasoning_delta(self, delta):
+        self._record("reasoning_delta", delta)
+
+    def reasoning_completed(self):
+        self._record("reasoning_completed")
 
     def command_started(self, command):
         self._record("command_started", command)
@@ -206,6 +235,109 @@ def test_the_message_is_opened_once_across_many_deltas() -> None:
     display = render([delta("a"), delta("b"), delta("c")])
 
     assert display.names().count("codex_message_open") == 1
+
+
+def test_reasoning_is_shown_as_its_own_section() -> None:
+    display = render(
+        [
+            started(reasoning_item()),
+            summary_part(0),
+            summary_delta("Weighing the riddle."),
+            finished(reasoning_item()),
+            started(message_item()),
+            delta("Nine."),
+            finished(message_item()),
+            turn_completed(),
+        ],
+    )
+
+    assert display.calls == [
+        ("reasoning_started",),
+        ("reasoning_delta", "Weighing the riddle."),
+        ("reasoning_completed",),
+        ("codex_message_open", "Them"),
+        ("codex_delta", "Nine."),
+        ("codex_message_close",),
+    ]
+
+
+def test_every_summary_part_after_the_first_opens_a_paragraph() -> None:
+    display = render(
+        [
+            started(reasoning_item()),
+            summary_part(0),
+            summary_delta("First thought."),
+            summary_part(1),
+            summary_delta("Second thought."),
+            finished(reasoning_item()),
+        ],
+    )
+
+    assert display.calls == [
+        ("reasoning_started",),
+        ("reasoning_delta", "First thought."),
+        ("reasoning_delta", "\n\n"),
+        ("reasoning_delta", "Second thought."),
+        ("reasoning_completed",),
+    ]
+
+
+def test_reasoning_is_never_spoken() -> None:
+    from voice_codex.domain import SentenceChunker
+
+    spoken: list[str] = []
+
+    render(
+        [
+            started(reasoning_item()),
+            summary_delta("Thinking out loud."),
+            finished(reasoning_item()),
+            delta("Nine."),
+            turn_completed(),
+        ],
+        SentenceChunker(spoken.append),
+    )
+
+    assert spoken == ["Nine."]
+
+
+def test_reasoning_does_not_time_the_reply() -> None:
+    first_deltas = []
+    display = FakeDisplay()
+    renderer = CodexTurnRenderer(
+        display, "Them", on_first_delta=lambda: first_deltas.append(display.names()[-1])
+    )
+
+    renderer.render(
+        [
+            started(reasoning_item()),
+            summary_delta("Thinking out loud."),
+            finished(reasoning_item()),
+            delta("Nine."),
+        ],
+    )
+
+    # The turn is timed from the first spoken word, so the only call that can
+    # precede the report is the message being opened for it.
+    assert first_deltas == ["codex_message_open"]
+
+
+def test_reasoning_closes_the_open_message_before_it_is_shown() -> None:
+    display = render(
+        [
+            delta("Let me think."),
+            started(reasoning_item()),
+            summary_delta("Still thinking."),
+        ],
+    )
+
+    assert display.calls == [
+        ("codex_message_open", "Them"),
+        ("codex_delta", "Let me think."),
+        ("codex_message_close",),
+        ("reasoning_started",),
+        ("reasoning_delta", "Still thinking."),
+    ]
 
 
 def test_a_command_closes_the_open_message_before_it_is_shown() -> None:
@@ -477,6 +609,17 @@ def test_a_requested_reasoning_effort_is_applied(conversation) -> None:
 
     assert conversation.reasoning_effort == "high"
     assert ("set_codex", {"effort": "high"}) in conversation.fake_display.calls
+
+
+def test_every_turn_asks_for_a_reasoning_summary(conversation) -> None:
+    conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
+    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+
+    conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
+
+    # Without asking, no reasoning is streamed at all and the section stays
+    # empty however hard the model thought.
+    assert conversation.thread.kwargs["summary"].root.value == REASONING_SUMMARY
 
 
 def test_a_turn_renders_between_begin_and_end_markers(conversation) -> None:
