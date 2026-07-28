@@ -45,6 +45,10 @@ class SoundActivityReporter:
     block, and each report forced the interface to lay itself out again;
     presence is stable, so a silent channel and a steadily-speaking one both
     cost nothing to draw.
+
+    The same measurement answers a second question the silence timer needs —
+    whether anyone is talking right now — which is why ``hearing_sound`` is a
+    read rather than another report.
     """
 
     def __init__(
@@ -72,6 +76,22 @@ class SoundActivityReporter:
             return
         self.active = active
         self.display.set_audio(self.channel, active=active)
+
+    @property
+    def hearing_sound(self) -> bool:
+        """Whether this channel is hearing sound at this moment.
+
+        Recomputed against the release deadline rather than read off the last
+        transition, because the reads come from the silence timer rather than
+        from the audio thread: a release that expired between two blocks would
+        otherwise report a channel as still busy for as long as the audio was
+        quiet enough to stop reporting.
+
+        Written on an audio thread and read on a timer thread with no lock. A
+        float assignment is atomic, and the only cost of reading the previous
+        one is deciding this question a block earlier than the next sample.
+        """
+        return self.clock() < self.loud_until
 
 
 def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwargs):

@@ -9,6 +9,7 @@ from voice_codex.domain import (
     PrefirePlan,
     SentenceChunker,
     SpeakerGate,
+    SpeakerPresence,
     SpeechActivity,
     TranscriptRouter,
     TurnGate,
@@ -172,6 +173,69 @@ def test_echo_matching_is_case_and_punctuation_insensitive() -> None:
         "open the settings panel",
     )
     assert not EchoMatcher.matches("first unrelated", "second text")
+
+
+# --------------------------------------------------------------------------
+# Is this speaker still talking?
+#
+# The level tap hears sound, not speakers. These hold the line between the
+# two: an open microphone picks up the assistant and the far end as readily
+# as the person in front of it, and answering "yes" for either would hold a
+# turn open for as long as they went on.
+# --------------------------------------------------------------------------
+
+
+class StubTap:
+    """A level tap reporting whatever a test says is on the channel."""
+
+    def __init__(self, hearing_sound: bool):
+        self.hearing_sound = hearing_sound
+
+
+def test_a_quiet_channel_means_its_speaker_is_not_talking() -> None:
+    presence = SpeakerPresence(StubTap(False))
+
+    assert presence.speaking() is False
+
+
+def test_sound_on_an_unsuppressed_channel_is_its_speaker() -> None:
+    """A monitored sink carries the meeting and nothing else."""
+    presence = SpeakerPresence(StubTap(True))
+
+    assert presence.speaking() is True
+
+
+def test_sound_that_something_else_is_making_is_not_this_speaker() -> None:
+    presence = SpeakerPresence(StubTap(True), [lambda: True])
+
+    assert presence.speaking() is False
+
+
+def test_sound_is_this_speaker_once_every_suppressor_has_let_go() -> None:
+    presence = SpeakerPresence(StubTap(True), [lambda: False, lambda: False])
+
+    assert presence.speaking() is True
+
+
+def test_any_one_suppressor_is_enough_to_disown_the_sound() -> None:
+    """Either the assistant or the far end playing is enough to explain it."""
+    presence = SpeakerPresence(StubTap(True), [lambda: False, lambda: True])
+
+    assert presence.speaking() is False
+
+
+def test_a_quiet_channel_is_not_talking_whatever_the_suppressors_say() -> None:
+    """Silence settles it, so nothing else needs asking."""
+    asked = []
+
+    def suppressor():
+        asked.append(True)
+        return False
+
+    presence = SpeakerPresence(StubTap(False), [suppressor])
+
+    assert presence.speaking() is False
+    assert asked == []
 
 
 def test_speaker_gate_answers_only_the_selected_speakers() -> None:
@@ -436,6 +500,15 @@ def test_a_started_turn_counts_down_the_full_window() -> None:
     countdown.started("User Voice")
 
     assert countdown.remaining() == 3.0
+
+
+def test_a_turn_held_open_counts_down_the_grace_it_was_given() -> None:
+    """An extension runs on a grace, and the countdown has to show that one."""
+    countdown, _ = silence_clock(3.0)
+
+    countdown.started("User Voice", 0.5)
+
+    assert countdown.remaining() == 0.5
 
 
 def test_the_countdown_shrinks_as_the_silence_runs() -> None:
