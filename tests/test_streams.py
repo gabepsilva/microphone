@@ -50,18 +50,15 @@ def node(
     }
 
 
-def port(port_id, node_id, direction, name="output_FL"):
-    return {
-        "id": port_id,
-        "type": "PipeWire:Interface:Port",
-        "info": {
-            "props": {
-                "node.id": node_id,
-                "port.direction": direction,
-                "port.name": name,
-            }
-        },
+def port(port_id, node_id, direction, name="output_FL", channel=None):
+    props = {
+        "node.id": node_id,
+        "port.direction": direction,
+        "port.name": name,
     }
+    if channel is not None:
+        props["audio.channel"] = channel
+    return {"id": port_id, "type": "PipeWire:Interface:Port", "info": {"props": props}}
 
 
 def link(output_node, output_port, input_node, input_port):
@@ -326,6 +323,25 @@ def test_ports_are_collected_by_node_and_direction() -> None:
     assert node_ports(objects, [1, 2], "out") == [10, 12]
 
 
+def test_ports_are_ordered_by_channel_not_by_the_order_the_graph_holds_them() -> None:
+    """The graph routinely lists a stream's right channel first."""
+    objects = [
+        port(70, 1, "out", name="output_FR", channel="FR"),
+        port(71, 1, "out", name="output_FL", channel="FL"),
+    ]
+
+    assert node_ports(objects, [1], "out") == [71, 70]
+
+
+def test_a_port_whose_channel_is_unnamed_sorts_after_the_named_ones() -> None:
+    objects = [
+        port(80, 1, "out", name="output_2", channel="AUX0"),
+        port(81, 1, "out", name="output_FL", channel="FL"),
+    ]
+
+    assert node_ports(objects, [1], "out") == [81, 80]
+
+
 def test_a_node_is_found_by_its_exact_name() -> None:
     objects = [
         node(1, **{"node.name": "voice_codex_tap_9"}),
@@ -335,10 +351,11 @@ def test_a_node_is_found_by_its_exact_name() -> None:
     assert nodes_named(objects, "voice_codex_tap_9") == [1]
 
 
-def test_the_ports_already_feeding_a_node_are_reported() -> None:
-    objects = [link(1, 10, 5, 50), link(2, 20, 6, 60)]
+def test_the_links_already_feeding_a_node_are_reported_as_pairs() -> None:
+    """One source port legitimately feeds both sides when the source is mono."""
+    objects = [link(1, 10, 5, 50), link(1, 10, 5, 51), link(2, 20, 6, 60)]
 
-    assert linked_sources(objects, 5) == {10}
+    assert linked_sources(objects, 5) == {(10, 50), (10, 51)}
 
 
 # --------------------------------------------------------------------------
@@ -368,7 +385,7 @@ def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:
     assert command[0] == "pw-record"
     assert command[command.index("--target") + 1] == "0"
     assert command[command.index("--rate") + 1] == "16000"
-    assert command[command.index("--channels") + 1] == "1"
+    assert command[command.index("--channels") + 1] == "2"
     assert command[command.index("--format") + 1] == "s16"
     assert command[-1] == "-"
 
@@ -380,20 +397,22 @@ def test_the_capture_node_is_named_for_this_process() -> None:
     assert f"node.name = {tap.node_name}" in " ".join(tap.command(16000))
 
 
-def tap_graph(tap, application="Chromium", links=(), tap_present=True):
-    """A graph holding one two-channel application and, usually, the tap."""
+def tap_graph(tap, application="Chromium", links=(), tap_present=True, mono=False):
+    """A graph holding one application and, usually, the two-channel tap."""
     objects = [
         node(1, **{"application.name": application}),
-        port(10, 1, "out", name="output_FL"),
-        port(11, 1, "out", name="output_FR"),
+        port(10, 1, "out", name="output_FL", channel="FL"),
         node(2, **{"application.name": "Other"}),
-        port(20, 2, "out"),
+        port(20, 2, "out", channel="FL"),
         *links,
     ]
+    if not mono:
+        objects.insert(2, port(11, 1, "out", name="output_FR", channel="FR"))
     if tap_present:
         objects += [
             node(5, media_class="Stream/Input/Audio", **{"node.name": tap.node_name}),
-            port(50, 5, "in", name="input_MONO"),
+            port(50, 5, "in", name="input_FL", channel="FL"),
+            port(51, 5, "in", name="input_FR", channel="FR"),
         ]
     return objects
 
@@ -410,13 +429,22 @@ def recording_tap(application="Chromium", objects=None, returncode=0):
     return tap, calls
 
 
-def test_both_channels_of_a_stream_land_on_the_one_mono_input() -> None:
-    """Speech on one side only must not be halved away by dropping a channel."""
+def test_a_stream_is_linked_channel_for_channel() -> None:
+    """Crossed channels would swap a stereo far end left for right."""
     tap = StreamTap("Chromium")
     tap, calls = recording_tap(objects=tap_graph(tap))
 
     assert tap.link() == 2
-    assert calls == [["pw-link", "10", "50"], ["pw-link", "11", "50"]]
+    assert calls == [["pw-link", "10", "50"], ["pw-link", "11", "51"]]
+
+
+def test_a_mono_application_feeds_both_sides_of_the_tap() -> None:
+    """The caller averages the pair, so one side alone would arrive halved."""
+    tap = StreamTap("Chromium")
+    tap, calls = recording_tap(objects=tap_graph(tap, mono=True))
+
+    assert tap.link() == 2
+    assert calls == [["pw-link", "10", "50"], ["pw-link", "10", "51"]]
 
 
 def test_only_the_chosen_application_is_linked() -> None:
@@ -428,13 +456,23 @@ def test_only_the_chosen_application_is_linked() -> None:
     assert [command[1] for command in calls] == ["10", "11"]
 
 
-def test_a_port_already_linked_is_left_alone() -> None:
+def test_a_link_already_made_is_left_alone() -> None:
     """Relinking is a poll; a second copy of a working link is the failure."""
     tap = StreamTap("Chromium")
     tap, calls = recording_tap(objects=tap_graph(tap, links=[link(1, 10, 5, 50)]))
 
     assert tap.link() == 1
-    assert calls == [["pw-link", "11", "50"]]
+    assert calls == [["pw-link", "11", "51"]]
+
+
+def test_a_stream_with_no_ports_yet_is_skipped_rather_than_half_linked() -> None:
+    """A node appears in the graph a moment before its ports do."""
+    tap = StreamTap("Chromium")
+    objects = [o for o in tap_graph(tap) if o.get("id") not in (10, 11)]
+    tap, calls = recording_tap(objects=objects)
+
+    assert tap.link() == 0
+    assert calls == []
 
 
 def test_a_tap_whose_recorder_has_not_appeared_links_nothing() -> None:

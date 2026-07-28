@@ -45,6 +45,12 @@ LINK_OBJECT = "PipeWire:Interface:Link"
 OUTGOING = "out"
 INCOMING = "in"
 
+# Ports arrive from ``pw-dump`` in whatever order the graph holds them — a
+# stream's right channel is routinely listed before its left — so a pairing
+# built on that order would swap channels about half the time. The graph names
+# each port's channel, and this is the order those names mean.
+CHANNEL_ORDER = ("FL", "MONO", "FR")
+
 # How far up the process tree a stream's owner is followed before it is taken
 # to be someone else's. Codex's speech plays through a direct child, so one
 # step would do; the rest is slack for a player that wraps itself in a shell.
@@ -189,8 +195,16 @@ def applications(streams):
     return sorted(collapsed.values(), key=lambda s: (not s.playing, s.application))
 
 
+def _channel_rank(props):
+    """Order one port among its node's channels."""
+    channel = props.get("audio.channel")
+    if channel in CHANNEL_ORDER:
+        return (CHANNEL_ORDER.index(channel), str(props.get("port.name") or ""))
+    return (len(CHANNEL_ORDER), str(props.get("port.name") or ""))
+
+
 def node_ports(objects, node_ids, direction):
-    """Collect the ports of some nodes, in one direction."""
+    """Collect the ports of some nodes, in one direction, in channel order."""
     wanted = set(node_ids)
     ports = []
     for obj in objects:
@@ -198,8 +212,8 @@ def node_ports(objects, node_ids, direction):
             continue
         props = _properties(obj)
         if props.get("node.id") in wanted and props.get("port.direction") == direction:
-            ports.append(obj.get("id"))
-    return ports
+            ports.append((_channel_rank(props), obj.get("id")))
+    return [port_id for _, port_id in sorted(ports)]
 
 
 def nodes_named(objects, node_name):
@@ -212,19 +226,21 @@ def nodes_named(objects, node_name):
 
 
 def linked_sources(objects, node_id):
-    """The output ports already feeding a node.
+    """The ``(source port, tap port)`` pairs already feeding a node.
 
     Relinking is a poll, so this is what keeps it from stacking a second copy
-    of every link on top of the ones that are working.
+    of every link on top of the ones that are working. Pairs rather than source
+    ports alone, because one source port legitimately feeds both sides of the
+    tap when the application it belongs to is mono.
     """
-    sources = set()
+    pairs = set()
     for obj in objects:
         if obj.get("type") != LINK_OBJECT:
             continue
         props = _properties(obj)
         if props.get("link.input.node") == node_id:
-            sources.add(props.get("link.output.port"))
-    return sources
+            pairs.add((props.get("link.output.port"), props.get("link.input.port")))
+    return pairs
 
 
 def require_pipewire():
@@ -261,6 +277,14 @@ class StreamTap:
     # channel decides — including whether the far end is talking right now.
     LATENCY = "20ms"
 
+    # The tap captures both channels and the caller averages them, rather than
+    # capturing one channel and letting the graph fold the pair into it.
+    # PipeWire sums what a port receives and applies no gain for doing so, so a
+    # mono tap turns a stream carrying the same audio on both sides — which is
+    # most of them — into twice the amplitude, and clips anything already
+    # louder than half scale.
+    CHANNELS = 2
+
     def __init__(self, application, poll=POLL_SECONDS, run=subprocess.run, dump=graph):
         self.application = application
         # The PID is in the name so a session that died without cleaning up
@@ -288,7 +312,9 @@ class StreamTap:
             "--rate",
             str(samplerate),
             "--channels",
-            "1",
+            str(self.CHANNELS),
+            "--channel-map",
+            "FL,FR",
             "--format",
             "s16",
             "--latency",
@@ -309,19 +335,23 @@ class StreamTap:
         inputs = node_ports(objects, taps, INCOMING)
         if not taps or not inputs:
             return 0
-        sources = [
-            stream.node_id
-            for stream in application_streams(objects)
-            if stream.application == self.application
-        ]
         already = linked_sources(objects, taps[0])
         linked = 0
-        for port in node_ports(objects, sources, OUTGOING):
-            # A stereo application meets a mono tap, so both of its ports land
-            # on the one input and PipeWire sums them. That is the downmix this
-            # channel wants: speech on one side only must not be halved away.
-            if port not in already and self._connect(port, inputs[0]):
-                linked += 1
+        for stream in application_streams(objects):
+            if stream.application != self.application:
+                continue
+            outputs = node_ports(objects, [stream.node_id], OUTGOING)
+            if not outputs:
+                continue
+            for index, tap_port in enumerate(inputs):
+                # Channel by channel, and a source with fewer channels than the
+                # tap repeats: a mono application feeds both sides rather than
+                # arriving at half strength once the caller averages them.
+                source_port = outputs[index % len(outputs)]
+                if (source_port, tap_port) in already:
+                    continue
+                if self._connect(source_port, tap_port):
+                    linked += 1
         return linked
 
     def _connect(self, source_port, tap_port):

@@ -136,6 +136,23 @@ def decode_pcm(raw_audio):
     return audio
 
 
+def to_mono(samples, channels):
+    """Average interleaved channels into the single one Moonshine transcribes.
+
+    Averaged rather than summed, and rather than one channel kept: summing
+    doubles a stream that carries the same audio on both sides, which is most
+    of them, and keeping one side alone loses a speaker panned to the other.
+
+    A trailing partial frame is dropped. It only appears when the recorder is
+    cut off mid-frame at shutdown, and half a frame of audio is worth less than
+    every later frame being off by one channel.
+    """
+    if channels == 1:
+        return samples
+    usable = samples.size - samples.size % channels
+    return samples[:usable].reshape(-1, channels).mean(axis=1)
+
+
 def drain_audio_queue(audio_queue, stop_item, first):
     """Coalesce everything already queued behind ``first`` into one buffer.
 
@@ -200,7 +217,11 @@ class ApplicationStreamTranscriber:
             while (process := self.process) is not None:
                 if process.stdout is None:
                     break
-                chunk = process.stdout.read(self.capture.blocksize * 2)
+                # Whole frames only: a read that split one would put every
+                # later sample on the wrong channel.
+                chunk = process.stdout.read(
+                    self.capture.blocksize * 2 * self.tap.CHANNELS
+                )
                 if not chunk:
                     break
                 self.audio_queue.put(chunk)
@@ -215,7 +236,7 @@ class ApplicationStreamTranscriber:
             raw_audio, stop_requested = drain_audio_queue(
                 self.audio_queue, self.stop_item, item
             )
-            audio = decode_pcm(raw_audio)
+            audio = to_mono(decode_pcm(raw_audio), self.tap.CHANNELS)
             if self.level_reporter is not None:
                 self.level_reporter.update(audio)
             try:

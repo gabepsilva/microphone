@@ -22,6 +22,7 @@ from voice_codex.capture import (
     audio_level,
     decode_pcm,
     drain_audio_queue,
+    to_mono,
 )
 
 WAIT_SECONDS = 10
@@ -30,6 +31,11 @@ WAIT_SECONDS = 10
 def pcm(*samples):
     """Encode samples as the little-endian signed 16-bit PCM the tap emits."""
     return struct.pack(f"<{len(samples)}h", *samples)
+
+
+def stereo(*samples):
+    """The same, as the interleaved stereo frames the tap actually captures."""
+    return pcm(*[value for sample in samples for value in (sample, sample)])
 
 
 class FakeStream:
@@ -122,6 +128,8 @@ class FakePipe:
 
 class FakeTap:
     """Stand in for the PipeWire tap, recording when it was told to follow."""
+
+    CHANNELS = 2
 
     def __init__(self):
         self.application = "ZOOM VoiceEngine"
@@ -344,6 +352,33 @@ def test_a_stop_item_ends_the_backlog_and_is_reported() -> None:
     assert stop_requested is True
 
 
+def test_interleaved_channels_are_averaged_rather_than_summed() -> None:
+    """Summing doubles a stream carrying the same audio on both sides."""
+    samples = decode_pcm(stereo(16384, -16384))
+
+    assert to_mono(samples, 2).tolist() == pytest.approx([0.5, -0.5])
+
+
+def test_a_speaker_panned_to_one_side_survives_the_downmix() -> None:
+    """Keeping one channel alone would drop them entirely."""
+    samples = decode_pcm(pcm(16384, 0))
+
+    assert to_mono(samples, 2).tolist() == pytest.approx([0.25])
+
+
+def test_a_mono_tap_is_left_exactly_as_it_arrived() -> None:
+    samples = decode_pcm(pcm(16384, -16384))
+
+    assert to_mono(samples, 1) is samples
+
+
+def test_a_frame_cut_in_half_at_shutdown_is_dropped() -> None:
+    """Keeping it would put every later sample on the wrong channel."""
+    samples = decode_pcm(pcm(16384, 16384, 8192))
+
+    assert to_mono(samples, 2).tolist() == pytest.approx([0.5])
+
+
 def test_an_empty_queue_yields_only_the_first_chunk() -> None:
     raw, stop_requested = drain_audio_queue(queue.Queue(), object(), b"only")
 
@@ -358,7 +393,7 @@ def test_capture_requires_the_pipewire_tools(monkeypatch) -> None:
 
 
 def test_the_recorder_is_asked_for_the_capture_samplerate(capture) -> None:
-    monitor = capture(reads=[pcm(0)])
+    monitor = capture(reads=[stereo(0)])
     monitor.start()
     try:
         assert "command 16000" in monitor.tap.events
@@ -370,7 +405,7 @@ def test_the_tap_follows_the_application_only_once_the_recorder_is_up(
     capture,
 ) -> None:
     """Nothing can be linked to a capture node that is not in the graph yet."""
-    monitor = capture(reads=[pcm(0)])
+    monitor = capture(reads=[stereo(0)])
     monitor.start()
     try:
         assert monitor.tap.events == ["command 16000", "start"]
@@ -388,7 +423,7 @@ def test_a_recorder_that_exits_immediately_leaves_the_tap_unstarted(capture) -> 
 
 
 def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
-    monitor = capture(reads=[pcm(16384, -16384)])
+    monitor = capture(reads=[stereo(16384, -16384)])
     monitor.start()
     try:
         assert monitor.stream.received.wait(WAIT_SECONDS)
@@ -403,7 +438,7 @@ def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
 def test_a_capture_level_is_reported_while_transcribing(capture) -> None:
     levels: list[float] = []
     reporter = type("Reporter", (), {"update": staticmethod(levels.append)})()
-    monitor = capture(reads=[pcm(16384, -16384)], level_reporter=reporter)
+    monitor = capture(reads=[stereo(16384, -16384)], level_reporter=reporter)
     monitor.start()
     try:
         assert monitor.stream.received.wait(WAIT_SECONDS)
@@ -422,7 +457,7 @@ def test_a_recorder_that_exits_immediately_is_reported(capture) -> None:
 
 
 def test_starting_twice_does_not_start_a_second_capture(capture) -> None:
-    monitor = capture(reads=[pcm(0)])
+    monitor = capture(reads=[stereo(0)])
     monitor.start()
     try:
         monitor.start()
@@ -441,7 +476,7 @@ def test_stopping_before_starting_does_nothing(capture) -> None:
 
 
 def test_stopping_terminates_the_recorder_and_stops_the_stream(capture) -> None:
-    monitor = capture(reads=[pcm(0)], exit_code=None)
+    monitor = capture(reads=[stereo(0)], exit_code=None)
     monitor.start()
 
     monitor.stop()
@@ -452,7 +487,7 @@ def test_stopping_terminates_the_recorder_and_stops_the_stream(capture) -> None:
 
 def test_stopping_retires_the_linker_before_the_recorder_it_wires(capture) -> None:
     """A relink after the recorder goes leaves a link to a node nobody owns."""
-    monitor = capture(reads=[pcm(0)], exit_code=None)
+    monitor = capture(reads=[stereo(0)], exit_code=None)
     monitor.start()
     monitor.tap.events.clear()
 
@@ -463,7 +498,7 @@ def test_stopping_retires_the_linker_before_the_recorder_it_wires(capture) -> No
 
 
 def test_closing_releases_the_pipe_the_stream_and_the_model(capture) -> None:
-    monitor = capture(reads=[pcm(0)])
+    monitor = capture(reads=[stereo(0)])
     monitor.start()
 
     monitor.close()
@@ -476,7 +511,7 @@ def test_closing_releases_the_pipe_the_stream_and_the_model(capture) -> None:
 def test_a_transcription_failure_is_reported_without_ending_capture(
     capture, capsys
 ) -> None:
-    monitor = capture(reads=[pcm(0, 1)])
+    monitor = capture(reads=[stereo(0, 1)])
     monitor.stream.failure = RuntimeError("model is busy")
     monitor.start()
     try:
