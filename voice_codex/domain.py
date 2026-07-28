@@ -66,16 +66,33 @@ def resolve_response_policy(value: str) -> ResponsePolicy:
 
 
 class SentenceChunker:
-    """Turn streamed text into sentence-sized chunks with a hard size cap."""
+    """Turn streamed text into sentence-sized chunks with a hard size cap.
+
+    The opening chunk of a turn may also break at a clause. Everything after
+    it waits for a sentence, because by then speech is already playing and a
+    fragment only costs prosody; the first chunk is the one the listener is
+    waiting through silence for.
+    """
 
     SENTENCE_END = re.compile(
         r'(?<=[.!?])(?:["”\N{RIGHT SINGLE QUOTATION MARK}\')\]]*)\s+'
     )
+    CLAUSE_END = re.compile(r"[,;:\N{EM DASH}\N{EN DASH}]\s")
+    # Below this, an opening clause is not worth hearing on its own: "Sure,"
+    # spoken alone is a worse start than the fraction of a second it saves.
+    FIRST_CLAUSE_MIN_CHARS = 20
 
-    def __init__(self, emit, max_chars: int = 400) -> None:
+    def __init__(
+        self,
+        emit,
+        max_chars: int = 400,
+        first_clause_min_chars: int | None = FIRST_CLAUSE_MIN_CHARS,
+    ) -> None:
         self.emit = emit
         self.max_chars = max_chars
+        self.first_clause_min_chars = first_clause_min_chars
         self.buffer = ""
+        self.has_emitted = False
 
     def _split_once(self, text: str) -> tuple[str, str]:
         """Take the longest chunk that fits, and return it with the rest.
@@ -93,21 +110,43 @@ class SentenceChunker:
             split_at = self.max_chars
         return text[:split_at].strip(), text[split_at:].lstrip()
 
+    def _emit_chunk(self, text: str) -> None:
+        """Hand one chunk to the engine, recording that the turn has spoken."""
+        self.has_emitted = True
+        self.emit(text)
+
     def _emit_bounded(self, text: str) -> None:
         """Emit text as capped chunks, the short remainder included."""
         while len(text) > self.max_chars:
             chunk, text = self._split_once(text)
             if chunk:
-                self.emit(chunk)
+                self._emit_chunk(chunk)
         if text:
-            self.emit(text)
+            self._emit_chunk(text)
 
     def _emit_long_chunks(self) -> None:
         """Emit whole capped chunks, leaving a short remainder buffered."""
         while len(self.buffer) > self.max_chars:
             chunk, self.buffer = self._split_once(self.buffer)
             if chunk:
-                self.emit(chunk)
+                self._emit_chunk(chunk)
+
+    def _emit_first_clause(self) -> None:
+        """Release the opening clause so speech can start mid-sentence.
+
+        The search starts at the minimum rather than filtering afterwards, so
+        an early comma is passed over instead of ending the chunk: the clause
+        that gets spoken is always at least as long as the minimum.
+        """
+        if self.first_clause_min_chars is None:
+            return
+        match = self.CLAUSE_END.search(self.buffer, self.first_clause_min_chars)
+        if match is None:
+            return
+        clause = self.buffer[: match.end()].strip()
+        self.buffer = self.buffer[match.end() :]
+        if clause:
+            self._emit_bounded(clause)
 
     def feed(self, text: str) -> None:
         self.buffer += text
@@ -116,6 +155,8 @@ class SentenceChunker:
             self.buffer = self.buffer[match.end() :]
             if sentence:
                 self._emit_bounded(sentence)
+        if not self.has_emitted:
+            self._emit_first_clause()
         self._emit_long_chunks()
 
     def flush(self) -> None:
@@ -312,6 +353,69 @@ class TurnSilence:
         return applied
 
 
+class TurnLatencyEstimator:
+    """Track how long Codex takes to reach the first word of a reply.
+
+    A moving average rather than the last sample: one slow turn should nudge
+    the moment a speculative turn fires, not move it across half the silence
+    window. The seed is deliberately high, because the two directions are not
+    symmetric — overestimating fires the turn earlier and only risks wasting
+    it, while underestimating leaves the wait it exists to hide exposed.
+    """
+
+    DEFAULT_SEED = 0.75
+    SMOOTHING = 0.3
+
+    def __init__(
+        self, seed: float = DEFAULT_SEED, smoothing: float = SMOOTHING
+    ) -> None:
+        self._lock = threading.Lock()
+        self._estimate = seed
+        self._smoothing = smoothing
+
+    def record(self, seconds: float) -> None:
+        """Fold one observed time-to-first-word into the estimate."""
+        with self._lock:
+            self._estimate += self._smoothing * (seconds - self._estimate)
+
+    @property
+    def estimate(self) -> float:
+        with self._lock:
+            return self._estimate
+
+
+class PrefirePlan:
+    """Decide how far into a silence window a speculative turn should wait.
+
+    Firing at ``window - estimate`` puts Codex's first word at the moment the
+    window closes, which is the whole point: the model thinks during the wait
+    that was already happening rather than after it. Two bounds keep that from
+    becoming reckless. The lead never takes more than ``MAX_LEAD_FRACTION`` of
+    the window, so a slow estimate cannot fire the turn the instant a speaker
+    draws breath, and the delay never falls below ``MINIMUM_DELAY``, so even a
+    short window leaves a moment in which a speaker who has not finished can
+    still cancel.
+    """
+
+    MAX_LEAD_FRACTION = 0.65
+    MINIMUM_DELAY = 0.15
+
+    def __init__(
+        self,
+        estimator: TurnLatencyEstimator,
+        max_lead_fraction: float = MAX_LEAD_FRACTION,
+        minimum_delay: float = MINIMUM_DELAY,
+    ) -> None:
+        self.estimator = estimator
+        self.max_lead_fraction = max_lead_fraction
+        self.minimum_delay = minimum_delay
+
+    def delay(self, window: float) -> float:
+        """Seconds into ``window`` at which the speculative turn should fire."""
+        lead = min(self.estimator.estimate, window * self.max_lead_fraction)
+        return max(self.minimum_delay, window - lead)
+
+
 def parse_turn_silence(text: str) -> float | None:
     """Read a typed turn-silence value, or None when it is not one.
 
@@ -440,3 +544,35 @@ class TranscriptRouter:
         request = CodexRequest(speaker, tuple(self.pending_context))
         self.pending_context.clear()
         return request
+
+    def speculate(self, speaker: str, text: str, timestamp: str) -> CodexRequest:
+        """Build a reply request without consuming the context behind it.
+
+        A speculative turn is abandoned whenever the speaker turns out not to
+        have finished. Leaving the entries pending is what makes abandoning it
+        lossless: giving up is simply never calling ``commit``, and the next
+        request carries everything this one would have.
+        """
+        self.pending_context.append(TranscriptEntry(speaker, text, timestamp))
+        return CodexRequest(speaker, tuple(self.pending_context))
+
+    def commit(self, request: CodexRequest) -> None:
+        """Drop the entries a speculative request turned out to carry.
+
+        The boundary is found by identity rather than by counting, because the
+        two ends of the list move independently: entries arriving while the
+        speculative turn is in flight extend it, and ``ingest`` can trim the
+        oldest off the front. A count taken before either would delete the
+        wrong entries; the last entry the request actually carried cannot.
+
+        A boundary that is already gone leaves the list alone. Trimming
+        dropped those entries because they had aged out, and the reply they
+        belong to is arriving anyway.
+        """
+        if not request.entries:
+            return
+        boundary = request.entries[-1]
+        for index, entry in enumerate(self.pending_context):
+            if entry is boundary:
+                del self.pending_context[: index + 1]
+                return

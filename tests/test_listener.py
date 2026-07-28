@@ -454,3 +454,346 @@ def test_a_silent_other_channel_adds_nothing_to_the_reply() -> None:
     listeners["Them"]._flush(listeners["Them"].timer_generation)
 
     assert conversation.ingested == [("Them", "what do you think", True)]
+
+
+# --------------------------------------------------------------------------
+# Answering before the window closes
+# --------------------------------------------------------------------------
+
+
+class RecordingPrefire:
+    """Stand in for the conversation, recording each moment as it is asked for."""
+
+    def __init__(self, delay=1.0, accepted=True):
+        self.configured_delay = delay
+        self.accepted = accepted
+        self.started: list[tuple[str, str]] = []
+        self.committed: list[str] = []
+        self.cancelled: list[str] = []
+        self.commit_result = True
+
+    def delay(self, window):
+        return min(self.configured_delay, window)
+
+    def start(self, speaker, text):
+        self.started.append((speaker, text))
+        return self.accepted
+
+    def commit(self, speaker):
+        self.committed.append(speaker)
+        return self.commit_result
+
+    def cancel(self, speaker):
+        self.cancelled.append(speaker)
+        return True
+
+
+@pytest.fixture
+def prefire():
+    return RecordingPrefire()
+
+
+@pytest.fixture
+def guessing(prefire):
+    """A listener that guesses a turn is over one second into a three-second wait."""
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    return RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(3.0),
+        speaker="User Voice",
+        submit=lambda speaker, text: submitted.append((speaker, text)),
+        presentation=display,
+        on_speech=lambda partial: True,
+        prefire=prefire,
+    )
+
+
+def test_a_completed_line_arms_both_the_guess_and_the_deadline(guessing) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("hello there")))
+
+    assert guessing.prefire_timer is not None
+    assert guessing.timer is not None
+    assert guessing.prefire_timer.interval < guessing.timer.interval
+    guessing.prefire_timer.cancel()
+    guessing.timer.cancel()
+
+
+def test_the_guess_starts_a_turn_from_what_is_buffered_so_far(
+    guessing, prefire
+) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("a question")))
+    guessing.prefire_timer.cancel()
+    guessing.timer.cancel()
+
+    guessing._speculate(guessing.timer_generation)
+
+    assert prefire.started == [("User Voice", "a question")]
+    assert guessing.prefired is True
+    # The buffer is untouched: the deadline still owns the turn until it fires.
+    assert guessing.pending == ["a question"]
+
+
+def test_a_guess_that_was_right_becomes_the_reply(guessing, prefire) -> None:
+    """The window closed without the speaker resuming, so the turn stands."""
+    guessing.on_line_completed(SimpleNamespace(line=line("a question")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+
+    guessing._flush(guessing.timer_generation)
+
+    assert prefire.committed == ["User Voice"]
+    assert guessing.submitted == []
+    assert guessing.recorded.finished == ["User Voice"]
+
+
+def test_a_refused_commit_still_submits_the_turn(guessing, prefire) -> None:
+    """The conversation is the authority; a listener told no must not go quiet."""
+    guessing.on_line_completed(SimpleNamespace(line=line("a question")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+    prefire.commit_result = False
+
+    guessing._flush(guessing.timer_generation)
+
+    assert prefire.committed == ["User Voice"]
+    assert guessing.submitted == [("User Voice", "a question")]
+
+
+def test_resumed_speech_abandons_the_guess(guessing, prefire) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("half a thought")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+
+    guessing.on_line_text_changed(SimpleNamespace(line=line("and the rest")))
+
+    assert prefire.cancelled == ["User Voice"]
+    assert guessing.prefired is False
+
+
+def test_the_whole_turn_is_submitted_after_a_wrong_guess(guessing, prefire) -> None:
+    """A cancelled guess must cost the words it guessed from, not lose them."""
+    guessing.on_line_completed(SimpleNamespace(line=line("half a thought")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+    guessing.on_line_text_changed(SimpleNamespace(line=line("and the rest")))
+    guessing.on_line_completed(SimpleNamespace(line=line("and the rest")))
+    guessing.prefire_timer.cancel()
+
+    guessing._flush(guessing.timer_generation)
+
+    assert guessing.submitted == [("User Voice", "half a thought and the rest")]
+    assert prefire.committed == []
+
+
+def test_muting_abandons_the_guess(guessing, prefire) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("half a thought")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+
+    guessing.set_muted(True)
+
+    assert prefire.cancelled == ["User Voice"]
+    assert guessing.timer is None
+    assert guessing.prefire_timer is None
+
+
+def test_closing_abandons_the_guess(guessing, prefire) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("half a thought")))
+    guessing.prefire_timer.cancel()
+    guessing._speculate(guessing.timer_generation)
+
+    guessing.close()
+
+    assert prefire.cancelled == ["User Voice"]
+
+
+def test_a_guess_from_a_superseded_timer_is_ignored(guessing, prefire) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("buffered")))
+    guessing.prefire_timer.cancel()
+    stale_generation = guessing.timer_generation
+    guessing._cancel_timer()
+
+    guessing._speculate(stale_generation)
+
+    assert prefire.started == []
+
+
+def test_a_refused_guess_leaves_nothing_to_commit(guessing, prefire) -> None:
+    """A turn the conversation declined to start is not one it can adopt."""
+    prefire.accepted = False
+    guessing.on_line_completed(SimpleNamespace(line=line("an echo")))
+    guessing.prefire_timer.cancel()
+
+    guessing._speculate(guessing.timer_generation)
+    guessing._flush(guessing.timer_generation)
+
+    assert guessing.prefired is False
+    assert prefire.committed == []
+    assert guessing.submitted == [("User Voice", "an echo")]
+
+
+def test_the_same_turn_is_only_guessed_at_once(guessing, prefire) -> None:
+    guessing.on_line_completed(SimpleNamespace(line=line("a question")))
+    guessing.prefire_timer.cancel()
+
+    guessing._speculate(guessing.timer_generation)
+    guessing._speculate(guessing.timer_generation)
+
+    assert prefire.started == [("User Voice", "a question")]
+
+
+def test_an_empty_buffer_is_not_guessed_at(guessing, prefire) -> None:
+    guessing._speculate(guessing.timer_generation)
+
+    assert prefire.started == []
+
+
+def test_a_listener_without_prefire_arms_only_the_deadline(listener) -> None:
+    listener.on_line_completed(SimpleNamespace(line=line("hello there")))
+
+    assert listener.prefire_timer is None
+    assert listener.timer is not None
+    listener.timer.cancel()
+
+
+def test_a_guess_landing_no_sooner_than_the_deadline_is_not_made(guessing) -> None:
+    """Guessing at the deadline is a slower way of doing what the deadline does."""
+    guessing.prefire.configured_delay = 3.0
+
+    guessing.on_line_completed(SimpleNamespace(line=line("hello there")))
+
+    assert guessing.prefire_timer is None
+    assert guessing.timer is not None
+    guessing.timer.cancel()
+
+
+# --------------------------------------------------------------------------
+# What a guess has to pass before it reaches Codex
+# --------------------------------------------------------------------------
+
+
+class PrefiringConversation(RecordingConversation):
+    """Record guesses alongside settled turns, as the conversation sees them."""
+
+    def __init__(self):
+        super().__init__()
+        self.prefired: list[tuple[str, str]] = []
+
+    def prefire(self, speaker, text):
+        self.prefired.append((speaker, text))
+        return True
+
+    def commit_prefire(self, _speaker):
+        return True
+
+    def cancel_prefire(self, _speaker):
+        return True
+
+
+class EchoingTTS:
+    """Speech that claims one particular transcript is its own echo."""
+
+    def __init__(self, echo):
+        self.echo = echo
+
+    def is_likely_echo(self, text):
+        return text == self.echo
+
+    def interrupt(self):
+        return None
+
+
+def prefiring_submitter(policy="them", tts=None):
+    conversation = PrefiringConversation()
+    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(
+        conversation, gate, tts, prefire_plan=RecordingPrefire()
+    )
+    return conversation, submitter
+
+
+def test_a_guess_reaches_codex_when_the_policy_answers_that_speaker() -> None:
+    conversation, submitter = prefiring_submitter()
+
+    assert submitter.prefire("Them", "what do you think")
+    assert conversation.prefired == [("Them", "what do you think")]
+
+
+def test_a_speaker_the_policy_stays_silent_for_is_never_guessed_at() -> None:
+    """A late reply nobody wanted is caught downstream; an early one is not."""
+    conversation, submitter = prefiring_submitter(policy="them")
+
+    assert not submitter.prefire("User Voice", "thinking out loud")
+    assert conversation.prefired == []
+
+
+def test_codex_hearing_itself_is_not_guessed_at() -> None:
+    conversation, submitter = prefiring_submitter(tts=EchoingTTS("my own words"))
+
+    assert not submitter.prefire("Them", "my own words")
+    assert conversation.prefired == []
+
+
+def test_a_guess_sweeps_the_context_channels_first() -> None:
+    """The reply being guessed at must carry what the other channel has said."""
+    conversation = PrefiringConversation()
+    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"User Voice", "Them"})
+    submitter = TranscriptSubmitter(
+        conversation, gate, None, prefire_plan=RecordingPrefire()
+    )
+    display = RecordingDisplay()
+    user = ConversationListener(
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(3.0),
+        speaker="User Voice",
+        submit=submitter.submit,
+        presentation=display,
+    )
+    submitter.add_listener(user)
+    user.on_line_completed(SimpleNamespace(line=line("check the latency")))
+    assert user.timer is not None
+    user.timer.cancel()
+
+    submitter.prefire("Them", "what do you think")
+
+    assert conversation.ingested == [("User Voice", "check the latency", False)]
+    assert conversation.prefired == [("Them", "what do you think")]
+
+
+def test_a_session_without_a_plan_builds_channels_that_never_guess() -> None:
+    conversation = PrefiringConversation()
+    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"Them"})
+    submitter = TranscriptSubmitter(conversation, gate, None)
+
+    listener = submitter.channel(0.6, TurnSilence(3.0), "Them", RecordingDisplay())
+
+    assert listener.prefire is None
+
+
+def test_a_session_with_a_plan_builds_channels_that_guess() -> None:
+    conversation = PrefiringConversation()
+    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"Them"})
+    submitter = TranscriptSubmitter(
+        conversation, gate, None, prefire_plan=RecordingPrefire()
+    )
+
+    listener = submitter.channel(0.6, TurnSilence(3.0), "Them", RecordingDisplay())
+
+    assert listener.prefire is not None
+    assert listener.prefire.delay(3.0) == pytest.approx(1.0)
+
+
+def test_the_prefire_channel_passes_each_moment_to_the_submitter() -> None:
+    """The seam is a pass-through; a dropped call would silently stop guessing."""
+    conversation, submitter = prefiring_submitter()
+    channel = submitter.channel(
+        0.6, TurnSilence(3.0), "Them", RecordingDisplay()
+    ).prefire
+
+    assert channel.start("Them", "what do you think")
+    assert channel.commit("Them")
+    assert channel.cancel("Them")
+    assert conversation.prefired == [("Them", "what do you think")]

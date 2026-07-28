@@ -12,7 +12,13 @@ codex_after: null
 # and Codex Fast on — a spoken reply cannot start before the first token, so
 # the tier is bought back as latency. Set codex_fast to false to spend fewer
 # credits instead.
+#
+# codex_prefire starts the reply before the turn-silence window closes, so the
+# first word lands as the window ends rather than most of a second later. A
+# speaker who only paused cancels it, at the cost of the turn it wasted. Set it
+# to false to wait out every window in full.
 turn_silence: null
 codex_model: null
 codex_reasoning: null
 codex_fast: null
+codex_prefire: null

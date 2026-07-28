@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from voice_codex import cli
-from voice_codex.domain import RESPONSE_POLICIES
+from voice_codex.domain import RESPONSE_POLICIES, TurnLatencyEstimator
 
 MIC = {"name": "Yeti"}
 THEM_OUTPUT = {
@@ -66,9 +66,21 @@ class FakeConversation:
         self.tts = tts
         self.thread = SimpleNamespace(id="thread-1")
         self.ingested = []
+        self.latency = TurnLatencyEstimator()
+        self.prefired = []
 
     def ingest(self, speaker, text, respond):
         self.ingested.append((speaker, text, respond))
+
+    def prefire(self, speaker, text):
+        self.prefired.append((speaker, text))
+        return True
+
+    def commit_prefire(self, _speaker):
+        return True
+
+    def cancel_prefire(self, _speaker):
+        return True
 
     def interrupt(self):
         pass

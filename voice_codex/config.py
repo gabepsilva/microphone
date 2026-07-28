@@ -24,6 +24,7 @@ STARTUP_CONFIG_KEYS = (
     "codex_model",
     "codex_reasoning",
     "codex_fast",
+    "codex_prefire",
 )
 
 

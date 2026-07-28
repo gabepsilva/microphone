@@ -22,7 +22,7 @@ from voice_codex.capture import SoundActivityReporter
 from voice_codex.catalog import CodexModelOption, probe_codex_models
 from voice_codex.choosers import VirtualMeetingOutput, audio_outputs
 from voice_codex.cli import main
-from voice_codex.codex import CodexConversation
+from voice_codex.codex import CodexConversation, load_codex_sdk
 from voice_codex.domain import TranscriptRouter
 
 
@@ -154,17 +154,20 @@ def test_probe_codex_models_uses_visible_catalog_entries(monkeypatch) -> None:
     options = probe_codex_models()
 
     assert options == [
-        CodexModelOption("gpt-5.6-luna", "GPT-5.6 Luna", ("low",), "low"),
+        CodexModelOption("gpt-5.6-luna", "GPT-5.6 Luna", ("none", "low"), "low"),
         CodexModelOption(
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
-            ("low", "medium"),
+            ("none", "low", "medium"),
             "medium",
         ),
     ]
 
 
 def test_model_switch_forks_the_current_codex_thread() -> None:
+    # Built without ``__init__``, so the SDK names the fork call reads are
+    # bound here rather than by whichever test happened to run first.
+    load_codex_sdk()
     calls: list[tuple[str, dict[str, object]]] = []
     updates: list[dict[str, object]] = []
     conversation = object.__new__(CodexConversation)

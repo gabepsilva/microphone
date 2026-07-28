@@ -60,6 +60,7 @@ def saved_args(**overrides):
             "codex_model": "gpt-5.6-luna",
             "codex_reasoning": "low",
             "codex_fast": True,
+            "codex_prefire": True,
             **overrides,
         }
     )
@@ -162,6 +163,7 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
         "codex_fast": True,
+        "codex_prefire": True,
     }
 
 
@@ -647,6 +649,7 @@ def test_a_turn_silence_inside_the_editable_range_is_accepted(
         'turn_silence: "three"\n',
         "turn_silence: true\n",
         'codex_fast: "yes"\n',
+        'codex_prefire: "yes"\n',
     ],
 )
 def test_a_config_value_the_session_cannot_use_is_rejected(tmp_path, body) -> None:

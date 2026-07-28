@@ -12,13 +12,19 @@ import json
 import os
 import queue
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from .domain import SentenceChunker, TranscriptRouter
+from .domain import (
+    CodexRequest,
+    SentenceChunker,
+    TranscriptRouter,
+    TurnLatencyEstimator,
+)
 from .presentation import CodexPresentation
 
 # --------------------------------------------------------------------------
@@ -108,6 +114,14 @@ Codex in a User Voice/User Text/Them/Codex transcript.
 Every transcript entry has a ``timestamp`` in local ISO 8601 time, generated
 when Voice Codex submits the entry. Use it for conversational timing context.
 
+The thread may open with a one-line warm-up exchange that has no transcript
+entries. It exists to make the first real reply fast and is not part of the
+conversation; ignore it as context.
+
+A reply may be started before the speaker has finished and then cut off when
+they resume. Your own truncated messages in this thread are that, not a
+failure to answer, and the request that follows carries the full transcript.
+
 Responses are spoken sentence-by-sentence. Start every response with a short,
 direct, complete sentence so speech can begin quickly. Keep conversational
 voice replies concise unless the user asks for detail.
@@ -137,13 +151,25 @@ class CodexTurnRenderer:
     command boundary.
     """
 
-    def __init__(self, transcript_display, reply_to, sentence_chunker=None):
+    def __init__(
+        self,
+        transcript_display,
+        reply_to,
+        sentence_chunker=None,
+        on_first_delta=None,
+    ):
         load_codex_sdk()  # `handle` dispatches on the SDK's notification types
         self.display = transcript_display
         self.reply_to = reply_to
         self.chunker = sentence_chunker
+        # Reported on the first delta rather than on the completed message,
+        # because what the pre-fire schedule needs to learn is when the reply
+        # became audible, not when it finished.
+        self.on_first_delta = on_first_delta
         self.message_open = False
         self.last_usage = None
+        self.saw_delta = False
+        self.errors = []
 
     def render(self, events):
         for event in events:
@@ -161,6 +187,7 @@ class CodexTurnRenderer:
         elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
             self.last_usage = payload.token_usage.last
         elif isinstance(payload, ErrorNotification):
+            self.errors.append(payload.error.message)
             self.display.error(payload.error.message)
         elif isinstance(payload, TurnCompletedNotification):
             self._turn_completed()
@@ -193,6 +220,10 @@ class CodexTurnRenderer:
 
     def _delta(self, delta):
         self._open_message()
+        if not self.saw_delta:
+            self.saw_delta = True
+            if self.on_first_delta is not None:
+                self.on_first_delta()
         self.display.codex_delta(delta)
         if self.chunker is not None:
             self.chunker.feed(delta)
@@ -223,6 +254,45 @@ class CodexSettings:
     model: str
     reasoning_effort: str
     service_tier: str | None = None
+    prefire: bool = True
+
+
+# The effort to retreat to when the chosen one is refused. ``none`` is the
+# fastest effort the API accepts, but no catalog advertises it — neither
+# ``codex debug models`` nor ``model/list`` lists it for any model — so a
+# model that does not take it can only be discovered by being told no. The
+# refusal arrives as a streamed error and produces no reply at all, which
+# would be a silent session rather than a slow one.
+FALLBACK_EFFORT = "low"
+_EFFORT_REFUSAL = ('"param": "reasoning.effort"', "unsupported_value")
+
+# Asked once per thread, before anyone is waiting on it. Short because its
+# answer is discarded; the point is the round trip, not the words.
+WARMUP_PROMPT = "Warm-up ping. Reply with exactly: ready."
+
+
+@dataclass
+class Speculation:
+    """A turn started before its speaker's silence window had closed.
+
+    ``committed`` is what separates a reply from a guess. Until the window
+    closes the turn can still be abandoned, and abandoning it must leave the
+    transcript exactly as it was — so the router entries stay pending until
+    this says they were used.
+    """
+
+    request: CodexRequest
+    turn: ActiveTurn | None = None
+    committed: bool = False
+    abandoned: bool = False
+
+
+@dataclass
+class QueuedTurn:
+    """One unit of work for the worker: a request, speculative or settled."""
+
+    request: CodexRequest
+    speculation: Speculation | None = None
 
 
 class CodexConversation:
@@ -247,6 +317,13 @@ class CodexConversation:
         self.active_turn: ActiveTurn | None = None
         self.requested_model = None
         self.requested_reasoning_effort = None
+        self.prefire_enabled = settings.prefire
+        self.latency = TurnLatencyEstimator()
+        self.speculation: Speculation | None = None
+        # A fresh thread's first turn costs about a second more than the ones
+        # after it. Set here and after every fork, because a fork is a fresh
+        # thread and would quietly re-incur it.
+        self.warmup_pending = True
         self.codex = Codex()
         self.thread = self.codex.thread_start(
             model=self.model,
@@ -262,17 +339,90 @@ class CodexConversation:
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
 
+    @staticmethod
+    def _now():
+        return datetime.now().astimezone().isoformat(timespec="seconds")
+
     def ingest(self, speaker, text, respond, timestamp=None):
         """Store every input as context and optionally queue a serialized reply."""
         if self.shutdown_requested.is_set():
             return
-        timestamp = timestamp or datetime.now().astimezone().isoformat(
-            timespec="seconds"
-        )
+        if respond:
+            # A settled request supersedes a guess. The speculative turn was
+            # started from a prefix of what this one carries, so letting both
+            # run would answer the same transcript twice.
+            self._abandon_speculation()
+        timestamp = timestamp or self._now()
         with self.context_lock:
             request = self.router.ingest(speaker, text, timestamp, respond)
         if request is not None:
-            self.requests.put_nowait(request)
+            self.requests.put_nowait(QueuedTurn(request))
+
+    def _abandon_speculation(self, speaker=None) -> bool:
+        """Drop the outstanding speculative turn and cut off what it started.
+
+        The router is deliberately not told: the entries were never consumed,
+        so leaving them pending is what makes the next request carry both what
+        this turn guessed at and whatever came after it.
+        """
+        with self.context_lock:
+            speculation = self.speculation
+            if speculation is None or speculation.committed:
+                return False
+            if speaker is not None and speculation.request.reply_to != speaker:
+                return False
+            speculation.abandoned = True
+            self.speculation = None
+            turn = speculation.turn
+        if turn is not None:
+            with suppress(Exception):
+                turn.interrupt()
+        if self.tts is not None:
+            self.tts.interrupt()
+        return True
+
+    def prefire(self, speaker, text, timestamp=None) -> bool:
+        """Start answering before the speaker's silence window has closed.
+
+        The reply is streamed and spoken as it arrives rather than held back.
+        Holding it would give back the time this exists to save, and there is
+        nothing to hold it for: the schedule aims the first word at the moment
+        the window closes, and a speaker who resumes before then cancels the
+        turn through the same path that already interrupts speech.
+        """
+        if not self.prefire_enabled or self.shutdown_requested.is_set():
+            return False
+        timestamp = timestamp or self._now()
+        with self.context_lock:
+            if self.speculation is not None:
+                return False
+            request = self.router.speculate(speaker, text, timestamp)
+            speculation = Speculation(request)
+            self.speculation = speculation
+        self.requests.put_nowait(QueuedTurn(request, speculation))
+        return True
+
+    def cancel_prefire(self, speaker) -> bool:
+        """Abandon this speaker's speculative turn: they resumed talking."""
+        return self._abandon_speculation(speaker)
+
+    def commit_prefire(self, speaker) -> bool:
+        """Adopt a speculative turn as the real reply to a closed window.
+
+        Reports whether one was adopted. A caller told ``False`` still has a
+        turn to submit; a caller told ``True`` must not, because the reply is
+        already streaming and submitting again would answer twice.
+        """
+        with self.context_lock:
+            speculation = self.speculation
+            # An abandoned one is never found here: abandoning clears this
+            # slot under the same lock, so what is still in it is still live.
+            if speculation is None or speculation.request.reply_to != speaker:
+                return False
+            speculation.committed = True
+            self.router.commit(speculation.request)
+            self.speculation = None
+        return True
 
     def request_model(self, model: str) -> bool:
         """Queue a model switch for the worker before its next Codex turn."""
@@ -311,6 +461,9 @@ class CodexConversation:
                 )
                 return
             self.model = model
+            # A fork is a new thread, and carries a new thread's slow first
+            # turn. Warming it here keeps that cost off the next thing said.
+            self.warmup_pending = True
             self.transcript_display.set_codex(model=self.model, thread=self.thread.id)
             self.transcript_display.note(f"Codex model → {self.model}")
 
@@ -329,28 +482,75 @@ class CodexConversation:
             for entry in request.entries
         ]
 
-    def _run_codex(self, request):
+    @staticmethod
+    def build_prompt(request):
+        entries = CodexConversation.context_entries(request)
+        return (
+            "Transcript entries since the previous queued reply:\n"
+            f"{json.dumps(entries, ensure_ascii=False)}\n\n"
+            f"Reply now to the latest {request.reply_to} input. "
+            "Use the other entries as context."
+        )
+
+    def _start_turn(self, prompt):
+        return self.thread.turn(
+            prompt,
+            effort=ReasoningEffort(self.reasoning_effort),
+            sandbox=self.sandbox,
+            approval_mode=ApprovalMode.deny_all,
+        )
+
+    def _run_codex(self, queued):
+        request = queued.request
+        speculation = queued.speculation
         self.transcript_display.begin_codex()
         try:
-            entries = self.context_entries(request)
-            prompt = (
-                "Transcript entries since the previous queued reply:\n"
-                f"{json.dumps(entries, ensure_ascii=False)}\n\n"
-                f"Reply now to the latest {request.reply_to} input. "
-                "Use the other entries as context."
-            )
-            self.active_turn = self.thread.turn(
-                prompt,
-                effort=ReasoningEffort(self.reasoning_effort),
-                sandbox=self.sandbox,
-                approval_mode=ApprovalMode.deny_all,
-            )
-            self._stream_turn(self.active_turn, request.reply_to)
+            prompt = self.build_prompt(request)
+            errors = self._attempt(prompt, request.reply_to, speculation)
+            if self._effort_refused(errors) and self._retreat_effort():
+                self._attempt(prompt, request.reply_to, speculation)
         except Exception as error:
             self.transcript_display.error(f"Codex error: {error}")
         finally:
             self.active_turn = None
             self.transcript_display.end_codex()
+
+    def _attempt(self, prompt, reply_to, speculation=None):
+        """Run one turn to completion; report the errors it streamed back."""
+        turn = self._start_turn(prompt)
+        self.active_turn = turn
+        if speculation is not None and not self._adopt_turn(speculation, turn):
+            # Abandoned between queueing and starting: the speaker resumed
+            # while this turn was still waiting its place in the worker.
+            with suppress(Exception):
+                turn.interrupt()
+            return []
+        return self._stream_turn(turn, reply_to)
+
+    def _adopt_turn(self, speculation, turn) -> bool:
+        """Attach a started turn to its speculation, unless it is already dead."""
+        with self.context_lock:
+            if speculation.abandoned:
+                return False
+            speculation.turn = turn
+            return True
+
+    def _effort_refused(self, errors) -> bool:
+        return any(
+            all(marker in error for marker in _EFFORT_REFUSAL) for error in errors
+        )
+
+    def _retreat_effort(self) -> bool:
+        """Step down to an effort the model accepts; report whether it moved."""
+        if self.reasoning_effort == FALLBACK_EFFORT:
+            return False
+        refused = self.reasoning_effort
+        self.reasoning_effort = FALLBACK_EFFORT
+        self.transcript_display.set_codex(effort=self.reasoning_effort)
+        self.transcript_display.note(
+            f"Codex refused reasoning effort {refused!r} → {FALLBACK_EFFORT}"
+        )
+        return True
 
     def _stream_turn(self, turn, reply_to):
         if self.tts is not None:
@@ -358,24 +558,65 @@ class CodexConversation:
         sentence_chunker = (
             SentenceChunker(self.tts.speak) if self.tts is not None else None
         )
-        CodexTurnRenderer(self.transcript_display, reply_to, sentence_chunker).render(
-            turn.stream()
+        started = time.monotonic()
+        renderer = CodexTurnRenderer(
+            self.transcript_display,
+            reply_to,
+            sentence_chunker,
+            on_first_delta=lambda: self.latency.record(time.monotonic() - started),
         )
+        renderer.render(turn.stream())
+        return renderer.errors
+
+    def _warm_up(self):
+        """Pay a thread's first-turn cost before anyone is waiting on it.
+
+        A new thread's first turn costs about a second more than every turn
+        after it, and the cost belongs to the thread rather than to the
+        process — warming a different one does not help. So this runs on the
+        real thread, and drops the answer instead of rendering it.
+
+        It yields the moment real work appears. A speaker who starts talking
+        during startup must not wait out a turn nobody asked for.
+        """
+        self.warmup_pending = False
+        try:
+            turn = self._start_turn(WARMUP_PROMPT)
+        except Exception:
+            return
+        self.active_turn = turn
+        events = turn.stream()
+        try:
+            for _event in events:
+                if not self.requests.empty() or self.shutdown_requested.is_set():
+                    with suppress(Exception):
+                        turn.interrupt()
+                    break
+        except Exception:
+            # A warm-up that fails has cost nothing worth reporting: the turn
+            # it was warming will report its own failure loudly enough.
+            pass
+        finally:
+            events.close()
+            self.active_turn = None
 
     def _worker(self):
         while not self.shutdown_requested.is_set():
             self._apply_pending_settings()
+            if self.warmup_pending:
+                self._warm_up()
             try:
-                request = self.requests.get(timeout=0.2)
+                queued = self.requests.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if request is None:
+            if queued is None:
                 return
             self._apply_pending_settings()
-            self._run_codex(request)
+            self._run_codex(queued)
 
     def close(self):
         self.shutdown_requested.set()
+        self._abandon_speculation()
         if self.active_turn is not None:
             with suppress(Exception):
                 self.active_turn.interrupt()

@@ -35,7 +35,7 @@ from .capture import (
 )
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
-from .domain import SpeakerGate, TurnSilence, TurnSilenceClock
+from .domain import PrefirePlan, SpeakerGate, TurnSilence, TurnSilenceClock
 from .listener import TranscriptSubmitter, tts_switch
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -163,13 +163,23 @@ def main():
             model=args.codex_model,
             reasoning_effort=args.codex_reasoning,
             service_tier="fast" if args.codex_fast else None,
+            prefire=args.codex_prefire,
         ),
         transcript_display,
         tts,
     )
 
     attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
-    submitter = TranscriptSubmitter(conversation, gate, tts)
+    # The plan reads the conversation's own measured time-to-first-word, so
+    # the moment a turn is guessed at tracks what Codex is actually doing.
+    submitter = TranscriptSubmitter(
+        conversation,
+        gate,
+        tts,
+        prefire_plan=(
+            PrefirePlan(conversation.latency) if args.codex_prefire else None
+        ),
+    )
 
     user_listener = submitter.channel(
         args.confidence,

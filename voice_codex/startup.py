@@ -31,7 +31,14 @@ from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
-CODEX_EFFORTS = ("low", "medium", "high")
+CODEX_EFFORTS = ("none", "low", "medium", "high")
+
+# Pre-firing overlaps Codex's thinking with the silence a finished turn is
+# already waiting out, which is the difference between the first word landing
+# as the window closes and landing most of a second after it. The cost is the
+# occasional wasted turn, when a speaker who paused turns out not to have
+# finished — which is what --no-codex-prefire is for.
+DEFAULT_CODEX_PREFIRE = True
 
 # A spoken conversation is waiting on the first word out loud, and the service
 # tier is the one part of that wait this program does not otherwise control:
@@ -106,6 +113,17 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--codex-prefire",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Start answering before the turn-silence window closes, so the "
+            f"reply begins as it ends (default: "
+            f"{'on' if DEFAULT_CODEX_PREFIRE else 'off'}). "
+            "--no-codex-prefire waits out the full window first"
+        ),
+    )
+    parser.add_argument(
         "--them-output",
         help=(
             "PulseAudio/PipeWire output name to transcribe as Them, "
@@ -167,6 +185,7 @@ def _resolve_defaults(args):
         ("codex_model", DEFAULT_CODEX_MODEL),
         ("codex_reasoning", DEFAULT_CODEX_EFFORT),
         ("codex_fast", DEFAULT_CODEX_FAST),
+        ("codex_prefire", DEFAULT_CODEX_PREFIRE),
     ):
         if getattr(args, option) is None:
             setattr(args, option, fallback)
@@ -183,6 +202,8 @@ def _validate_startup_args(parser, args):
         parser.error(f"startup config 'tts_provider' must be one of {allowed}")
     if args.codex_fast is not None and not isinstance(args.codex_fast, bool):
         parser.error("startup config 'codex_fast' must be true or false")
+    if args.codex_prefire is not None and not isinstance(args.codex_prefire, bool):
+        parser.error("startup config 'codex_prefire' must be true or false")
     if args.codex_reasoning is not None and args.codex_reasoning not in CODEX_EFFORTS:
         allowed = ", ".join(repr(name) for name in CODEX_EFFORTS)
         parser.error(f"startup config 'codex_reasoning' must be one of {allowed}")
@@ -257,6 +278,7 @@ def startup_settings(selection, args):
         "codex_model": args.codex_model,
         "codex_reasoning": args.codex_reasoning,
         "codex_fast": args.codex_fast,
+        "codex_prefire": args.codex_prefire,
     }
 
 

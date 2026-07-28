@@ -45,7 +45,7 @@ FLOORS = {
     "voice_codex/choosers.py": 94.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
     "voice_codex/cli.py": 98.0,
-    "voice_codex/codex.py": 97.0,
+    "voice_codex/codex.py": 98.0,
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 98.0,
     "voice_codex/listener.py": 100.0,

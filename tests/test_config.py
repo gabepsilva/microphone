@@ -25,6 +25,7 @@ def test_startup_config_round_trip(tmp_path) -> None:
         # reads it back through JSON, and "true" would be a nine-tenths-right
         # config key that silently reads as truthy either way.
         "codex_fast": False,
+        "codex_prefire": True,
     }
     config = tmp_path / "voice.yaml"
 
@@ -105,6 +106,7 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
         "codex_fast": True,
+        "codex_prefire": False,
     }
 
     save_startup_config(path, settings)
