@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import threading
 
+from textual import events
+from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Input
 
 from voice_codex.tui import EntryRow
@@ -595,6 +597,354 @@ def test_the_running_command_row_is_never_unmounted_under_it(tui) -> None:
     command = next(entry for entry in facade.app.entries if entry.kind == "command")
     assert command.output == ["total 0"]
     assert command.exit_code == 0
+
+
+# --------------------------------------------------------------------------
+# Scrolling back through the history
+#
+# The window is what is mounted, not what is kept. These hold the property
+# that makes the cap above affordable: every entry can still be reached by
+# scrolling, and the run of mounted rows stays bounded while it is reached.
+# --------------------------------------------------------------------------
+
+
+def wheel(transcript, delta: int):
+    kind = events.MouseScrollUp if delta < 0 else events.MouseScrollDown
+    return kind(
+        widget=transcript,
+        x=0,
+        y=0,
+        delta_x=0,
+        delta_y=delta,
+        button=0,
+        shift=False,
+        meta=False,
+        ctrl=False,
+    )
+
+
+async def scroll_back(pilot, facade):
+    """Take the view to the top and turn the wheel, as a reader does."""
+    transcript = facade.app.query_one("#transcript")
+    transcript.scroll_home(animate=False)
+    await pilot.pause()
+    transcript.post_message(wheel(transcript, -1))
+    await pilot.pause()
+    await pilot.pause()
+
+
+async def scroll_forward(pilot, facade):
+    transcript = facade.app.query_one("#transcript")
+    transcript.scroll_end(animate=False)
+    await pilot.pause()
+    transcript.post_message(wheel(transcript, 1))
+    await pilot.pause()
+    await pilot.pause()
+
+
+def windowed(facade, mounted_limit=20, page=20, ceiling=60):
+    facade.app.MAX_MOUNTED_ROWS = mounted_limit
+    facade.app.SCROLLBACK_PAGE_ROWS = page
+    facade.app.MAX_SCROLLBACK_ROWS = ceiling
+
+
+def mounted_texts(facade):
+    return [row.entry.text for row in mounted_rows(facade)]
+
+
+def test_scrolling_back_reaches_entries_the_window_left_behind(tui) -> None:
+    """The point of the whole mechanism: no entry is out of reach."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    reached: list[list[str]] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        assert "line 0" not in mounted_texts(facade)
+        for _ in range(12):
+            await scroll_back(pilot, facade)
+        reached.append(mounted_texts(facade))
+
+    drive(facade, body)
+
+    assert "line 0" in reached[0]
+    assert reached[0][:3] == ["line 0", "line 1", "line 2"]
+
+
+def test_paging_older_rows_in_leaves_the_view_where_it_was(tui) -> None:
+    """Mounting above the view must not slide it down under the reader."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    seen: list[str] = []
+    reachable: list[list[str]] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        transcript = facade.app.query_one("#transcript")
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        seen.append(facade.app._top_row(transcript).entry.text)
+        transcript.post_message(wheel(transcript, -1))
+        await pilot.pause()
+        await pilot.pause()
+        seen.append(facade.app._top_row(transcript).entry.text)
+        reachable.append(mounted_texts(facade))
+
+    drive(facade, body)
+
+    assert seen == ["line 180", "line 180"]
+    assert reachable[0][0] == "line 160"
+
+
+def test_scrolling_back_keeps_the_mounted_run_bounded(tui) -> None:
+    """Reachable history must not cost an unbounded number of widgets."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    counted: list[int] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        for _ in range(12):
+            await scroll_back(pilot, facade)
+            counted.append(len(mounted_rows(facade)))
+
+    drive(facade, body)
+
+    assert max(counted) <= facade.app.MAX_SCROLLBACK_ROWS
+
+
+def test_a_held_back_view_still_records_what_arrives(tui) -> None:
+    """New entries land in the record without moving what is being read."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    read: list[list[str]] = []
+
+    async def body(pilot):
+        for index in range(100):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        await scroll_back(pilot, facade)
+        before = mounted_texts(facade)
+        for index in range(100, 130):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        read.append(before)
+        read.append(mounted_texts(facade))
+
+    drive(facade, body)
+
+    assert read[0] == read[1]
+    assert entry_texts(facade)[-1] == "line 129"
+    assert "line 129" not in read[1]
+
+
+def test_returning_to_the_bottom_follows_the_live_end_again(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    shown: list[list[str]] = []
+
+    async def body(pilot):
+        for index in range(100):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        await scroll_back(pilot, facade)
+        assert not facade.app._tailing
+        for index in range(100, 120):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        for _ in range(12):
+            await scroll_forward(pilot, facade)
+            if facade.app._tailing:
+                break
+        await pilot.pause()
+        shown.append(mounted_texts(facade))
+
+    drive(facade, body)
+
+    assert facade.app._tailing
+    assert shown[0][-1] == "line 119"
+
+
+def test_a_stream_scrolled_away_from_keeps_the_row_it_is_writing_to(tui) -> None:
+    """The row created out of view is the row that is mounted, not a copy."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    shown: list[list[str]] = []
+
+    async def body(pilot):
+        for index in range(100):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        await scroll_back(pilot, facade)
+        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_delta("an answer written out of view")
+        await pilot.pause()
+        for _ in range(12):
+            await scroll_forward(pilot, facade)
+            if facade.app._tailing:
+                break
+        facade.end_codex()
+        await pilot.pause()
+        shown.append(mounted_texts(facade))
+
+    drive(facade, body)
+
+    assert shown[0][-1] == "an answer written out of view"
+    assert shown[0].count("an answer written out of view") == 1
+
+
+def test_arriving_at_the_bottom_returns_to_the_live_end_at_once(tui) -> None:
+    """However far back the reader went, the bottom is the live end."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    arrived: list[tuple[bool, str, int]] = []
+
+    async def body(pilot):
+        for index in range(300):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        for _ in range(12):
+            await scroll_back(pilot, facade)
+        assert facade.app._window_start < 100
+        await scroll_forward(pilot, facade)
+        arrived.append(
+            (
+                facade.app._tailing,
+                mounted_texts(facade)[-1],
+                len(facade.app._window),
+            )
+        )
+
+    drive(facade, body)
+
+    assert arrived[0][0] is True
+    assert arrived[0][1] == "line 299"
+    assert arrived[0][2] <= facade.app.MAX_MOUNTED_ROWS
+
+
+def test_scrolling_forward_off_the_bottom_edge_pages_nothing(tui) -> None:
+    """Only arriving at the bottom asks for the entries below it."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    windows: list[int] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        await scroll_back(pilot, facade)
+        await scroll_back(pilot, facade)
+        transcript = facade.app.query_one("#transcript")
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        windows.append(facade.app._window_end)
+        transcript.post_message(wheel(transcript, 1))
+        await pilot.pause()
+        await pilot.pause()
+        windows.append(facade.app._window_end)
+
+    drive(facade, body)
+
+    assert windows[0] == windows[1]
+    assert not facade.app._tailing
+
+
+def test_dragging_the_scrollbar_reads_as_scrolling_too(tui) -> None:
+    """A drag never reaches the wheel handler, and must still be heard."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    walked: list[tuple[bool, int]] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        transcript = facade.app.query_one("#transcript")
+
+        async def drag_to(y):
+            transcript.post_message(ScrollTo(y=y, animate=False))
+            await pilot.pause()
+            await pilot.pause()
+
+        await drag_to(0)
+        walked.append((facade.app._tailing, facade.app._window_start))
+        await drag_to(transcript.max_scroll_y)
+        walked.append((facade.app._tailing, facade.app._window_start))
+
+    drive(facade, body)
+
+    assert walked[0] == (False, 160)
+    assert walked[1][0] is True
+
+
+def test_clicking_the_scrollbar_gutter_reads_as_scrolling_too(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    windowed(facade)
+    walked: list[bool] = []
+
+    async def body(pilot):
+        for index in range(200):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        transcript = facade.app.query_one("#transcript")
+        transcript.post_message(ScrollUp())
+        await pilot.pause()
+        walked.append(facade.app._tailing)
+        transcript.scroll_end(animate=False)
+        await pilot.pause()
+        transcript.post_message(ScrollDown())
+        await pilot.pause()
+        await pilot.pause()
+        walked.append(facade.app._tailing)
+
+    drive(facade, body)
+
+    assert walked == [False, True]
+
+
+def test_an_empty_transcript_has_no_row_at_the_top(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    top: list[object] = []
+
+    async def body(pilot):
+        transcript = facade.app.query_one("#transcript")
+        top.append(facade.app._top_row(transcript))
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert top == [None]
+
+
+def test_a_stream_at_the_far_end_survives_scrolling_back_past_it(tui) -> None:
+    """The ceiling gives rows back from the live end — but never that one."""
+    facade = tui.VoiceCodexTUI()
+    windowed(facade, mounted_limit=5, page=5, ceiling=10)
+
+    async def body(pilot):
+        for index in range(60):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_delta("still open")
+        await pilot.pause()
+        streaming = facade.app._streaming
+        for _ in range(4):
+            await scroll_back(pilot, facade)
+        assert streaming in facade.app._window
+        assert len(facade.app._window) > facade.app.MAX_SCROLLBACK_ROWS
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert facade.app.entries[-1].text == "still open"
 
 
 # --------------------------------------------------------------------------
