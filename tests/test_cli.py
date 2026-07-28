@@ -155,7 +155,7 @@ def wiring(monkeypatch, tmp_path):
         cli, "get_model_for_language", lambda **kwargs: ("model-path", "arch")
     )
     monkeypatch.setattr("voice_codex.tui.VoiceCodexTUI", FakeTUI)
-    monkeypatch.setattr(cli.sys, "argv", ["voice-codex.py", "--config", str(config)])
+    monkeypatch.setattr(cli.sys, "argv", ["voice_codex.py", "--config", str(config)])
 
     built.update(
         tts_enabled=False,

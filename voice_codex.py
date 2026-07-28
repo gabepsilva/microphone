@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the Voice Codex application."""
+"""Entry point for the Voice Codex application."""
 
 from __future__ import annotations
 

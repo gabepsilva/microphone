@@ -27,7 +27,7 @@ from voice_codex.domain import TranscriptRouter
 
 
 def test_cli_no_longer_offers_the_ansi_ui_switch(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["voice-codex.py", "--help"])
+    monkeypatch.setattr(sys, "argv", ["voice_codex.py", "--help"])
 
     with pytest.raises(SystemExit, match="0"):
         main()
