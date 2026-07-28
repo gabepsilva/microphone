@@ -54,12 +54,11 @@ off, and choosing one again turns it back on. A session started with
 ## Running and presentation
 
 ```bash
-uv run voice-codex.py
+uv run voice_codex.py
 ```
 
-`uv run voice-codex-tui.py` is an equivalent compatibility command. Both
-commands load `voice.yaml`, initialize User Voice transcription, and also
-transcribe Them when `them_output` is configured.
+The command loads `voice.yaml`, initializes User Voice transcription, and
+also transcribes Them when `them_output` is configured.
 
 The Textual TUI is the only presentation surface. It is still under active
 development; model selection remains a startup option because the Codex SDK

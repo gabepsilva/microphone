@@ -10,7 +10,7 @@ import pytest
 from voice_codex import cli
 from voice_codex.catalog import _parse_codex_model_catalog
 
-ENTRYPOINTS = ["voice-codex.py", "voice-codex-tui.py"]
+ENTRYPOINTS = ["voice_codex.py"]
 ROOT = Path(__file__).resolve().parents[1]
 
 

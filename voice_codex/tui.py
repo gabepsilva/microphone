@@ -5,12 +5,9 @@ This module owns no audio, transcription, or Codex logic. It renders state and
 forwards user intent. Everything it displays arrives through
 :class:`VoiceCodexTUI`, a thread-safe facade, and everything the user does
 leaves through :class:`TuiHooks` callbacks. The runtime uses that facade as its
-display boundary when started with ``voice-codex.py``.
-
-``voice-codex-tui.py`` is a compatibility alias for that same command, not a
-way to open this module on its own. Both entry points call
-``voice_codex.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds them
-to it.
+display boundary when started with ``voice_codex.py``. The entry point calls
+``voice_codex.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds it
+to that contract.
 """
 
 from __future__ import annotations
