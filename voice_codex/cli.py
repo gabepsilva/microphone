@@ -22,7 +22,12 @@ that a boundary is in the wrong place.
 
 from __future__ import annotations
 
+import atexit
+import fcntl
+import os
 import sys
+import tempfile
+from pathlib import Path
 
 from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
@@ -52,6 +57,42 @@ from .startup import (
     run_session,
     startup_settings,
 )
+
+LOCK_PATH = (
+    Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / "voice-codex.lock"
+)
+_INSTANCE_LOCK = None
+_LOCK_RELEASE_REGISTERED = False
+
+
+def _release_single_instance_lock():
+    """Release the process lock, if held."""
+    global _INSTANCE_LOCK
+    if _INSTANCE_LOCK is None:
+        return
+    _INSTANCE_LOCK.close()
+    _INSTANCE_LOCK = None
+
+
+def acquire_single_instance_lock(lock_path: Path = LOCK_PATH):
+    """Hold an exclusive process lock for the life of this process.
+
+    The lock is advisory and tied to the open file descriptor, so a forced
+    process exit still releases it when the kernel closes descriptors.
+    """
+    global _INSTANCE_LOCK, _LOCK_RELEASE_REGISTERED
+    if _INSTANCE_LOCK is not None:
+        return
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        lock_file.close()
+        raise RuntimeError("Another voice_codex session is already running.") from error
+    _INSTANCE_LOCK = lock_file
+    if not _LOCK_RELEASE_REGISTERED:
+        atexit.register(_release_single_instance_lock)
+        _LOCK_RELEASE_REGISTERED = True
 
 
 def build_speech(selection, args, playback_output):
@@ -165,6 +206,7 @@ def remembering_turn_silence(turn_silence, config):
 
 
 def main():
+    acquire_single_instance_lock()
     parser, args = parse_startup_args()
     selection, virtual_meeting = resolve_startup_selection(args)
     them_output = selection.them_output

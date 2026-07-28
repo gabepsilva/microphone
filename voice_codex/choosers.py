@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -245,6 +246,7 @@ class VirtualMeetingOutput:
     """Isolate meeting playback in a monitored sink and loop it to headphones."""
 
     DESCRIPTION = "Voice Codex Meeting"
+    SINK_PREFIX = "voice_codex_meeting_"
 
     def __init__(self, playback_output):
         if shutil.which("pactl") is None:
@@ -256,6 +258,7 @@ class VirtualMeetingOutput:
         self.close_lock = threading.Lock()
         self.closed = False
         try:
+            self._remove_stale_modules()
             self.sink_module = self._load_module(
                 "module-null-sink",
                 f"sink_name={self.sink_name}",
@@ -294,6 +297,63 @@ class VirtualMeetingOutput:
             raise RuntimeError(
                 f"pactl returned an invalid module ID for {module}."
             ) from error
+
+    @staticmethod
+    def _module_args(module):
+        if isinstance(module, dict):
+            args = module.get("argument")
+            if isinstance(args, str):
+                return args
+        return ""
+
+    @classmethod
+    def _is_stale_virtual_meeting_module(cls, module):
+        if not isinstance(module, dict):
+            return False
+        name = module.get("name")
+        args = cls._module_args(module)
+        if name == "module-null-sink":
+            return re.search(rf"\bsink_name={cls.SINK_PREFIX}\d+\b", args) is not None
+        if name == "module-loopback":
+            return (
+                re.search(rf"\bsource={cls.SINK_PREFIX}\d+\.monitor\b", args)
+                is not None
+            )
+        return False
+
+    @classmethod
+    def _remove_stale_modules(cls):
+        try:
+            result = subprocess.run(
+                ["pactl", "--format=json", "list", "modules"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            modules = json.loads(result.stdout)
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            json.JSONDecodeError,
+            AttributeError,
+            TypeError,
+        ):
+            return
+        if not isinstance(modules, list):
+            return
+        stale_ids = [
+            module.get("index")
+            for module in modules
+            if cls._is_stale_virtual_meeting_module(module)
+            and isinstance(module.get("index"), int)
+        ]
+        for module_id in stale_ids:
+            subprocess.run(
+                ["pactl", "unload-module", str(module_id)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
 
     @property
     def transcript_output(self):

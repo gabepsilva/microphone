@@ -17,6 +17,7 @@ import pytest
 
 from voice_codex.catalog import CodexModelOption, populate_codex_model_catalog
 from voice_codex.choosers import (
+    VirtualMeetingOutput,
     audio_outputs,
     choose_codex_after,
     choose_microphone,
@@ -434,6 +435,117 @@ def test_an_unavailable_model_catalog_notes_it_instead_of_failing(monkeypatch) -
         "Codex model catalog unavailable; using the configured model"
     ]
     assert display.catalog == {}
+
+
+def test_virtual_meeting_stale_module_detection_matches_its_own_prefix() -> None:
+    assert VirtualMeetingOutput._is_stale_virtual_meeting_module(
+        {
+            "name": "module-null-sink",
+            "argument": "sink_name=voice_codex_meeting_123",
+        }
+    )
+    assert VirtualMeetingOutput._is_stale_virtual_meeting_module(
+        {
+            "name": "module-loopback",
+            "argument": "source=voice_codex_meeting_123.monitor sink=alsa_output.pci",
+        }
+    )
+    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module(
+        {
+            "name": "module-null-sink",
+            "argument": "sink_name=another_sink",
+        }
+    )
+    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module(
+        {"name": "module-loopback", "argument": "source=another_sink.monitor"}
+    )
+    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module("not a module")
+
+
+def test_virtual_meeting_stale_module_cleanup_ignores_unparseable_listings(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout='{"not":"a list"}')
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    VirtualMeetingOutput._remove_stale_modules()
+
+    assert calls == [["pactl", "--format=json", "list", "modules"]]
+
+
+def test_virtual_meeting_requires_pactl(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="requires pactl"):
+        VirtualMeetingOutput({"name": "headphones"})
+
+
+def test_virtual_meeting_raises_when_pactl_load_fails(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/pactl")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[:4] == ["pactl", "--format=json", "list", "modules"]:
+            return SimpleNamespace(stdout="[]")
+        if command[1] == "load-module":
+            raise subprocess.CalledProcessError(1, command, stderr="nope")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Could not load module-null-sink"):
+        VirtualMeetingOutput({"name": "headphones"})
+
+    assert calls[-1][:3] == ["pactl", "load-module", "module-null-sink"]
+
+
+def test_virtual_meeting_load_module_rejects_non_integer_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="not-a-number"),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid module ID"):
+        VirtualMeetingOutput._load_module("module-null-sink", "sink_name=x")
+
+
+def test_virtual_meeting_transcript_output_uses_sink_name() -> None:
+    meeting = object.__new__(VirtualMeetingOutput)
+    meeting.sink_name = "voice_codex_meeting_42"
+
+    assert meeting.transcript_output == {
+        "name": "voice_codex_meeting_42",
+        "monitor": "voice_codex_meeting_42.monitor",
+        "description": "Voice Codex Meeting",
+    }
+
+
+def test_virtual_meeting_close_skips_missing_modules(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(command) or SimpleNamespace(),
+    )
+    meeting = object.__new__(VirtualMeetingOutput)
+    meeting.loopback_module = None
+    meeting.sink_module = None
+    meeting.closed = False
+    import threading
+
+    meeting.close_lock = threading.Lock()
+
+    meeting.close()
+
+    assert calls == []
+    assert meeting.closed is True
 
 
 # --------------------------------------------------------------------------
