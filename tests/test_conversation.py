@@ -1207,10 +1207,16 @@ def test_an_idle_worker_keeps_checking_for_shutdown(quiet_conversation) -> None:
 
 
 def test_closing_stops_the_turn_the_speech_and_the_client(monkeypatch) -> None:
-    """Shutdown is a sequence; skipping any step leaves something running."""
+    """Shutdown is a sequence; skipping any step leaves something running.
+
+    The worker is stubbed out because this drives ``active_turn`` by hand: a
+    live one warms the thread up on the same field and clears it when it is
+    done, so the turn under test would be whichever of the two got there last.
+    """
     load_codex_sdk()
     codex = FakeCodex()
     monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     closed_speech = []
     tts = SimpleNamespace(
         interrupt=lambda: closed_speech.append("interrupt"),
