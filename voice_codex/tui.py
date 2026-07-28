@@ -531,12 +531,25 @@ class Sidebar(Vertical):
         box.label = MUTED_LABEL if muted else MUTE_LABEL
 
     def sync_codex(self) -> None:
-        """Cheap per-frame repaint — only the panel naming what Codex is doing."""
-        self.query_one("#panel-codex", Static).update(Group(*self._codex()))
+        """Cheap per-frame repaint — only the panel naming what Codex is doing.
+
+        ``layout=False`` for the reason :meth:`sync_audio` gives: the panel is
+        a fixed number of rows whatever it says, and asking for a layout would
+        spend a pass over every widget in the application to draw it.
+        """
+        self.query_one("#panel-codex", Static).update(
+            Group(*self._codex()), layout=False
+        )
 
     def sync_countdown(self) -> None:
-        """Cheap per-frame repaint — only the one line the countdown occupies."""
-        self.query_one("#panel-countdown", Static).update(self._countdown())
+        """Cheap per-frame repaint — only the one line the countdown occupies.
+
+        This one runs ten times a second, so it is the repaint that can least
+        afford a layout pass. See :meth:`sync_audio`.
+        """
+        self.query_one("#panel-countdown", Static).update(
+            self._countdown(), layout=False
+        )
 
     def sync_session(self) -> None:
         """Cheap repaint — only the session counters.
@@ -925,6 +938,11 @@ class VoiceCodexApp(App):
         color: #9aa3ad;
     }
     #sidebar Static { height: auto; }
+    /* The countdown alternates between a bar and nothing at all, and is
+       repainted without a layout pass ten times a second. Pinning the row it
+       occupies is what makes that safe: an auto height would have to be
+       re-measured to grow back, and the repaint deliberately does not ask. */
+    #panel-countdown { height: 1; }
     #mic-row, #them-row { height: auto; margin-bottom: 1; }
     #sidebar Checkbox {
         height: 1;
@@ -1001,15 +1019,28 @@ class VoiceCodexApp(App):
     # the interface steadily slower and the session steadily larger. Only the
     # widgets are capped: ``self.entries`` keeps every entry, and that is what
     # the save hook exports.
-    MAX_MOUNTED_ROWS = 300
+    #
+    # The number is small because the layout pass is what it buys back, and
+    # that pass walks every widget in the application rather than the visible
+    # ones: a row is five widgets, so 300 of them put ~1500 widgets under every
+    # repaint and cost ~300ms a frame, against ~100ms for 80. A terminal shows
+    # perhaps twenty rows, so anything beyond a few screens is paying layout
+    # for history nobody is looking at — and scrolling back is what reaches
+    # that history anyway.
+    MAX_MOUNTED_ROWS = 80
 
     # Scrolling back mounts older entries a page at a time, and gives the far
     # end of the window back once the mounted run reaches its ceiling. History
     # is therefore reachable however long the session runs, at a layout cost
     # that stays bounded — the ceiling is what is spent to buy the scrollback,
     # and it only applies while the view is held back off the live end.
-    SCROLLBACK_PAGE_ROWS = 100
-    MAX_SCROLLBACK_ROWS = 600
+    #
+    # A page is around two screens, so reading back moves in strides rather
+    # than a screen at a time, and the ceiling stays within a small multiple of
+    # the live window: a scrollback that mounts more than the live end does
+    # would make reading history the slowest thing the interface does.
+    SCROLLBACK_PAGE_ROWS = 40
+    MAX_SCROLLBACK_ROWS = 200
 
     # Codex streams faster than a terminal can usefully redraw. Deltas land on
     # the entry immediately and the row is repainted on this interval instead
