@@ -810,8 +810,14 @@ def test_every_turn_is_started_under_the_chosen_constraints(conversation) -> Non
 
 
 def test_interrupting_stops_the_active_turn_and_its_speech(monkeypatch) -> None:
+    """The worker is stubbed out because this drives ``active_turn`` by hand: a
+    live one warms the thread up on the same field and clears it when it is
+    done, so the turn under test would be whichever of the two got there last.
+    """
+    load_codex_sdk()
     codex = FakeCodex()
     monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     tts = SimpleNamespace(
         interrupted=0,
         closed=0,
