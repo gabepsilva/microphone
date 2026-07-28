@@ -110,6 +110,77 @@ def test_an_interrupted_turn_reads_as_cut_off(tui) -> None:
     assert "cut off" in tui.render_entry_body(facade.app.entries[0]).plain
 
 
+def test_thinking_is_a_codex_row_that_closes_with_what_it_cost(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.reasoning_started()
+        await pilot.pause()
+        facade.reasoning_delta("Weighing the riddle.")
+        await pilot.pause()
+
+        assert facade.state.codex_state == "thinking"
+        assert facade.app.entries[0].streaming is True
+
+        facade.reasoning_completed()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    entry = facade.app.entries[0]
+
+    assert (entry.kind, entry.source) == ("reasoning", tui.CODEX)
+    assert entry.stamp != ""
+    assert entry.text == "Weighing the riddle."
+    assert entry.streaming is False
+    assert entry.seconds is not None
+    assert facade.app._reasoning_row is None
+
+
+def test_a_turn_cut_off_mid_thought_still_closes_its_thinking(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.reasoning_started()
+        await pilot.pause()
+        facade.reasoning_delta("Half a thought")
+        # No reasoning_completed: the item never finished.
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert facade.app.entries[0].streaming is False
+    assert facade.app.entries[0].seconds is not None
+    assert facade.app._reasoning_row is None
+
+
+def test_closing_thinking_that_never_started_is_harmless(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert facade.app.entries == []
+    assert facade._thinking_started is None
+
+
+def test_summary_text_with_no_open_section_opens_one(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.reasoning_delta("Unannounced thought.")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert entry_texts(facade) == ["Unannounced thought."]
+    assert facade.app.entries[0].kind == "reasoning"
+
+
 def test_a_command_row_collects_output_and_its_exit_code(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
@@ -426,6 +497,56 @@ def test_a_streaming_entry_shows_a_cursor(tui) -> None:
     assert "▌" in tui.render_entry_body(entry).plain
 
 
+def test_a_thinking_entry_hides_what_it_is_thinking(tui) -> None:
+    entry = tui.Entry(
+        kind="reasoning", source=tui.CODEX, text="half a thought", streaming=True
+    )
+
+    body = tui.render_entry_body(entry).plain
+
+    assert body == "thinking ▌"
+    assert "half a thought" not in body
+
+
+def test_a_finished_thinking_entry_shows_its_cost_and_then_its_content(tui) -> None:
+    entry = tui.Entry(
+        kind="reasoning", source=tui.CODEX, text="the whole thought", seconds=1.4
+    )
+
+    assert tui.render_entry_body(entry).plain == "thinking · 1.4s\nthe whole thought"
+
+
+def test_thinking_never_wears_the_same_style_as_the_answer(tui) -> None:
+    """The point of the section: it must not read as the reply.
+
+    Nothing else keeps the two apart. Both are Codex rows, both carry prose,
+    and they sit next to each other — so if the thinking ever renders in the
+    body style, a summary becomes indistinguishable from an answer.
+    """
+    thinking = tui.render_entry_body(
+        tui.Entry(kind="reasoning", source=tui.CODEX, text="a thought", seconds=1.4)
+    )
+    answer = tui.render_entry_body(
+        tui.Entry(kind="speech", source=tui.CODEX, text="an answer")
+    )
+
+    styles = [str(thinking.style)] + [str(span.style) for span in thinking.spans]
+
+    assert str(answer.style) == tui.BODY_STYLE
+    assert all(style != tui.BODY_STYLE for style in styles)
+    # The prose itself is italic; only the duration label is allowed to be a
+    # bare dim colour.
+    assert "italic" in str(thinking.style)
+    assert "italic" in styles[-1]
+
+
+def test_thinking_that_was_never_timed_says_only_that_it_happened(tui) -> None:
+    """A section closed without a duration still renders rather than raising."""
+    entry = tui.Entry(kind="reasoning", source=tui.CODEX, text="a thought")
+
+    assert tui.render_entry_body(entry).plain == "thinking\na thought"
+
+
 def test_a_note_entry_renders_as_plain_text(tui) -> None:
     assert tui.render_entry_body(tui.Entry(kind="note", text="a note")).plain == (
         "a note"
@@ -597,6 +718,29 @@ def test_the_running_command_row_is_never_unmounted_under_it(tui) -> None:
     command = next(entry for entry in facade.app.entries if entry.kind == "command")
     assert command.output == ["total 0"]
     assert command.exit_code == 0
+
+
+def test_the_open_thinking_row_is_never_unmounted_under_it(tui) -> None:
+    """A long thought is written to while the transcript moves past it."""
+    facade = tui.VoiceCodexTUI()
+    facade.app.MAX_MOUNTED_ROWS = 2
+
+    async def body(pilot):
+        facade.reasoning_started()
+        thinking_row = facade.app._reasoning_row
+        for index in range(8):
+            facade.note(f"line {index}")
+        await pilot.pause()
+        assert thinking_row in mounted_rows(facade)
+        facade.reasoning_delta("a late thought")
+        facade.reasoning_completed()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    thinking = next(entry for entry in facade.app.entries if entry.kind == "reasoning")
+    assert thinking.text == "a late thought"
+    assert thinking.seconds is not None
 
 
 # --------------------------------------------------------------------------

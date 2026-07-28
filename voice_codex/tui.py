@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
@@ -84,7 +85,7 @@ POLICIES = {name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.ite
 class Entry:
     """One rendered row in the transcript."""
 
-    kind: str  # "speech" | "note" | "command"
+    kind: str  # "speech" | "note" | "command" | "reasoning"
     source: str = ""
     text: str = ""
     stamp: str = ""
@@ -93,6 +94,8 @@ class Entry:
     output: list[str] = field(default_factory=list)
     exit_code: int | None = None
     streaming: bool = False
+    # How long a reasoning entry spent thinking, known only once it has.
+    seconds: float | None = None
 
 
 @dataclass
@@ -176,10 +179,32 @@ class TuiHooks:
 # --------------------------------------------------------------------------
 
 
+def render_reasoning_body(entry: Entry) -> Text:
+    """Render a Codex reasoning section: the word, then the cost, then it.
+
+    While the model is thinking the row says only that it is. The summary
+    arrives in pieces and reads as a half-formed answer beside the real one,
+    so it is held back until the thinking is over and can be labelled with
+    how long it took.
+    """
+    body = Text("thinking", style="italic #7a7f96")
+    if entry.streaming:
+        body.append(" ▌", style="#7a7f96")
+        return body
+    if entry.seconds is not None:
+        body.append(f" · {entry.seconds:.1f}s", style="#5a6068")
+    if entry.text:
+        body.append(f"\n{entry.text}", style="italic #7a7f96")
+    return body
+
+
 def render_entry_body(entry: Entry) -> Text:
     """Render an entry's selectable body without its timestamp and source."""
     if entry.kind == "note":
         return Text(entry.text, style="#6f757e")
+
+    if entry.kind == "reasoning":
+        return render_reasoning_body(entry)
 
     if entry.kind == "command":
         body = Text(f"$ {entry.text}", style="#9aa3ad")
@@ -1005,6 +1030,7 @@ class VoiceCodexApp(App):
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
+        self._reasoning_row: EntryRow | None = None
         # Rows whose entry has changed since the last repaint, oldest first.
         self._dirty: list[EntryRow] = []
         # Which slice of ``entries`` is mounted, and whether the view is
@@ -1163,11 +1189,14 @@ class VoiceCodexApp(App):
     def _held_open_by(self, row: EntryRow) -> bool:
         """Is this row still being written to?
 
-        The open Codex message and the running command are re-rendered in place
-        as their output arrives. Unmounting either would leave a stream writing
-        to a row nobody can see.
+        The open Codex message, the running command and the reasoning being
+        narrated are re-rendered in place as their output arrives. Unmounting
+        one would leave a stream writing to a row nobody can see.
         """
-        return row is self._streaming or row is self._command_row
+        return any(
+            row is open_row
+            for open_row in (self._streaming, self._command_row, self._reasoning_row)
+        )
 
     def _trim_rows(self) -> None:
         """Unmount the oldest rows once the transcript outgrows its window.
@@ -1287,7 +1316,7 @@ class VoiceCodexApp(App):
         one for the same entry is what makes the writing appear when the entry
         finally comes into view.
         """
-        for row in (self._streaming, self._command_row):
+        for row in (self._streaming, self._command_row, self._reasoning_row):
             if row is not None and row.entry is entry:
                 return row
         return EntryRow(entry)
@@ -1510,6 +1539,9 @@ class VoiceCodexTUI:
         self.app = VoiceCodexApp(self.state, self.hooks, countdown, speech)
         self._ready = threading.Event()
         self._app_thread: int | None = None
+        # When the open reasoning section started, or None when none is open.
+        # Only the Codex stream worker touches it, one turn at a time.
+        self._thinking_started: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1617,6 +1649,11 @@ class VoiceCodexTUI:
         self.app.mark_dirty(row)
 
     def end_codex(self) -> None:
+        # A turn cut off while it was still thinking never completes its
+        # reasoning item, so the open section is closed here instead. It
+        # queues ahead of the end-of-turn repaint, and does nothing when the
+        # item completed on its own.
+        self.reasoning_completed()
         self.state.codex_state = "idle"
         self._call(self._codex_end_impl)
 
@@ -1633,6 +1670,55 @@ class VoiceCodexTUI:
         # drawn now. Nothing else will arrive to trigger it.
         self.app.flush_stream()
         self.app.refresh_sidebar()
+
+    def reasoning_started(self) -> None:
+        self.state.codex_state = "thinking"
+        # Timed from here, on the thread the notification arrived on, rather
+        # than from the repaint this schedules: what is being measured is how
+        # long the model thought, not when the interface got around to it.
+        self._thinking_started = time.monotonic()
+        self._call(self._reasoning_impl)
+
+    def _reasoning_impl(self) -> None:
+        self.app._streaming = None
+        self.app._reasoning_row = self.app.add_entry(
+            Entry(kind="reasoning", source=CODEX, streaming=True)
+        )
+        self.app.refresh_sidebar()
+
+    def reasoning_delta(self, delta: str) -> None:
+        self._call(self._reasoning_delta_impl, delta)
+
+    def _reasoning_delta_impl(self, delta: str) -> None:
+        row = self.app._reasoning_row
+        if row is None:
+            # Summary text without a started item: open the section here
+            # rather than drop what the model said.
+            self._reasoning_impl()
+            row = self.app._reasoning_row
+        if row is None:
+            raise RuntimeError("Could not create a streaming reasoning row.")
+        row.entry.text += delta
+        self.app.mark_dirty(row)
+
+    def reasoning_completed(self) -> None:
+        elapsed = (
+            None
+            if self._thinking_started is None
+            else time.monotonic() - self._thinking_started
+        )
+        self._thinking_started = None
+        self._call(self._reasoning_end_impl, elapsed)
+
+    def _reasoning_end_impl(self, elapsed: float | None) -> None:
+        row = self.app._reasoning_row
+        if row is None:
+            return
+        row.entry.streaming = False
+        row.entry.seconds = elapsed
+        self.app.mark_dirty(row)
+        self.app._reasoning_row = None
+        self.app.flush_stream()
 
     def command_started(self, command: str) -> None:
         self.state.codex_state = "running command"
