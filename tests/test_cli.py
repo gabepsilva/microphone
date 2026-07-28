@@ -21,11 +21,7 @@ from voice_codex import cli
 from voice_codex.domain import RESPONSE_POLICIES, TurnLatencyEstimator
 
 MIC = {"name": "Yeti"}
-THEM_OUTPUT = {
-    "name": "meeting",
-    "monitor": "meeting.monitor",
-    "description": "Voice Codex Meeting",
-}
+THEM_APPLICATION = "ZOOM VoiceEngine"
 PLAYBACK = {"name": "alsa_output.pci", "description": "Speakers"}
 
 
@@ -114,22 +110,18 @@ def wiring(monkeypatch, tmp_path):
     built: dict[str, object] = {}
 
     def resolve(_args):
-        return (
-            SimpleNamespace(
-                device_index=3,
-                device=MIC,
-                tts_enabled=built["tts_enabled"],
-                tts_provider="piper",
-                them_output=built["them_output"],
-                them_output_setting="isolated",
-                playback_output=built["playback_output"],
-                policy=RESPONSE_POLICIES["them"],
-            ),
-            built["virtual_meeting"],
+        return SimpleNamespace(
+            device_index=3,
+            device=MIC,
+            tts_enabled=built["tts_enabled"],
+            tts_provider="piper",
+            them_stream=built["them_stream"],
+            tts_output=built["tts_output"],
+            policy=RESPONSE_POLICIES["them"],
         )
 
-    def run_session(tui, channels, conversation, virtual_meeting):
-        built["session"] = (tui, channels, conversation, virtual_meeting)
+    def run_session(tui, channels, conversation):
+        built["session"] = (tui, channels, conversation)
 
     # The real lock is a file in the user's runtime directory, so leaving it
     # unfaked makes every ``main`` test fail whenever a session happens to be
@@ -141,10 +133,14 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         "build_speech",
-        lambda selection, args, playback_output: (
+        lambda selection, args: (
             FakeTTS(
                 args.tts_voice,
-                playback_output["name"] if playback_output is not None else None,
+                (
+                    selection.tts_output["name"]
+                    if selection.tts_output is not None
+                    else None
+                ),
             )
             if selection.tts_enabled
             else None
@@ -155,7 +151,7 @@ def wiring(monkeypatch, tmp_path):
         cli, "metered_mic_transcriber", lambda **kwargs: FakeTranscriber(**kwargs)
     )
     monkeypatch.setattr(
-        cli, "PulseMonitorTranscriber", lambda **kwargs: FakeTranscriber(**kwargs)
+        cli, "ApplicationStreamTranscriber", lambda **kwargs: FakeTranscriber(**kwargs)
     )
     monkeypatch.setattr(
         cli, "get_model_for_language", lambda **kwargs: ("model-path", "arch")
@@ -163,44 +159,38 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr("voice_codex.tui.VoiceCodexTUI", FakeTUI)
     monkeypatch.setattr(cli.sys, "argv", ["voice_codex.py", "--config", str(config)])
 
-    built.update(
-        tts_enabled=False,
-        them_output=None,
-        playback_output=None,
-        virtual_meeting=None,
-    )
+    built.update(tts_enabled=False, them_stream=None, tts_output=None)
     return built
 
 
 def test_a_user_only_session_registers_one_channel(wiring) -> None:
     cli.main()
-    tui, channels, _, virtual_meeting = wiring["session"]
+    tui, channels, _ = wiring["session"]
 
     assert len(channels) == 1
     transcriber, listener = channels[0]
     assert listener.speaker == "User Voice"
     assert transcriber.listeners == [listener]
-    assert virtual_meeting is None
     assert tui.audio == {"mic": "Yeti"}
 
 
-def test_a_them_output_adds_a_second_channel_in_order(wiring) -> None:
-    wiring["them_output"] = THEM_OUTPUT
+def test_a_them_application_adds_a_second_channel_in_order(wiring) -> None:
+    wiring["them_stream"] = THEM_APPLICATION
 
     cli.main()
-    tui, channels, _, _ = wiring["session"]
+    tui, channels, _ = wiring["session"]
 
     assert [listener.speaker for _, listener in channels] == ["User Voice", "Them"]
-    assert channels[1][0].kwargs["monitor"] == "meeting.monitor"
-    assert tui.audio["them"] == "Voice Codex Meeting"
+    assert channels[1][0].kwargs["tap"].application == THEM_APPLICATION
+    assert tui.audio["them"] == THEM_APPLICATION
 
 
 def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
     """The sidebar's speaker checkbox has to reach the channel it names."""
-    wiring["them_output"] = THEM_OUTPUT
+    wiring["them_stream"] = THEM_APPLICATION
 
     cli.main()
-    tui, channels, _, _ = wiring["session"]
+    tui, channels, _ = wiring["session"]
     them_listener = channels[1][1]
 
     tui.hooks.on_them_mute(True)
@@ -211,14 +201,14 @@ def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
 
 def test_a_session_without_a_speaker_channel_binds_no_speaker_mute(wiring) -> None:
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     assert getattr(tui.hooks, "on_them_mute", None) is None
 
 
 def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     assert {
         "on_user_text",
@@ -233,7 +223,7 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
 
 def test_typed_text_always_requests_a_reply(wiring) -> None:
     cli.main()
-    tui, _, conversation, _ = wiring["session"]
+    tui, _, conversation = wiring["session"]
 
     tui.hooks.on_user_text("what time is it?")
 
@@ -245,7 +235,7 @@ def test_a_session_without_speech_reports_that_it_cannot_be_switched_on(
 ) -> None:
     """The toggle must say a silent session is silent, not appear to enable it."""
     cli.main()
-    tui, _, conversation, _ = wiring["session"]
+    tui, _, conversation = wiring["session"]
 
     assert conversation.tts is None
     assert tui.hooks.on_tts(True) is False
@@ -253,10 +243,10 @@ def test_a_session_without_speech_reports_that_it_cannot_be_switched_on(
 
 def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:
     wiring["tts_enabled"] = True
-    wiring["playback_output"] = PLAYBACK
+    wiring["tts_output"] = PLAYBACK
 
     cli.main()
-    tui, _, conversation, _ = wiring["session"]
+    tui, _, conversation = wiring["session"]
 
     assert conversation.tts.output_sink == "alsa_output.pci"
     assert conversation.tts.voice == "en_US-lessac-medium"
@@ -264,43 +254,31 @@ def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:
     assert tui.hooks.on_tts(True) is True
 
 
-def test_an_isolated_meeting_is_closed_when_the_interface_quits(wiring) -> None:
-    closed: list[bool] = []
-    wiring["them_output"] = THEM_OUTPUT
-    wiring["virtual_meeting"] = SimpleNamespace(close=lambda: closed.append(True))
-
-    cli.main()
-    tui, _, _, virtual_meeting = wiring["session"]
-
-    tui.hooks.on_quit()
-
-    assert closed == [True]
-    assert virtual_meeting is wiring["virtual_meeting"]
-
-
 def test_the_codex_thread_is_shown_in_the_sidebar(wiring) -> None:
     cli.main()
-    tui, _, conversation, _ = wiring["session"]
+    tui, _, conversation = wiring["session"]
 
     assert tui.codex_fields["thread"] == conversation.thread.id
 
 
 def test_the_startup_selection_is_saved_when_asked(wiring, tmp_path) -> None:
     saved = tmp_path / "saved.yaml"
-    wiring["them_output"] = THEM_OUTPUT
+    wiring["them_stream"] = THEM_APPLICATION
     cli.sys.argv.extend(["--save-config", str(saved)])
 
     cli.main()
 
     written = saved.read_text(encoding="utf-8")
     assert 'microphone: "Yeti"' in written
-    assert 'them_output: "isolated"' in written
+    assert 'them_stream: "ZOOM VoiceEngine"' in written
 
 
 def test_a_silent_session_builds_no_speech() -> None:
-    selection = SimpleNamespace(tts_enabled=False, tts_provider="piper")
+    selection = SimpleNamespace(
+        tts_enabled=False, tts_provider="piper", tts_output=None
+    )
 
-    assert cli.build_speech(selection, SimpleNamespace(tts_voice="v"), None) is None
+    assert cli.build_speech(selection, SimpleNamespace(tts_voice="v")) is None
 
 
 def test_speech_is_built_for_the_chosen_provider_and_output(monkeypatch) -> None:
@@ -314,13 +292,13 @@ def test_speech_is_built_for_the_chosen_provider_and_output(monkeypatch) -> None
             )
         ),
     )
-    selection = SimpleNamespace(tts_enabled=True, tts_provider="edge")
-
-    cli.build_speech(
-        selection,
-        SimpleNamespace(tts_voice="en-US-AndrewNeural"),
-        {"name": "alsa_output.pci"},
+    selection = SimpleNamespace(
+        tts_enabled=True,
+        tts_provider="edge",
+        tts_output={"name": "alsa_output.pci"},
     )
+
+    cli.build_speech(selection, SimpleNamespace(tts_voice="en-US-AndrewNeural"))
 
     assert started == [("edge", "en-US-AndrewNeural", "alsa_output.pci")]
 
@@ -336,9 +314,9 @@ def test_speech_plays_through_the_default_output_when_none_was_chosen(
             lambda _cls, provider, voice, output_sink=None: started.append(output_sink)
         ),
     )
-    selection = SimpleNamespace(tts_enabled=True, tts_provider="piper")
+    selection = SimpleNamespace(tts_enabled=True, tts_provider="piper", tts_output=None)
 
-    cli.build_speech(selection, SimpleNamespace(tts_voice="v"), None)
+    cli.build_speech(selection, SimpleNamespace(tts_voice="v"))
 
     assert started == [None]
 
@@ -346,8 +324,8 @@ def test_speech_plays_through_the_default_output_when_none_was_chosen(
 def test_one_turn_silence_is_shared_by_every_part_that_needs_it(wiring) -> None:
     """Four copies of the window would be four chances to update three."""
     cli.main()
-    tui, channels, _, _ = wiring["session"]
-    wiring["them_output"] = THEM_OUTPUT
+    tui, channels, _ = wiring["session"]
+    wiring["them_stream"] = THEM_APPLICATION
 
     windows = {id(listener.turn_silence) for _, listener in channels}
     windows.add(id(tui.countdown.window))
@@ -356,10 +334,10 @@ def test_one_turn_silence_is_shared_by_every_part_that_needs_it(wiring) -> None:
 
 
 def test_editing_the_window_reaches_the_listeners(wiring) -> None:
-    wiring["them_output"] = THEM_OUTPUT
+    wiring["them_stream"] = THEM_APPLICATION
 
     cli.main()
-    tui, channels, _, _ = wiring["session"]
+    tui, channels, _ = wiring["session"]
 
     assert tui.hooks.on_turn_silence(1.25) == 1.25
     assert [listener.turn_silence.seconds for _, listener in channels] == [1.25, 1.25]
@@ -371,14 +349,14 @@ def test_the_sidebar_can_see_whether_speech_is_still_playing(wiring) -> None:
     wiring["tts_enabled"] = True
 
     cli.main()
-    tui, _, conversation, _ = wiring["session"]
+    tui, _, conversation = wiring["session"]
 
     assert tui.speech is conversation.tts
 
 
 def test_a_silent_session_gives_the_sidebar_no_speech_to_poll(wiring) -> None:
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     assert tui.speech is None
 
@@ -394,7 +372,7 @@ def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
     wiring, tmp_path
 ) -> None:
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     tui.hooks.on_policy("user")
 
@@ -405,7 +383,7 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     wiring["tts_enabled"] = True
 
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     tui.hooks.on_policy("them")
     tui.hooks.on_codex_model("gpt-5.6-sol")
@@ -424,7 +402,7 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
 def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
     """A silent session cannot switch speech on, so it must not save that it did."""
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
     # Something else has to be saved first, or the file is never written at
     # all and "it did not record the refusal" would pass for the wrong reason.
     tui.hooks.on_policy("user")
@@ -436,7 +414,7 @@ def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
 
 def test_a_clamped_window_is_saved_as_the_value_in_force(wiring, tmp_path) -> None:
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
 
     tui.hooks.on_turn_silence(0.01)
 
@@ -448,7 +426,7 @@ def test_a_session_reopens_with_what_the_last_one_left(wiring, tmp_path) -> None
     from voice_codex.startup import parse_startup_args
 
     cli.main()
-    tui, _, _, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
     tui.hooks.on_turn_silence(1.25)
     tui.hooks.on_codex_effort("high")
 

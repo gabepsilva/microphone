@@ -1,7 +1,7 @@
-"""PCM decoding, level metering, and the monitor capture lifecycle.
+"""PCM decoding, level metering, and the stream capture lifecycle.
 
-``parec`` and the Moonshine transcriber are faked at their boundaries; the
-real reader and worker threads run.
+The recorder process, the PipeWire tap, and the Moonshine transcriber are
+faked at their boundaries; the real reader and worker threads run.
 """
 
 from __future__ import annotations
@@ -16,20 +16,19 @@ import numpy as np
 import pytest
 
 from voice_codex.capture import (
+    ApplicationStreamTranscriber,
     CaptureSettings,
-    PulseMonitorTranscriber,
     SoundActivityReporter,
     audio_level,
     decode_pcm,
     drain_audio_queue,
-    parec_command,
 )
 
 WAIT_SECONDS = 10
 
 
 def pcm(*samples):
-    """Encode samples as the little-endian signed 16-bit PCM parec emits."""
+    """Encode samples as the little-endian signed 16-bit PCM the tap emits."""
     return struct.pack(f"<{len(samples)}h", *samples)
 
 
@@ -78,8 +77,8 @@ class FakeTranscriber:
         self.closed = True
 
 
-class FakeParec:
-    """Stand in for the parec process, serving a fixed script of reads."""
+class FakeRecorder:
+    """Stand in for the pw-record process, serving a fixed script of reads."""
 
     def __init__(self, reads, exit_code=None):
         self.stdout = FakePipe(reads)
@@ -121,8 +120,26 @@ class FakePipe:
         self.closed = True
 
 
-class RecordedMonitor(PulseMonitorTranscriber):
-    """A monitor transcriber that keeps a handle on its faked parec process."""
+class FakeTap:
+    """Stand in for the PipeWire tap, recording when it was told to follow."""
+
+    def __init__(self):
+        self.application = "ZOOM VoiceEngine"
+        self.events: list[str] = []
+
+    def command(self, samplerate):
+        self.events.append(f"command {samplerate}")
+        return ["pw-record", str(samplerate)]
+
+    def start(self):
+        self.events.append("start")
+
+    def stop(self):
+        self.events.append("stop")
+
+
+class RecordedCapture(ApplicationStreamTranscriber):
+    """A stream transcriber that keeps a handle on its faked recorder."""
 
     def __init__(self, process, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -131,15 +148,15 @@ class RecordedMonitor(PulseMonitorTranscriber):
 
 @pytest.fixture
 def capture(monkeypatch):
-    """Build a monitor transcriber with parec and Moonshine faked."""
+    """Build a stream transcriber with the recorder, tap, and Moonshine faked."""
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("voice_codex.capture.Transcriber", FakeTranscriber)
-    monkeypatch.setattr(PulseMonitorTranscriber, "STARTUP_GRACE_SECONDS", 0)
+    monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
     def build(reads=(), exit_code=None, **kwargs):
-        process = FakeParec(list(reads), exit_code)
+        process = FakeRecorder(list(reads), exit_code)
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-        return RecordedMonitor(process, "model", "arch", "sink.monitor", **kwargs)
+        return RecordedCapture(process, "model", "arch", FakeTap(), **kwargs)
 
     return build
 
@@ -333,21 +350,41 @@ def test_an_empty_queue_yields_only_the_first_chunk() -> None:
     assert (raw, stop_requested) == (b"only", False)
 
 
-def test_the_parec_command_requests_raw_mono_pcm() -> None:
-    command = parec_command("sink.monitor", 16000)
-
-    assert command[0] == "parec"
-    assert "--device=sink.monitor" in command
-    assert "--rate=16000" in command
-    assert "--format=s16le" in command
-    assert "--channels=1" in command
-
-
-def test_capture_requires_parec(monkeypatch) -> None:
+def test_capture_requires_the_pipewire_tools(monkeypatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
-    with pytest.raises(RuntimeError, match="parec is required"):
-        PulseMonitorTranscriber("model", "arch", "sink.monitor")
+    with pytest.raises(RuntimeError, match="pw-record is required"):
+        ApplicationStreamTranscriber("model", "arch", FakeTap())
+
+
+def test_the_recorder_is_asked_for_the_capture_samplerate(capture) -> None:
+    monitor = capture(reads=[pcm(0)])
+    monitor.start()
+    try:
+        assert "command 16000" in monitor.tap.events
+    finally:
+        monitor.stop()
+
+
+def test_the_tap_follows_the_application_only_once_the_recorder_is_up(
+    capture,
+) -> None:
+    """Nothing can be linked to a capture node that is not in the graph yet."""
+    monitor = capture(reads=[pcm(0)])
+    monitor.start()
+    try:
+        assert monitor.tap.events == ["command 16000", "start"]
+    finally:
+        monitor.stop()
+
+
+def test_a_recorder_that_exits_immediately_leaves_the_tap_unstarted(capture) -> None:
+    monitor = capture(exit_code=1)
+
+    with pytest.raises(RuntimeError, match="Could not capture the audio"):
+        monitor.start()
+
+    assert "start" not in monitor.tap.events
 
 
 def test_captured_audio_reaches_the_transcription_stream(capture) -> None:
@@ -375,10 +412,10 @@ def test_a_capture_level_is_reported_while_transcribing(capture) -> None:
         monitor.stop()
 
 
-def test_a_parec_that_exits_immediately_is_reported(capture) -> None:
+def test_a_recorder_that_exits_immediately_is_reported(capture) -> None:
     monitor = capture(exit_code=1)
 
-    with pytest.raises(RuntimeError, match="Could not capture audio-output monitor"):
+    with pytest.raises(RuntimeError, match="Could not capture the audio"):
         monitor.start()
 
     assert monitor.stream.events == ["start", "stop"]
@@ -403,7 +440,7 @@ def test_stopping_before_starting_does_nothing(capture) -> None:
     assert monitor.stream.events == []
 
 
-def test_stopping_terminates_parec_and_stops_the_stream(capture) -> None:
+def test_stopping_terminates_the_recorder_and_stops_the_stream(capture) -> None:
     monitor = capture(reads=[pcm(0)], exit_code=None)
     monitor.start()
 
@@ -411,6 +448,18 @@ def test_stopping_terminates_parec_and_stops_the_stream(capture) -> None:
 
     assert monitor.fake_process.terminated
     assert monitor.stream.events == ["start", "stop"]
+
+
+def test_stopping_retires_the_linker_before_the_recorder_it_wires(capture) -> None:
+    """A relink after the recorder goes leaves a link to a node nobody owns."""
+    monitor = capture(reads=[pcm(0)], exit_code=None)
+    monitor.start()
+    monitor.tap.events.clear()
+
+    monitor.stop()
+
+    assert monitor.tap.events == ["stop"]
+    assert monitor.fake_process.terminated
 
 
 def test_closing_releases_the_pipe_the_stream_and_the_model(capture) -> None:

@@ -7,15 +7,12 @@ answer re-prompts rather than unwinding a half-built runtime.
 
 from __future__ import annotations
 
-import atexit
 import json
-import os
-import re
 import shutil
 import subprocess
-import threading
 
 from .domain import RESPONSE_POLICIES, resolve_response_policy
+from .streams import application_streams, applications, graph
 
 
 def input_devices():
@@ -156,10 +153,6 @@ def audio_outputs():
     return outputs
 
 
-ISOLATED_OUTPUT = "isolated"
-ISOLATED_ALIASES = ("isolated", "virtual")
-
-
 def find_audio_output(outputs, requested):
     """Match a requested output against its sink name, monitor, or description."""
     for output in outputs:
@@ -168,217 +161,75 @@ def find_audio_output(outputs, requested):
     return None
 
 
-def select_them_output(outputs, requested, require_isolation=False):
-    """Resolve a requested Them output without prompting."""
-    if requested.lower() == "none":
-        return None
-    if requested.lower() in ISOLATED_ALIASES:
-        return {ISOLATED_OUTPUT: True}
+def select_tts_output(outputs, requested):
+    """Resolve a requested speech output without prompting."""
     output = find_audio_output(outputs, requested)
     if output is None:
-        raise RuntimeError(
-            f"Audio output {requested!r} was not found. "
-            "Use --them-output isolated, --them-output none, or select one "
-            "interactively."
-        )
-    if require_isolation:
-        raise RuntimeError(
-            "Edge TTS cannot be used with a direct Them monitor. "
-            "Use --them-output isolated or --them-output none."
-        )
+        raise RuntimeError(f"Speech output {requested!r} was not found.")
     return output
 
 
-def choose_them_output(requested=None, require_isolation=False):
-    """Choose an optional playback sink whose monitor is transcribed as Them."""
-    outputs = audio_outputs()
+def choose_tts_output(requested=None):
+    """Name the sink Codex speaks through, or nothing to use the system default.
 
+    This one never prompts. Where the assistant's voice comes out stopped being
+    a question the session has to settle once application streams replaced the
+    monitored sink: the answer no longer affects what gets transcribed, only
+    which speakers a person hears it from, and every desktop already has a way
+    to move one application's audio.
+    """
+    if requested is None:
+        return None
+    return select_tts_output(audio_outputs(), requested)
+
+
+def stream_label(stream):
+    """Describe one application the way the startup menu offers it."""
+    state = "playing" if stream.playing else "idle"
+    if stream.title and stream.title != stream.application:
+        return f"{stream.application} — {stream.title} ({state})"
+    return f"{stream.application} ({state})"
+
+
+NO_THEM_STREAM = "none"
+
+
+def select_them_stream(requested):
+    """Resolve a requested application without prompting.
+
+    A named application is taken at its word rather than checked against what
+    is playing. It has to be: an application only appears in the graph once it
+    opens audio, so a saved session that starts before the meeting does would
+    otherwise refuse the very name it saved a moment ago. An application that
+    never appears simply never gets linked, and the Them channel stays quiet.
+    """
+    if requested.lower() == NO_THEM_STREAM:
+        return None
+    return requested
+
+
+def choose_them_stream(requested=None):
+    """Choose the application whose audio is transcribed as Them."""
     if requested is not None:
-        return select_them_output(outputs, requested, require_isolation)
+        return select_them_stream(requested)
 
+    streams = applications(application_streams(graph()))
     note = None
-    if require_isolation:
-        # A direct monitor would transcribe Codex's own speech back as Them.
-        outputs = []
-        note = "      Direct output monitors are hidden while Edge TTS is enabled."
-
+    if not streams:
+        note = (
+            "      No application is playing audio yet. Start the meeting and\n"
+            "      run again, or pass --them-stream with the application name."
+        )
     return choose_from_menu(
-        "\nAudio output to transcribe as Them:",
+        "\nApplication to transcribe as Them:",
         [
             ("None", None),
-            (
-                "Create isolated Voice Codex Meeting output (recommended)",
-                {ISOLATED_OUTPUT: True},
-            ),
-            *((output["description"], output) for output in outputs),
+            *((stream_label(stream), stream.application) for stream in streams),
         ],
-        "an audio output",
+        "an application",
         first_number=0,
         note=note,
     )
-
-
-def select_playback_output(outputs, requested):
-    """Resolve a requested playback output without prompting."""
-    output = find_audio_output(outputs, requested)
-    if output is None:
-        raise RuntimeError(f"Playback output {requested!r} was not found.")
-    return output
-
-
-def choose_playback_output(requested=None):
-    """Choose the physical output where meeting audio and TTS are heard."""
-    outputs = audio_outputs()
-    if not outputs:
-        raise RuntimeError("No PulseAudio/PipeWire audio outputs were found.")
-
-    if requested is not None:
-        return select_playback_output(outputs, requested)
-
-    return choose_from_menu(
-        "\nPhysical output for meeting audio and Codex TTS:",
-        [(output["description"], output) for output in outputs],
-        "a playback output",
-    )
-
-
-class VirtualMeetingOutput:
-    """Isolate meeting playback in a monitored sink and loop it to headphones."""
-
-    DESCRIPTION = "Voice Codex Meeting"
-    SINK_PREFIX = "voice_codex_meeting_"
-
-    def __init__(self, playback_output):
-        if shutil.which("pactl") is None:
-            raise RuntimeError("Isolated meeting audio requires pactl.")
-        self.playback_output = playback_output
-        self.sink_name = f"voice_codex_meeting_{os.getpid()}"
-        self.sink_module = None
-        self.loopback_module = None
-        self.close_lock = threading.Lock()
-        self.closed = False
-        try:
-            self._remove_stale_modules()
-            self.sink_module = self._load_module(
-                "module-null-sink",
-                f"sink_name={self.sink_name}",
-                (f"sink_properties=\"device.description='{self.DESCRIPTION}'\""),
-            )
-            self.loopback_module = self._load_module(
-                "module-loopback",
-                f"source={self.sink_name}.monitor",
-                f"sink={self.playback_output['name']}",
-                "source_dont_move=true",
-                "sink_dont_move=true",
-                "latency_msec=30",
-            )
-        except Exception:
-            self.close()
-            raise
-        atexit.register(self.close)
-
-    @staticmethod
-    def _load_module(module, *arguments):
-        try:
-            result = subprocess.run(
-                ["pactl", "load-module", module, *arguments],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as error:
-            detail = error.stderr.strip() or error.stdout.strip()
-            raise RuntimeError(
-                f"Could not load {module}: {detail or 'unknown pactl error'}"
-            ) from error
-        try:
-            return int(result.stdout.strip())
-        except ValueError as error:
-            raise RuntimeError(
-                f"pactl returned an invalid module ID for {module}."
-            ) from error
-
-    @staticmethod
-    def _module_args(module):
-        if isinstance(module, dict):
-            args = module.get("argument")
-            if isinstance(args, str):
-                return args
-        return ""
-
-    @classmethod
-    def _is_stale_virtual_meeting_module(cls, module):
-        if not isinstance(module, dict):
-            return False
-        name = module.get("name")
-        args = cls._module_args(module)
-        if name == "module-null-sink":
-            return re.search(rf"\bsink_name={cls.SINK_PREFIX}\d+\b", args) is not None
-        if name == "module-loopback":
-            return (
-                re.search(rf"\bsource={cls.SINK_PREFIX}\d+\.monitor\b", args)
-                is not None
-            )
-        return False
-
-    @classmethod
-    def _remove_stale_modules(cls):
-        try:
-            result = subprocess.run(
-                ["pactl", "--format=json", "list", "modules"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            modules = json.loads(result.stdout)
-        except (
-            OSError,
-            subprocess.CalledProcessError,
-            json.JSONDecodeError,
-            AttributeError,
-            TypeError,
-        ):
-            return
-        if not isinstance(modules, list):
-            return
-        stale_ids = [
-            module.get("index")
-            for module in modules
-            if cls._is_stale_virtual_meeting_module(module)
-            and isinstance(module.get("index"), int)
-        ]
-        for module_id in stale_ids:
-            subprocess.run(
-                ["pactl", "unload-module", str(module_id)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-
-    @property
-    def transcript_output(self):
-        return {
-            "name": self.sink_name,
-            "monitor": f"{self.sink_name}.monitor",
-            "description": self.DESCRIPTION,
-        }
-
-    def close(self):
-        with self.close_lock:
-            if self.closed:
-                return
-            for module_id in (self.loopback_module, self.sink_module):
-                if module_id is None:
-                    continue
-                subprocess.run(
-                    ["pactl", "unload-module", str(module_id)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            self.loopback_module = None
-            self.sink_module = None
-            self.closed = True
 
 
 def choose_codex_after(requested=None):

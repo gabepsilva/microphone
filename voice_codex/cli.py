@@ -5,7 +5,8 @@ This module is the composition root and nothing else. The runtime parts it
 assembles are independent of one another — none of them imports any of the
 others:
 
-  * ``capture``  — microphone and sink-monitor audio into Moonshine
+  * ``capture``  — microphone and application-stream audio into Moonshine,
+                   the second by way of the PipeWire tap in ``streams``
   * ``listener`` — transcription events into completed turns
   * ``codex``    — the Codex thread and its streamed turns
   * ``speech``   — which synthesizer speaks Codex responses, and the two
@@ -33,8 +34,8 @@ from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 
 from .capture import (
+    ApplicationStreamTranscriber,
     CaptureSettings,
-    PulseMonitorTranscriber,
     SoundActivityReporter,
     metered_mic_transcriber,
 )
@@ -57,6 +58,7 @@ from .startup import (
     run_session,
     startup_settings,
 )
+from .streams import StreamTap
 
 # The name carries the user ID because the fallback is a shared directory: on a
 # multi-user box a fixed name in /tmp is one user's lock file blocking every
@@ -99,29 +101,31 @@ def acquire_single_instance_lock(lock_path: Path = LOCK_PATH):
         _LOCK_RELEASE_REGISTERED = True
 
 
-def build_speech(selection, args, playback_output):
+def build_speech(selection, args):
     """Build the session's speech, or nothing when the session is silent."""
     if not selection.tts_enabled:
         return None
     return SwitchableSpeech.start(
         selection.tts_provider,
         args.tts_voice,
-        output_sink=(playback_output["name"] if playback_output is not None else None),
+        output_sink=(
+            selection.tts_output["name"] if selection.tts_output is not None else None
+        ),
     )
 
 
-def sound_taps(tui, them_output):
+def sound_taps(tui, them_stream):
     """The two level taps, built before the listeners that read them.
 
     Each channel's listener reads the other's tap: the microphone has to know
-    when the meeting sink is playing to tell the far end coming out of the
-    speakers from the person sitting in the room.
+    when the far end is playing to tell its voice coming out of the speakers
+    from the person sitting in the room.
     """
-    them = None if them_output is None else SoundActivityReporter(tui, "them")
+    them = None if them_stream is None else SoundActivityReporter(tui, "them")
     return SoundActivityReporter(tui, "mic"), them
 
 
-def speaker_gate(selection, them_output):
+def speaker_gate(selection, them_stream):
     """Build the response policy, limited to the speakers this session has.
 
     The gate is told what exists rather than inferring it, because selecting
@@ -129,7 +133,7 @@ def speaker_gate(selection, them_output):
     possible.
     """
     available_speakers = {"User Voice"}
-    if them_output is not None:
+    if them_stream is not None:
         available_speakers.add("Them")
     return SpeakerGate(selection.policy.speakers, available_speakers)
 
@@ -141,7 +145,7 @@ def microphone_presence(mic_activity, them_activity, tts):
     tap goes busy for the assistant's own reply and for the far end as readily
     as for the user — and a turn held open by those would be held open for as
     long as they went on. Both are already known here: the speech engine says
-    when it still owes a sentence, and the meeting sink's own tap says when the
+    when it still owes a sentence, and the Them channel's own tap says when the
     far end is playing.
 
     On a headset neither ever fires, and the suppressors cost nothing.
@@ -212,12 +216,11 @@ def remembering_turn_silence(turn_silence, config):
 def main():
     parser, args = parse_startup_args()
     # Parsing comes first so `--help` and a rejected argument still answer while
-    # a session is running; the lock comes before the selection is resolved,
-    # which is where the virtual meeting devices are created and swept.
+    # a session is running; the lock comes before anything that reads or changes
+    # the audio graph.
     acquire_single_instance_lock()
-    selection, virtual_meeting = resolve_startup_selection(args)
-    them_output = selection.them_output
-    playback_output = selection.playback_output
+    selection = resolve_startup_selection(args)
+    them_stream = selection.them_stream
 
     settings = startup_settings(selection, args)
     if args.save_config is not None:
@@ -237,21 +240,19 @@ def main():
         wanted_model_arch=model_arch,
     )
 
-    gate = speaker_gate(selection, them_output)
+    gate = speaker_gate(selection, them_stream)
 
     from .tui import VoiceCodexTUI
 
     turn_silence = TurnSilence(args.turn_silence)
     countdown = TurnSilenceClock(turn_silence)
-    tts = build_speech(selection, args, playback_output)
+    tts = build_speech(selection, args)
     tui = VoiceCodexTUI(
         build_session_state(args, selection),
         countdown=countdown,
         speech=tts,
         on_policy=remembering(gate.set_policy, config, "codex_after"),
     )
-    if virtual_meeting is not None:
-        tui.hooks.on_quit = virtual_meeting.close
     transcript_display = tui
     conversation = CodexConversation(
         CodexSettings(
@@ -278,9 +279,9 @@ def main():
     )
 
     # Built before the listeners because each one reads the other's tap: the
-    # microphone has to know when the meeting sink is playing to tell the far
-    # end's voice from the person in the room.
-    mic_activity, them_activity = sound_taps(tui, them_output)
+    # microphone has to know when the far end is playing to tell its voice
+    # from the person in the room.
+    mic_activity, them_activity = sound_taps(tui, them_stream)
 
     user_listener = submitter.channel(
         args.confidence,
@@ -304,27 +305,28 @@ def main():
     tui.hooks.on_mute = user_listener.set_muted
     tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
-    if playback_output is not None:
-        tui.set_output(playback_output["description"])
+    if selection.tts_output is not None:
+        tui.set_output(selection.tts_output["description"])
 
     them_listener = None
     them_transcriber = None
-    if them_output is not None:
+    if them_stream is not None:
         them_listener = submitter.channel(
             args.confidence,
             turn_silence,
             "Them",
             transcript_display,
             countdown=countdown,
-            # No suppressors: a monitored sink carries what the meeting app
-            # wrote and nothing else. Speech is only allowed to share it with
-            # an isolated output, so Codex is never on this tap to mistake.
+            # No suppressors: the tap carries the links this session made and
+            # nothing else, and Codex's own playback is never one of them. It
+            # is not that its voice is filtered off this channel — it never
+            # reaches it.
             presence=SpeakerPresence(them_activity),
         )
-        them_transcriber = PulseMonitorTranscriber(
+        them_transcriber = ApplicationStreamTranscriber(
             model_path=model_path,
             model_arch=downloaded_arch,
-            monitor=them_output["monitor"],
+            tap=StreamTap(them_stream),
             # A smaller block only to sharpen the tap: this channel decides
             # whether the far end is talking a whole block at a time, and the
             # 4096 default put that a quarter of a second behind the
@@ -335,11 +337,11 @@ def main():
         )
         them_transcriber.add_listener(them_listener)
         tui.hooks.on_them_mute = them_listener.set_muted
-        tui.set_audio("them", device=them_output["description"])
+        tui.set_audio("them", device=them_stream)
     channels = [(user_transcriber, user_listener)]
     if them_transcriber is not None:
         channels.append((them_transcriber, them_listener))
-    run_session(tui, channels, conversation, virtual_meeting)
+    run_session(tui, channels, conversation)
 
 
 def run_entrypoint():

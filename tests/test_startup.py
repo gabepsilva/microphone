@@ -26,7 +26,6 @@ from voice_codex.startup import (
     resolve_startup_selection,
     run_session,
     startup_settings,
-    them_output_name,
 )
 
 
@@ -45,9 +44,8 @@ BASE_SELECTION = StartupSelection(
     device={"name": "Yeti"},
     tts_enabled=False,
     tts_provider="piper",
-    them_output=None,
-    them_output_setting="none",
-    playback_output=None,
+    them_stream=None,
+    tts_output=None,
     policy=RESPONSE_POLICIES["them"],
 )
 
@@ -130,25 +128,11 @@ def test_out_of_range_startup_values_are_rejected(tmp_path, body, argv) -> None:
         parse_startup_args(["--config", config, *argv])
 
 
-@pytest.mark.parametrize(
-    ("them_output", "expected"),
-    [
-        (None, "none"),
-        ({"isolated": True}, "isolated"),
-        ({"name": "alsa_output.pci", "description": "Speakers"}, "alsa_output.pci"),
-    ],
-)
-def test_them_output_is_named_the_way_a_saved_config_records_it(
-    them_output, expected
-) -> None:
-    assert them_output_name(them_output) == expected
-
-
 def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     chosen = selection(
         tts_enabled=True,
-        them_output_setting="isolated",
-        playback_output={"name": "alsa_output.pci", "description": "Speakers"},
+        them_stream="Chromium",
+        tts_output={"name": "alsa_output.pci", "description": "Speakers"},
         policy=RESPONSE_POLICIES["both"],
     )
 
@@ -156,8 +140,8 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         "microphone": "Yeti",
         "tts": "on",
         "tts_provider": "piper",
-        "them_output": "isolated",
-        "playback_output": "alsa_output.pci",
+        "them_stream": "Chromium",
+        "tts_output": "alsa_output.pci",
         "codex_after": "both",
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
@@ -167,8 +151,12 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     }
 
 
-def test_saved_settings_record_no_playback_output_when_none_was_chosen() -> None:
-    assert startup_settings(selection(), saved_args())["playback_output"] is None
+def test_a_session_without_them_saves_the_word_the_parser_reads_back() -> None:
+    """The saved name has to be one ``--them-stream`` accepts, not ``None``."""
+    saved = startup_settings(selection(), saved_args())
+
+    assert saved["them_stream"] == "none"
+    assert saved["tts_output"] is None
 
 
 def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
@@ -179,50 +167,34 @@ def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
         args,
         selection(
             tts_enabled=True,
-            them_output={"description": "Voice Codex Meeting"},
-            playback_output={"name": "alsa", "description": "Speakers"},
+            them_stream="ZOOM VoiceEngine",
+            tts_output={"name": "alsa", "description": "Speakers"},
         ),
         stream=stream,
     )
     summary = stream.getvalue()
 
     assert "User microphone: Yeti" in summary
-    assert "Them audio output: Voice Codex Meeting" in summary
+    assert "Them application: ZOOM VoiceEngine" in summary
     assert "Codex response policy: Them" in summary
     assert "Voice turn silence: 3.0s" in summary
     assert "Codex speed: Fast" in summary
     assert "Codex command access: full-access" in summary
     assert "Codex audio: Piper (local) (en_US-lessac-medium)" in summary
-    assert "Meeting and TTS playback: Speakers" in summary
+    assert "Codex speaks through: Speakers" in summary
 
 
-def test_the_startup_summary_warns_when_tts_shares_a_direct_them_monitor(
+def test_the_startup_summary_names_a_session_with_no_them_application(
     tmp_path,
 ) -> None:
-    _, args = parse_startup_args(["--config", empty_config(tmp_path)])
-    stream = io.StringIO()
-
-    print_startup_summary(
-        args,
-        selection(
-            tts_enabled=True,
-            them_output={"description": "Speakers monitor"},
-        ),
-        stream=stream,
-    )
-
-    assert "may transcribe Codex TTS" in stream.getvalue()
-
-
-def test_the_startup_summary_omits_the_warning_without_a_them_output(tmp_path) -> None:
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
     stream = io.StringIO()
 
     print_startup_summary(args, selection(tts_enabled=True), stream=stream)
     summary = stream.getvalue()
 
-    assert "Them audio output: None" in summary
-    assert "may transcribe Codex TTS" not in summary
+    assert "Them application: None" in summary
+    assert "Codex speaks through" not in summary
 
 
 def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> None:
@@ -251,62 +223,47 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
     assert (state.moonshine, state.language) == ("medium-streaming", "en")
 
 
-def test_a_direct_them_monitor_is_selected_without_a_virtual_meeting(
+def test_the_chosen_application_and_speech_output_reach_the_selection(
     monkeypatch, tmp_path
 ) -> None:
-    monitor = {"name": "sink", "monitor": "sink.monitor", "description": "Speakers"}
+    speakers = {"name": "alsa", "description": "Speakers"}
     monkeypatch.setattr(
         startup, "choose_microphone", lambda requested: (2, {"name": "M"})
     )
     monkeypatch.setattr(startup, "choose_tts", lambda requested: False)
-    monkeypatch.setattr(
-        startup, "choose_them_output", lambda requested, require_isolation: monitor
-    )
+    monkeypatch.setattr(startup, "choose_them_stream", lambda requested: "Chromium")
+    monkeypatch.setattr(startup, "choose_tts_output", lambda requested: speakers)
     monkeypatch.setattr(
         startup, "choose_codex_after", lambda requested: ("Them", {"Them"})
     )
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
 
-    chosen, virtual_meeting = resolve_startup_selection(args)
+    chosen = resolve_startup_selection(args)
 
-    assert virtual_meeting is None
-    assert chosen.them_output is monitor
-    assert chosen.them_output_setting == "sink"
+    assert chosen.them_stream == "Chromium"
+    assert chosen.tts_output is speakers
     assert (chosen.device_index, chosen.tts_enabled) == (2, False)
 
 
-def test_an_isolated_them_output_builds_a_virtual_meeting_sink(
-    monkeypatch, tmp_path, capsys
+def test_a_session_with_no_them_application_resolves_to_nothing(
+    monkeypatch, tmp_path
 ) -> None:
-    playback = {"name": "alsa", "description": "Speakers"}
-    transcript_output = {"monitor": "meeting.monitor", "description": "Meeting"}
+    """Speech no longer constrains the Them choice, so None must survive it."""
     monkeypatch.setattr(
         startup, "choose_microphone", lambda requested: (0, {"name": "M"})
     )
     monkeypatch.setattr(startup, "choose_tts", lambda requested: True)
-    monkeypatch.setattr(
-        startup,
-        "choose_them_output",
-        lambda requested, require_isolation: {"isolated": True},
-    )
-    monkeypatch.setattr(startup, "choose_playback_output", lambda requested: playback)
-    monkeypatch.setattr(
-        startup,
-        "VirtualMeetingOutput",
-        lambda output: SimpleNamespace(transcript_output=transcript_output),
-    )
+    monkeypatch.setattr(startup, "choose_them_stream", lambda requested: None)
     monkeypatch.setattr(
         startup, "choose_codex_after", lambda requested: ("User Voice", {"User Voice"})
     )
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
 
-    chosen, virtual_meeting = resolve_startup_selection(args)
+    chosen = resolve_startup_selection(args)
 
-    assert virtual_meeting is not None
-    assert chosen.them_output is transcript_output
-    assert chosen.them_output_setting == "isolated"
-    assert chosen.playback_output is playback
-    assert "Voice Codex Meeting" in capsys.readouterr().err
+    assert chosen.them_stream is None
+    assert chosen.tts_output is None
+    assert chosen.tts_enabled is True
 
 
 class FakeTTS:
@@ -506,9 +463,8 @@ def session_parts(monkeypatch, run):
 
 def test_a_session_tears_every_channel_down_in_a_safe_order(monkeypatch) -> None:
     events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
-    meeting = SimpleNamespace(close=lambda: events.append("close meeting"))
 
-    run_session(tui, channels, conversation, meeting)
+    run_session(tui, channels, conversation)
 
     assert events == [
         "start mic",
@@ -520,7 +476,6 @@ def test_a_session_tears_every_channel_down_in_a_safe_order(monkeypatch) -> None
         "close mic",
         "close them",
         "close conversation",
-        "close meeting",
     ]
 
 
@@ -530,7 +485,7 @@ def test_an_interrupted_session_still_closes_everything(monkeypatch, capsys) -> 
 
     events, tui, channels, conversation = session_parts(monkeypatch, run=interrupt)
 
-    run_session(tui, channels, conversation, None)
+    run_session(tui, channels, conversation)
 
     assert "Stopping..." in capsys.readouterr().out
     assert events[-1] == "close conversation"

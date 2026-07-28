@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Feed microphone and sink-monitor audio into Moonshine transcription.
+"""Feed microphone and application-stream audio into Moonshine transcription.
 
-``PulseMonitorTranscriber`` runs a reader thread and a worker thread. Both are
-daemons and both are joined with a timeout, because either can be blocked on
-``parec`` or on the model when the interface quits. ``tools/worker_gate.py``
-enforces that contract.
+``ApplicationStreamTranscriber`` runs a reader thread and a worker thread. Both
+are daemons and both are joined with a timeout, because either can be blocked
+on the recorder or on the model when the interface quits.
+``tools/worker_gate.py`` enforces that contract.
 """
 
 from __future__ import annotations
 
 import queue
-import shutil
 import subprocess
 import sys
 import threading
@@ -19,6 +18,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from moonshine_voice.transcriber import Transcriber
+
+from .streams import require_pipewire
 
 
 def audio_level(samples: np.ndarray) -> float:
@@ -128,21 +129,6 @@ class CaptureSettings:
 DEFAULT_CAPTURE = CaptureSettings()
 
 
-def parec_command(monitor, samplerate):
-    """Build the parec command that streams a sink monitor as raw PCM."""
-    return [
-        "parec",
-        "--record",
-        "--raw",
-        f"--device={monitor}",
-        f"--rate={samplerate}",
-        "--format=s16le",
-        "--channels=1",
-        "--client-name=voice-codex",
-        "--stream-name=Them transcription",
-    ]
-
-
 def decode_pcm(raw_audio):
     """Convert little-endian signed 16-bit PCM into normalized float samples."""
     audio = np.frombuffer(raw_audio, dtype="<i2").astype(np.float32)
@@ -171,27 +157,32 @@ def drain_audio_queue(audio_queue, stop_item, first):
     return b"".join(chunks), stop_requested
 
 
-class PulseMonitorTranscriber:
-    """Feed a PulseAudio/PipeWire sink monitor into a Moonshine stream."""
+class ApplicationStreamTranscriber:
+    """Feed one application's PipeWire playback into a Moonshine stream.
 
-    # parec exits rather than blocking when a monitor cannot be attached, so
-    # startup waits briefly and checks, instead of discovering it at the first
-    # silent read.
+    The recorder and the links are separate halves of the same tap and are
+    started in that order: the capture node does not exist in the graph until
+    the recorder has opened it, so nothing could be linked to it before.
+    """
+
+    # The recorder exits rather than blocking when it cannot reach the audio
+    # server at all, so startup waits briefly and checks, instead of
+    # discovering it at the first silent read. A tap with nothing linked yet is
+    # a different thing entirely, and reads as silence on purpose.
     STARTUP_GRACE_SECONDS = 0.05
 
     def __init__(
         self,
         model_path,
         model_arch,
-        monitor,
+        tap,
         capture=DEFAULT_CAPTURE,
         level_reporter=None,
     ):
-        if shutil.which("parec") is None:
-            raise RuntimeError("parec is required to capture an audio-output monitor.")
+        require_pipewire()
         self.transcriber = Transcriber(model_path, model_arch)
         self.stream = self.transcriber.create_stream(capture.update_interval)
-        self.monitor = monitor
+        self.tap = tap
         self.capture = capture
         self.level_reporter = level_reporter
         self.process = None
@@ -243,7 +234,7 @@ class PulseMonitorTranscriber:
             return
         self.stream.start()
         self.process = subprocess.Popen(
-            parec_command(self.monitor, self.capture.samplerate),
+            self.tap.command(self.capture.samplerate),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -251,8 +242,9 @@ class PulseMonitorTranscriber:
         if self.process.poll() is not None:
             self.stream.stop()
             raise RuntimeError(
-                f"Could not capture audio-output monitor {self.monitor!r}."
+                f"Could not capture the audio of {self.tap.application!r}."
             )
+        self.tap.start()
         self.worker = threading.Thread(
             target=self._process_audio,
             name="ThemTranscriptionWorker",
@@ -270,6 +262,10 @@ class PulseMonitorTranscriber:
     def stop(self):
         if not self.started:
             return
+        # The linker stops first so it cannot rebuild the tap around a recorder
+        # that is on its way out, which would leave a link behind pointing at a
+        # node nobody owns.
+        self.tap.stop()
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
             try:

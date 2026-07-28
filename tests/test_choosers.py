@@ -17,22 +17,23 @@ import pytest
 
 from voice_codex.catalog import CodexModelOption, populate_codex_model_catalog
 from voice_codex.choosers import (
-    VirtualMeetingOutput,
     audio_outputs,
     choose_codex_after,
     choose_microphone,
-    choose_playback_output,
-    choose_them_output,
+    choose_them_stream,
     choose_tts,
+    choose_tts_output,
     find_audio_output,
     input_devices,
     prompt_number,
     prompt_until,
     select_microphone,
-    select_playback_output,
-    select_them_output,
+    select_them_stream,
+    select_tts_output,
+    stream_label,
 )
 from voice_codex.domain import RESPONSE_POLICIES
+from voice_codex.streams import ApplicationStream
 
 
 def answer_with(monkeypatch, answers):
@@ -278,77 +279,99 @@ def test_an_unknown_output_matches_nothing() -> None:
 
 
 @pytest.mark.parametrize("requested", ["none", "NONE", "None"])
-def test_them_output_none_is_accepted_in_any_case(requested) -> None:
-    assert select_them_output(OUTPUTS, requested) is None
+def test_no_them_application_is_accepted_in_any_case(requested) -> None:
+    assert select_them_stream(requested) is None
 
 
-@pytest.mark.parametrize("requested", ["isolated", "virtual", "ISOLATED"])
-def test_them_output_isolated_requests_a_virtual_sink(requested) -> None:
-    assert select_them_output(OUTPUTS, requested) == {"isolated": True}
+def test_a_named_application_is_taken_without_checking_the_graph() -> None:
+    """An application that is not playing yet still has to be selectable."""
+    assert select_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
 
 
-def test_a_direct_them_monitor_is_returned_when_tts_is_off() -> None:
-    assert select_them_output(OUTPUTS, "Headset") is OUTPUTS[1]
+STREAMS = [
+    ApplicationStream(
+        node_id=41,
+        application="Chromium",
+        title="Playback",
+        binary="chromium",
+        playing=True,
+    ),
+    ApplicationStream(
+        node_id=42,
+        application="ZOOM VoiceEngine",
+        title="ZOOM VoiceEngine",
+        binary="zoom",
+        playing=False,
+    ),
+]
 
 
-def test_a_direct_them_monitor_is_refused_while_tts_is_on() -> None:
-    with pytest.raises(RuntimeError, match="Edge TTS cannot be used"):
-        select_them_output(OUTPUTS, "Headset", require_isolation=True)
-
-
-def test_an_unknown_them_output_suggests_the_working_alternatives() -> None:
-    with pytest.raises(RuntimeError, match="--them-output isolated"):
-        select_them_output(OUTPUTS, "sink.missing")
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (STREAMS[0], "Chromium — Playback (playing)"),
+        (STREAMS[1], "ZOOM VoiceEngine (idle)"),
+    ],
+)
+def test_a_stream_is_labelled_by_application_title_and_whether_it_plays(
+    stream, expected
+) -> None:
+    assert stream_label(stream) == expected
 
 
 @pytest.mark.parametrize(
     ("answer", "expected"),
-    [("0", None), ("1", {"isolated": True}), ("2", OUTPUTS[0]), ("3", OUTPUTS[1])],
+    [("0", None), ("1", "Chromium"), ("2", "ZOOM VoiceEngine")],
 )
-def test_choosing_a_them_output_maps_each_menu_entry(
+def test_choosing_a_them_application_maps_each_menu_entry(
     monkeypatch, answer, expected
 ) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    monkeypatch.setattr("voice_codex.choosers.graph", list)
+    monkeypatch.setattr(
+        "voice_codex.choosers.application_streams", lambda objects: list(STREAMS)
+    )
     answer_with(monkeypatch, [answer])
 
-    assert choose_them_output() == expected
+    assert choose_them_stream() == expected
 
 
-def test_direct_monitors_are_hidden_from_the_menu_while_tts_is_on(
+def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
     monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
-    answer_with(monkeypatch, ["2", "1"])
+    monkeypatch.setattr("voice_codex.choosers.graph", list)
+    monkeypatch.setattr("voice_codex.choosers.application_streams", lambda objects: [])
+    answer_with(monkeypatch, ["0"])
 
-    assert choose_them_output(require_isolation=True) == {"isolated": True}
-    menu = capsys.readouterr().out
-    assert "Direct output monitors are hidden" in menu
-    assert "Speakers" not in menu
-    assert "Please enter a number from 0 to 1." in menu
+    assert choose_them_stream() is None
+    assert "No application is playing audio yet" in capsys.readouterr().out
 
 
-def test_a_requested_playback_output_is_matched() -> None:
-    assert select_playback_output(OUTPUTS, "Speakers") is OUTPUTS[0]
+def test_a_requested_speech_output_is_matched() -> None:
+    assert select_tts_output(OUTPUTS, "Speakers") is OUTPUTS[0]
 
 
-def test_an_unknown_playback_output_is_rejected() -> None:
+def test_an_unknown_speech_output_is_rejected() -> None:
     with pytest.raises(RuntimeError, match=r"'sink\.c' was not found"):
-        select_playback_output(OUTPUTS, "sink.c")
+        select_tts_output(OUTPUTS, "sink.c")
 
 
-def test_choosing_a_playback_output_lists_the_sinks(monkeypatch, capsys) -> None:
+def test_no_requested_speech_output_leaves_the_system_default_alone(
+    monkeypatch,
+) -> None:
+    """Nothing may prompt here: the session no longer has to settle this."""
+
+    def unreachable():
+        raise AssertionError("the sinks were listed for a question nobody asked")
+
+    monkeypatch.setattr("voice_codex.choosers.audio_outputs", unreachable)
+
+    assert choose_tts_output() is None
+
+
+def test_a_requested_speech_output_is_resolved_against_the_sinks(monkeypatch) -> None:
     monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
-    answer_with(monkeypatch, ["2"])
 
-    assert choose_playback_output() is OUTPUTS[1]
-    assert "2) Headset" in capsys.readouterr().out
-
-
-def test_choosing_a_playback_output_fails_without_any_sink(monkeypatch) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", list)
-
-    with pytest.raises(RuntimeError, match="No PulseAudio/PipeWire audio outputs"):
-        choose_playback_output()
+    assert choose_tts_output("Headset")["name"] == "sink.b"
 
 
 @pytest.mark.parametrize(
@@ -437,117 +460,6 @@ def test_an_unavailable_model_catalog_notes_it_instead_of_failing(monkeypatch) -
     assert display.catalog == {}
 
 
-def test_virtual_meeting_stale_module_detection_matches_its_own_prefix() -> None:
-    assert VirtualMeetingOutput._is_stale_virtual_meeting_module(
-        {
-            "name": "module-null-sink",
-            "argument": "sink_name=voice_codex_meeting_123",
-        }
-    )
-    assert VirtualMeetingOutput._is_stale_virtual_meeting_module(
-        {
-            "name": "module-loopback",
-            "argument": "source=voice_codex_meeting_123.monitor sink=alsa_output.pci",
-        }
-    )
-    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module(
-        {
-            "name": "module-null-sink",
-            "argument": "sink_name=another_sink",
-        }
-    )
-    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module(
-        {"name": "module-loopback", "argument": "source=another_sink.monitor"}
-    )
-    assert not VirtualMeetingOutput._is_stale_virtual_meeting_module("not a module")
-
-
-def test_virtual_meeting_stale_module_cleanup_ignores_unparseable_listings(
-    monkeypatch,
-) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        return SimpleNamespace(stdout='{"not":"a list"}')
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    VirtualMeetingOutput._remove_stale_modules()
-
-    assert calls == [["pactl", "--format=json", "list", "modules"]]
-
-
-def test_virtual_meeting_requires_pactl(monkeypatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-
-    with pytest.raises(RuntimeError, match="requires pactl"):
-        VirtualMeetingOutput({"name": "headphones"})
-
-
-def test_virtual_meeting_raises_when_pactl_load_fails(monkeypatch) -> None:
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/pactl")
-    calls: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        calls.append(command)
-        if command[:4] == ["pactl", "--format=json", "list", "modules"]:
-            return SimpleNamespace(stdout="[]")
-        if command[1] == "load-module":
-            raise subprocess.CalledProcessError(1, command, stderr="nope")
-        return SimpleNamespace()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="Could not load module-null-sink"):
-        VirtualMeetingOutput({"name": "headphones"})
-
-    assert calls[-1][:3] == ["pactl", "load-module", "module-null-sink"]
-
-
-def test_virtual_meeting_load_module_rejects_non_integer_ids(monkeypatch) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout="not-a-number"),
-    )
-
-    with pytest.raises(RuntimeError, match="invalid module ID"):
-        VirtualMeetingOutput._load_module("module-null-sink", "sink_name=x")
-
-
-def test_virtual_meeting_transcript_output_uses_sink_name() -> None:
-    meeting = object.__new__(VirtualMeetingOutput)
-    meeting.sink_name = "voice_codex_meeting_42"
-
-    assert meeting.transcript_output == {
-        "name": "voice_codex_meeting_42",
-        "monitor": "voice_codex_meeting_42.monitor",
-        "description": "Voice Codex Meeting",
-    }
-
-
-def test_virtual_meeting_close_skips_missing_modules(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: calls.append(command) or SimpleNamespace(),
-    )
-    meeting = object.__new__(VirtualMeetingOutput)
-    meeting.loopback_module = None
-    meeting.sink_module = None
-    meeting.closed = False
-    import threading
-
-    meeting.close_lock = threading.Lock()
-
-    meeting.close()
-
-    assert calls == []
-    assert meeting.closed is True
-
-
 # --------------------------------------------------------------------------
 # Configured answers skip the prompt
 #
@@ -576,31 +488,22 @@ def test_a_requested_microphone_skips_the_menu(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
-def test_a_requested_them_output_skips_the_menu(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+def test_a_requested_them_application_skips_the_menu(monkeypatch, capsys) -> None:
+    def unreachable():
+        raise AssertionError("the graph was read for a question nobody asked")
+
+    monkeypatch.setattr("voice_codex.choosers.graph", unreachable)
     refuse_input(monkeypatch)
 
-    assert choose_them_output("sink.b") == OUTPUTS[1]
+    assert choose_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
     assert capsys.readouterr().out == ""
 
 
-def test_a_requested_them_output_still_refuses_a_direct_monitor_for_tts(
-    monkeypatch,
-) -> None:
+def test_a_requested_speech_output_skips_the_menu(monkeypatch, capsys) -> None:
     monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
     refuse_input(monkeypatch)
 
-    # The isolation rule belongs to the configured path too; a saved config
-    # must not be able to route Codex's own speech back in as Them.
-    with pytest.raises(RuntimeError, match="cannot be used with a direct Them monitor"):
-        choose_them_output("sink.b", require_isolation=True)
-
-
-def test_a_requested_playback_output_skips_the_menu(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
-    refuse_input(monkeypatch)
-
-    assert choose_playback_output("Headset") is OUTPUTS[1]
+    assert choose_tts_output("Headset") is OUTPUTS[1]
     assert capsys.readouterr().out == ""
 
 
