@@ -97,20 +97,28 @@ skip_empty = true
 # Scoped to the modules with no audio, process, or network boundary, so every
 # surviving mutant is a real assertion gap rather than an untestable adapter.
 #
-# The extraction this once said to wait for happened on 2026-07-27, and the
-# widening was measured rather than assumed. Adding catalog.py alone takes the
-# run to 411 mutants with 63 survivors — 84%, against a floor of 94 that must
-# not be lowered. catalog.py and choosers.py together: 836 mutants, 256
-# survivors, 69%. So the next module is roughly fifty assertions of work, not
-# a config edit, and it belongs in its own pull request.
+# codex.py joined on 2026-07-28, and the cost was what the note here had
+# predicted: it took the run from 268 mutants to 706, and the first pass over
+# it left 111 survivors — 84%, against a floor of 94. Roughly thirty
+# assertions closed that to 94.8%. What they bought is not the number: the
+# very first run failed outright on a fake whose ``stream()`` returned a bare
+# iterator, which ``_warm_up`` cannot close. That had been killing the worker
+# thread silently for as long as the test existed.
+#
+# The remaining modules are the same shape of work again. Adding catalog.py
+# alone took the older run to 411 mutants with 63 survivors; catalog.py and
+# choosers.py together, 836 mutants and 256 survivors. Each belongs in its own
+# pull request.
 #
 # Widening also needs `also_copy = ["voice_codex/"]`: mutmut runs the suite
 # against a copy of source_paths alone, and a selected test that imports an
 # unlisted sibling makes collection fail rather than the gate.
-source_paths = ["voice_codex/domain.py", "voice_codex/config.py"]
+source_paths = ["voice_codex/domain.py", "voice_codex/config.py", "voice_codex/codex.py"]
+also_copy = ["voice_codex/"]
 pytest_add_cli_args_test_selection = [
     "tests/test_domain.py",
     "tests/test_config.py",
+    "tests/test_conversation.py",
 ]
 # Coverage thresholds must not decide mutant survival; a run scoped to one
 # test file would fail the global floor and mark every mutant killed.

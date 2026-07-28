@@ -7,6 +7,7 @@ dispatch is exercised against the shapes it will actually see.
 
 from __future__ import annotations
 
+import os
 import threading
 from types import SimpleNamespace
 
@@ -538,6 +539,72 @@ def conversation(monkeypatch):
     built.close()
 
 
+def test_the_thread_is_started_from_the_chosen_settings(quiet_conversation) -> None:
+    """Every argument here changes what the model is or what it may do."""
+    from openai_codex import ApprovalMode, Sandbox
+
+    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+
+    assert quiet_conversation.fake_codex.start_kwargs == {
+        "model": "gpt-5.6-luna",
+        "service_tier": None,
+        "sandbox": Sandbox("read-only"),
+        "approval_mode": ApprovalMode.deny_all,
+        "cwd": os.getcwd(),
+        "developer_instructions": CODEX_DEVELOPER_INSTRUCTIONS,
+    }
+
+
+def test_a_new_conversation_is_idle_warm_and_ready_to_guess(
+    quiet_conversation,
+) -> None:
+    """The starting state each later assertion is a departure from."""
+    from openai_codex import Sandbox
+
+    assert quiet_conversation.model == "gpt-5.6-luna"
+    assert quiet_conversation.reasoning_effort == "low"
+    assert quiet_conversation.service_tier is None
+    assert quiet_conversation.sandbox == Sandbox("read-only")
+    assert quiet_conversation.thread.id == "thread-1"
+    assert quiet_conversation.prefire_enabled is True
+    # A fresh thread has not paid its slow first turn yet.
+    assert quiet_conversation.warmup_pending is True
+    assert quiet_conversation.shutdown_requested.is_set() is False
+    assert quiet_conversation.active_turn is None
+    assert quiet_conversation.speculation is None
+    assert quiet_conversation.requested_model is None
+    assert quiet_conversation.requested_reasoning_effort is None
+    assert quiet_conversation.requests.empty()
+    assert quiet_conversation.router.pending_context == []
+    assert quiet_conversation.worker.daemon is True
+
+
+def test_a_silent_session_still_builds_a_conversation(monkeypatch) -> None:
+    """The speech pipeline is optional; nothing else may depend on it."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    display = FakeDisplay()
+
+    built = CodexConversation(
+        CodexSettings(
+            sandbox="read-only",
+            model="gpt-5.6-luna",
+            reasoning_effort="low",
+            service_tier="priority",
+            prefire=False,
+        ),
+        display,
+    )
+
+    assert built.tts is None
+    assert built.prefire_enabled is False
+    assert built.service_tier == "priority"
+    assert codex.start_kwargs["service_tier"] == "priority"
+    built.close()
+
+
 def test_context_accumulates_until_a_reply_is_requested(conversation) -> None:
     conversation.ingest("Them", "A question", respond=False, timestamp="T1")
     conversation.ingest("User Voice", "And this", respond=True, timestamp="T2")
@@ -578,6 +645,43 @@ def test_a_requested_model_forks_the_thread_before_the_next_turn(
     assert conversation.fake_codex.forked_from == "thread-1"
     assert conversation.thread.id == "thread-2"
     assert ("note", "Codex model → gpt-5.6-nova") in conversation.fake_display.calls
+
+
+def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
+    """A fork that drops an argument silently changes what Codex may do."""
+    from openai_codex import ApprovalMode, Sandbox
+
+    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+
+    conversation.request_model("gpt-5.6-nova")
+
+    conversation._apply_pending_settings()
+
+    assert conversation.fake_codex.fork_kwargs == {
+        "model": "gpt-5.6-nova",
+        "service_tier": None,
+        "sandbox": Sandbox("read-only"),
+        "approval_mode": ApprovalMode.deny_all,
+        "developer_instructions": CODEX_DEVELOPER_INSTRUCTIONS,
+    }
+    assert ("set_codex", {"model": "gpt-5.6-nova", "thread": "thread-2"}) in (
+        conversation.fake_display.calls
+    )
+
+
+def test_a_fork_re_arms_the_warm_up_and_leaves_nothing_pending(conversation) -> None:
+    conversation.request_model("gpt-5.6-nova")
+    conversation.request_reasoning_effort("high")
+
+    conversation._apply_pending_settings()
+
+    assert conversation.warmup_pending is True
+    assert conversation.requested_model is None
+    assert conversation.requested_reasoning_effort is None
+    # A second pass has nothing left to do, so it must not fork again.
+    conversation.fake_codex.forked_from = None
+    conversation._apply_pending_settings()
+    assert conversation.fake_codex.forked_from is None
 
 
 def test_a_failed_model_switch_keeps_the_original_thread(conversation) -> None:
@@ -659,6 +763,52 @@ def test_the_prompt_names_the_source_to_reply_to(conversation) -> None:
     assert '"text": "A question"' in prompt
 
 
+def test_the_prompt_is_exactly_what_codex_is_asked(quiet_conversation) -> None:
+    """The whole string, because every word of it is instruction.
+
+    Asserting on fragments leaves the joins, the ordering and the closing
+    sentence unpinned, and those are what tell Codex which entries are
+    context and which one it is answering.
+    """
+    quiet_conversation.ingest("Them", "A question", respond=False, timestamp="T1")
+    quiet_conversation.ingest("User Voice", "And mine", respond=True, timestamp="T2")
+    request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
+
+    assert CodexConversation.build_prompt(request) == (
+        "Transcript entries since the previous queued reply:\n"
+        '[{"timestamp": "T1", "source": "Them", "text": "A question"}, '
+        '{"timestamp": "T2", "source": "User Voice", "text": "And mine"}]\n\n'
+        "Reply now to the latest User Voice input. "
+        "Use the other entries as context."
+    )
+
+
+def test_a_prompt_keeps_non_ascii_speech_as_it_was_heard(quiet_conversation) -> None:
+    """Escaping it would hand Codex \\u00e7 where a speaker said ç."""
+    quiet_conversation.ingest("Them", "Ação sim", respond=True, timestamp="T1")
+    request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
+
+    assert '"text": "Ação sim"' in CodexConversation.build_prompt(request)
+
+
+def test_every_turn_is_started_under_the_chosen_constraints(conversation) -> None:
+    """Effort, summary and sandbox are re-sent per turn, not just per thread."""
+    from openai_codex import ApprovalMode, Sandbox
+    from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
+
+    conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
+    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+
+    conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
+
+    assert conversation.thread.kwargs == {
+        "effort": ReasoningEffort("low"),
+        "summary": ReasoningSummary(REASONING_SUMMARY),
+        "sandbox": Sandbox("read-only"),
+        "approval_mode": ApprovalMode.deny_all,
+    }
+
+
 def test_interrupting_stops_the_active_turn_and_its_speech(monkeypatch) -> None:
     codex = FakeCodex()
     monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
@@ -702,14 +852,396 @@ def test_the_worker_drains_queued_requests(conversation) -> None:
     rendered = threading.Event()
 
     class WatchedTurn(FakeTurn):
+        # A generator, like FakeTurn and like the SDK stream: ``_warm_up``
+        # closes what it was given, and a bare iterator cannot be closed.
         def stream(self):
             rendered.set()
-            return iter([delta("Answer."), turn_completed()])
+            yield from [delta("Answer."), turn_completed()]
 
     conversation.thread.next_turn = WatchedTurn()
     conversation.ingest("Them", "A question", respond=True, timestamp="T1")
 
     assert rendered.wait(WAIT_SECONDS)
+
+
+def test_the_first_word_of_a_turn_is_reported_once() -> None:
+    """The latency estimate is one sample per turn, not one per delta.
+
+    Reporting every delta would average the whole reply into a figure the
+    pre-fire schedule reads as time-to-first-word, and aim its guesses late.
+    """
+    reports = []
+    renderer = CodexTurnRenderer(
+        FakeDisplay(), "Them", on_first_delta=lambda: reports.append(1)
+    )
+
+    renderer.render([delta("First "), delta("second "), delta("third.")])
+
+    assert reports == [1]
+
+
+def test_a_guess_carries_the_moment_it_was_heard(quiet_conversation) -> None:
+    """Codex reads the timestamps as conversational timing."""
+    assert quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+
+    request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
+
+    assert [entry.timestamp for entry in request.entries] == ["T1"]
+
+
+def test_a_guess_that_was_adopted_is_marked_as_committed(quiet_conversation) -> None:
+    """The worker reads this to tell a reply from a guess still in flight."""
+    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
+
+    assert quiet_conversation.commit_prefire("User Voice") is True
+
+    assert queued.speculation.committed is True
+    assert queued.speculation.abandoned is False
+
+
+def test_a_retreat_re_answers_the_very_same_request(quiet_conversation) -> None:
+    """The second attempt is the reply; sending anything else answers nothing."""
+    refusal = failure('{"param": "reasoning.effort", "code": "unsupported_value"}')
+    quiet_conversation.reasoning_effort = "high"
+    quiet_conversation.thread.next_turn = FakeTurn([refusal, turn_completed()])
+    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
+
+    quiet_conversation._run_codex(queued)
+
+    first, second = quiet_conversation.thread.turns
+    assert first == second == CodexConversation.build_prompt(queued.request)
+    assert ("set_codex", {"effort": "low"}) in quiet_conversation.fake_display.calls
+
+
+def test_the_retry_still_answers_the_source_that_asked(quiet_conversation) -> None:
+    """A retry that loses the source labels the reply as answering nobody."""
+
+    class RefusingOnceTurn(FakeTurn):
+        """Refuses the effort on the first stream, answers on the second."""
+
+        def __init__(self):
+            super().__init__()
+            self.streams = 0
+
+        def stream(self):
+            self.streams += 1
+            if self.streams == 1:
+                yield failure('{"param": "reasoning.effort", "unsupported_value"}')
+                yield turn_completed()
+                return
+            yield delta("Nine.")
+            yield turn_completed()
+
+    quiet_conversation.reasoning_effort = "high"
+    quiet_conversation.thread.next_turn = RefusingOnceTurn()
+    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+
+    quiet_conversation._run_codex(quiet_conversation.requests.get(timeout=WAIT_SECONDS))
+
+    assert ("codex_message_open", "Them") in quiet_conversation.fake_display.calls
+    assert ("codex_delta", "Nine.") in quiet_conversation.fake_display.calls
+
+
+def test_the_warm_up_turn_can_be_reached_while_it_runs(quiet_conversation) -> None:
+    """Shutdown interrupts through ``active_turn``, mid-warm-up included."""
+    seen = []
+
+    class WatchedTurn(FakeTurn):
+        def stream(self):
+            seen.append(quiet_conversation.active_turn)
+            yield turn_completed()
+
+    turn = WatchedTurn()
+    quiet_conversation.thread.next_turn = turn
+
+    quiet_conversation._warm_up()
+
+    assert seen == [turn]
+    assert quiet_conversation.active_turn is None
+
+
+def test_closing_survives_a_turn_that_refuses_to_be_interrupted(monkeypatch) -> None:
+    """A wedged turn must not take the shutdown down with it."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        FakeDisplay(),
+    )
+
+    class RefusingTurn(FakeTurn):
+        def interrupt(self):
+            raise RuntimeError("the turn is wedged")
+
+    conversation.active_turn = RefusingTurn()
+
+    conversation.close()
+
+    assert codex.closed is True
+
+
+def test_a_guess_survives_a_turn_that_refuses_to_be_interrupted(
+    quiet_conversation,
+) -> None:
+    class RefusingTurn(FakeTurn):
+        def interrupt(self):
+            raise RuntimeError("the turn is wedged")
+
+    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.speculation.turn = RefusingTurn()
+
+    assert quiet_conversation.cancel_prefire("User Voice") is True
+    assert quiet_conversation.speculation is None
+
+
+def test_closing_does_not_wait_out_a_wedged_worker(monkeypatch) -> None:
+    """Shutdown is bounded: a worker that never returns cannot hang the exit."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    released = threading.Event()
+    monkeypatch.setattr(
+        CodexConversation, "_worker", lambda self: released.wait(WAIT_SECONDS)
+    )
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        FakeDisplay(),
+    )
+
+    try:
+        conversation.close()
+        assert conversation.worker.is_alive() is True
+    finally:
+        released.set()
+
+
+def parked(conversation):
+    """Report each time the live worker settles down to wait on the queue.
+
+    Waiting for that is what makes these deterministic: acting before the
+    worker has reached the queue lets it leave through the loop condition
+    instead, which proves nothing about the wait itself.
+    """
+    waiting = threading.Event()
+    original = conversation.requests.get
+
+    def watched(*args, **kwargs):
+        waiting.set()
+        return original(*args, **kwargs)
+
+    conversation.requests.get = watched
+    return waiting
+
+
+def test_the_worker_gives_up_the_queue_to_notice_a_shutdown(conversation) -> None:
+    """Nothing is queued and no sentinel posted; only the timeout wakes it.
+
+    ``close`` does post a sentinel, so an unbounded wait would still end a
+    tidy shutdown. This is the untidy one: a flag set by someone who never
+    queues anything.
+    """
+    waiting = parked(conversation)
+    assert waiting.wait(WAIT_SECONDS)
+
+    conversation.shutdown_requested.set()
+    conversation.worker.join(WAIT_SECONDS)
+
+    assert conversation.worker.is_alive() is False
+
+
+def test_an_empty_queue_does_not_end_the_worker(conversation) -> None:
+    """A quiet moment is not a shutdown: the loop waits again and keeps serving."""
+    rendered = threading.Event()
+
+    class WatchedTurn(FakeTurn):
+        def stream(self):
+            rendered.set()
+            yield turn_completed()
+
+    waiting = parked(conversation)
+    assert waiting.wait(WAIT_SECONDS)
+    waiting.clear()
+    # A second visit to the queue means the first empty one was survived.
+    assert waiting.wait(WAIT_SECONDS)
+
+    conversation.thread.next_turn = WatchedTurn()
+    conversation.ingest("Them", "A late question", respond=True, timestamp="T1")
+
+    assert rendered.wait(WAIT_SECONDS)
+
+
+def test_the_thread_it_opened_is_announced(monkeypatch, capsys) -> None:
+    """The one line printed before the interface exists, for a failed start."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        FakeDisplay(),
+    )
+
+    assert (
+        capsys.readouterr().out
+        == "Codex App Server ready. Conversation thread: thread-1\n"
+    )
+    conversation.close()
+
+
+def test_a_failed_fork_puts_the_displayed_settings_back(conversation) -> None:
+    """The picker moved on its own; a refused switch has to move it back."""
+    conversation.fake_codex.fork_error = RuntimeError("model unavailable")
+    conversation.request_model("gpt-5.6-nova")
+
+    conversation._apply_pending_settings()
+
+    assert ("set_codex", {"model": "gpt-5.6-luna", "effort": "low"}) in (
+        conversation.fake_display.calls
+    )
+
+
+def test_a_fork_keeps_the_service_tier_the_session_pays_for(monkeypatch) -> None:
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only",
+            model="gpt-5.6-luna",
+            reasoning_effort="low",
+            service_tier="priority",
+        ),
+        FakeDisplay(),
+    )
+
+    conversation.request_model("gpt-5.6-nova")
+    conversation._apply_pending_settings()
+
+    assert codex.fork_kwargs["service_tier"] == "priority"
+    conversation.close()
+
+
+def test_the_reply_is_addressed_to_the_source_that_asked(conversation) -> None:
+    """The renderer labels the row with this; the wrong source misattributes it."""
+    conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
+    conversation.ingest("User Voice", "A question", respond=True, timestamp="T1")
+
+    conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
+
+    assert ("codex_message_open", "User Voice") in conversation.fake_display.calls
+
+
+def test_a_running_turn_can_be_reached_while_it_streams(quiet_conversation) -> None:
+    """Interrupting depends on it: an unpublished turn cannot be stopped."""
+    seen = []
+    turn = FakeTurn([delta("Answer."), turn_completed()])
+    quiet_conversation.thread.next_turn = turn
+    original = quiet_conversation._stream_turn
+
+    def watched(streamed_turn, reply_to):
+        seen.append((quiet_conversation.active_turn, reply_to))
+        return original(streamed_turn, reply_to)
+
+    quiet_conversation._stream_turn = watched
+    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+
+    quiet_conversation._run_codex(quiet_conversation.requests.get(timeout=WAIT_SECONDS))
+
+    assert seen == [(turn, "Them")]
+    # And it is let go of once the turn is over, so a later interrupt cannot
+    # reach a turn that has already finished.
+    assert quiet_conversation.active_turn is None
+
+
+def test_a_refusal_names_the_effort_it_retreated_from(quiet_conversation) -> None:
+    quiet_conversation.reasoning_effort = "high"
+
+    assert quiet_conversation._retreat_effort() is True
+
+    assert ("note", "Codex refused reasoning effort 'high' → low") in (
+        quiet_conversation.fake_display.calls
+    )
+
+
+def test_the_warm_up_publishes_the_turn_it_is_waiting_on(quiet_conversation) -> None:
+    """Shutdown interrupts through ``active_turn``; a warm-up must be reachable."""
+    seen = []
+    turn = FakeTurn([delta("ready"), turn_completed()])
+    quiet_conversation.thread.next_turn = turn
+    quiet_conversation.requests.put_nowait(None)  # stop the warm-up at once
+
+    quiet_conversation._warm_up()
+
+    seen.append(quiet_conversation.active_turn)
+    assert turn.interrupted == 1
+    assert seen == [None]
+    assert quiet_conversation.warmup_pending is False
+
+
+def test_an_idle_worker_keeps_checking_for_shutdown(quiet_conversation) -> None:
+    """The queue wait must expire, or close() would block until a turn arrives.
+
+    ``close`` posts a sentinel, so a worker parked on an unbounded ``get``
+    would still wake — but only for a session that is shut down cleanly. The
+    timeout is what makes the loop notice a shutdown it was not handed.
+    """
+    quiet_conversation.shutdown_requested.set()
+
+    # The loop condition is checked before the queue is, so a worker started
+    # against a shut-down conversation returns rather than waiting at all.
+    quiet_conversation._worker()
+
+    assert quiet_conversation.requests.empty()
+
+
+def test_closing_stops_the_turn_the_speech_and_the_client(monkeypatch) -> None:
+    """Shutdown is a sequence; skipping any step leaves something running."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    closed_speech = []
+    tts = SimpleNamespace(
+        interrupt=lambda: closed_speech.append("interrupt"),
+        close=lambda: closed_speech.append("close"),
+    )
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        FakeDisplay(),
+        tts=tts,
+    )
+    turn = FakeTurn()
+    conversation.active_turn = turn
+
+    conversation.close()
+
+    assert conversation.shutdown_requested.is_set() is True
+    assert turn.interrupted == 1
+    assert conversation.worker.is_alive() is False
+    assert codex.closed is True
+    assert closed_speech == ["close"]
+
+
+def test_closing_a_silent_session_has_no_speech_to_close(conversation) -> None:
+    """The optional pipeline must not be assumed present at shutdown."""
+    conversation.tts = None
+
+    conversation.close()
+
+    assert conversation.fake_codex.closed is True
 
 
 def test_a_turn_that_ends_on_a_command_speaks_its_text_exactly_once() -> None:
@@ -781,6 +1313,25 @@ def test_a_prefired_turn_is_queued_without_consuming_the_context(
     ]
     assert queued.speculation is not None
     assert len(quiet_conversation.router.pending_context) == 2
+
+
+def test_a_closed_session_reports_that_it_did_not_guess(quiet_conversation) -> None:
+    """The caller submits the turn itself when told False; a wrong True is silence."""
+    quiet_conversation.shutdown_requested.set()
+
+    assert quiet_conversation.prefire("User Voice", "a question", timestamp="T1") is (
+        False
+    )
+    assert quiet_conversation.requests.empty()
+
+
+def test_a_second_guess_is_refused_while_one_is_outstanding(
+    quiet_conversation,
+) -> None:
+    assert quiet_conversation.prefire("User Voice", "first", timestamp="T1") is True
+
+    assert quiet_conversation.prefire("User Voice", "second", timestamp="T2") is False
+    assert quiet_conversation.requests.qsize() == 1
 
 
 def test_committing_a_prefired_turn_consumes_its_context(quiet_conversation) -> None:

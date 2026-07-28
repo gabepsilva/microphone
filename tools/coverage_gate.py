@@ -41,9 +41,13 @@ FLOORS = {
     "voice_codex/__init__.py": 100.0,
     "voice_codex/capture.py": 87.0,
     "voice_codex/catalog.py": 95.0,
-    "voice_codex/choosers.py": 94.0,
+    # Raised 2026-07-28 from 94. The gate had been reporting the headroom for
+    # some time; both this and cli.py below measured the same figure across
+    # two consecutive runs, so neither is the top of a flapping range.
+    "voice_codex/choosers.py": 97.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
-    "voice_codex/cli.py": 98.0,
+    # Raised 2026-07-28 from 98.
+    "voice_codex/cli.py": 99.0,
     "voice_codex/codex.py": 98.0,
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 98.0,

@@ -9,8 +9,9 @@ report.
 
 Raise MUTATION_SCORE_FLOOR as survivors are killed. Never lower it.
 
-The reachable ceiling is not 100%. Thirteen survivors are equivalent mutants —
-they cannot change behavior, so no test can detect them:
+The reachable ceiling is not 100%. In domain.py and config.py, thirteen
+survivors are equivalent mutants — they cannot change behavior, so no test can
+detect them:
 
   * `rfind(x, None, n)` is `rfind(x, 0, n)`; None is the documented default.
   * `rfind(x, 1, n)` differs only when the break is at index 0, and it never
@@ -24,7 +25,25 @@ Two more time out rather than dying: mutating `split_at` to None makes the
 chunking loop consume nothing and spin forever. A timeout is not a kill, so
 they count against the score.
 
-That puts the ceiling at 253/268, which is what the floor now sits just below.
+That put the ceiling at 253/268 while those two modules were the whole scope.
+
+codex.py joined the scope on 2026-07-28 and brought its own equivalents, of
+the same kinds plus two the earlier modules had no occasion for:
+
+  * `flush=True` on the one startup `print` becomes `flush=False`, `None`, or
+    nothing at all. The line is printed either way; only the moment it reaches
+    a pipe differs, and no assertion can see that.
+  * `suppress(Exception)` becomes `suppress(None)` in the four places that
+    guard an interrupt. Both behave identically unless the suppressed call
+    raises, and the ones a test can make raise are covered — what is left is
+    the guard around a call that cannot fail in a fake.
+  * `False` becomes `None` on flags only ever read for truthiness
+    (`message_open`, `saw_delta`, `_sdk_loaded`), and `ensure_ascii=False`
+    becomes `ensure_ascii=None`, which json.dumps treats the same way.
+  * `join(timeout=3)` becomes `join(timeout=4)` and the queue wait moves from
+    0.2s to 1.2s. Both are still bounded, which is the property that matters;
+    pinning the exact number would be a test of the clock.
+
 Do not chase the difference, and do not silence it with `# pragma: no mutate`
 either — an equivalent mutant is evidence the code is precise, not evidence a
 test is missing.
