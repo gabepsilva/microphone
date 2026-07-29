@@ -27,9 +27,10 @@ starts where the last one left off. Command-line options still override it.
 Muting is deliberately not saved; it is how a session is being used at a
 moment, not how it is configured.
 
-Some runtime features also require operating-system tools: PipeWire/PulseAudio
-(`pactl` and `parec`) for output capture, and `ffmpeg`/`ffplay` for spoken
-responses. They are runtime integrations, not Python packages.
+Some runtime features also require operating-system tools: PipeWire
+(`pw-record`, `pw-link`, and `pw-dump`) for capturing the far end, `pactl` for
+naming output sinks, and `ffmpeg`/`ffplay` for spoken responses. They are
+runtime integrations, not Python packages.
 
 ## Speech
 
@@ -58,7 +59,41 @@ uv run voice_codex.py
 ```
 
 The command loads `voice.yaml`, initializes User Voice transcription, and
-also transcribes Them when `them_output` is configured.
+also transcribes Them when `them_stream` names an application.
+
+## Hearing the far end
+
+Them is captured from one application's own PipeWire playback stream rather
+than from a speaker's monitor. `--them-stream` names the application — the name
+the desktop shows for it, such as `Chromium` or `ZOOM VoiceEngine` — and the
+session links that application's audio into a capture node of its own while it
+goes on playing to the real speakers, unrouted and unchanged. Nothing has to be
+pointed at a virtual device.
+
+Codex's own speech is a different stream and is never linked, so it cannot be
+transcribed back as the far end. That is a property of the wiring rather than a
+filter that can miss.
+
+An application only appears in the audio graph once it starts playing, so the
+startup menu lists what is making sound right now. A name given with
+`--them-stream` or saved in `voice.yaml` is taken as written and picked up
+whenever that application appears — including after it restarts, and including
+every stream it opens, which is what makes a browser with several tabs work.
+
+The sidebar picks it too, at any point in the session: the far-end picker sits
+under the speaker meter, refreshes itself as applications start and stop
+playing, and offers `None` alongside them. It lists only applications it
+has heard streaming — a system speech daemon holds a stream open from boot
+without ever using it, and that is not a far end anyone can choose. Having
+streamed is the test rather than streaming now, so a meeting stays selectable
+during a pause in it. Starting a meeting after the
+session is already running needs nothing but that picker.
+
+The channel behind it is built the first time an application is chosen and
+closed again when none is, so a session that only ever listens to the
+microphone never loads the second speech model. Moving between two
+applications is not a rebuild — the tap follows a name, so it is re-pointed
+where it stands.
 
 The Textual TUI is the only presentation surface. It is still under active
 development; model selection remains a startup option because the Codex SDK

@@ -16,13 +16,12 @@ from dataclasses import dataclass
 
 from .catalog import populate_codex_model_catalog
 from .choosers import (
-    ISOLATED_OUTPUT,
-    VirtualMeetingOutput,
+    NO_THEM_STREAM,
     choose_codex_after,
     choose_microphone,
-    choose_playback_output,
-    choose_them_output,
+    choose_them_stream,
     choose_tts,
+    choose_tts_output,
 )
 from .config import load_startup_config
 from .domain import POLICY_NAMES, ResponsePolicy, TurnSilence
@@ -124,15 +123,15 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--them-output",
+        "--them-stream",
         help=(
-            "PulseAudio/PipeWire output name to transcribe as Them, "
-            "'isolated', or 'none'; prompts when omitted"
+            "Application whose audio is transcribed as Them, or 'none'; "
+            "prompts when omitted"
         ),
     )
     parser.add_argument(
-        "--playback-output",
-        help=("Physical output used with --them-output isolated; prompts when omitted"),
+        "--tts-output",
+        help="Sink Codex speaks through; the system default when omitted",
     )
     parser.add_argument(
         "--codex-after",
@@ -157,9 +156,12 @@ def build_parser():
 
 
 def _apply_startup_config(parser, args):
-    """Fill options the command line left unset from the startup config file."""
-    if args.config is None:
-        return
+    """Fill options the command line left unset from the startup config file.
+
+    ``--config`` always names a file, defaulting to ``voice.yaml`` beside the
+    package, so there is no unconfigured case to guard: a path that does not
+    exist yet is a question for the loader, not for this.
+    """
     try:
         loaded_settings = load_startup_config(args.config)
     except RuntimeError as error:
@@ -246,19 +248,9 @@ class StartupSelection:
     device: dict
     tts_enabled: bool
     tts_provider: str
-    them_output: dict | None
-    them_output_setting: str
-    playback_output: dict | None
+    them_stream: str | None
+    tts_output: dict | None
     policy: ResponsePolicy
-
-
-def them_output_name(them_output):
-    """Name the Them output the way a saved startup config records it."""
-    if them_output is None:
-        return "none"
-    if them_output.get(ISOLATED_OUTPUT):
-        return ISOLATED_OUTPUT
-    return them_output["name"]
 
 
 def startup_settings(selection, args):
@@ -267,11 +259,11 @@ def startup_settings(selection, args):
         "microphone": selection.device["name"],
         "tts": "on" if selection.tts_enabled else "off",
         "tts_provider": selection.tts_provider,
-        "them_output": selection.them_output_setting,
-        "playback_output": (
-            selection.playback_output["name"]
-            if selection.playback_output is not None
-            else None
+        "them_stream": (
+            NO_THEM_STREAM if selection.them_stream is None else selection.them_stream
+        ),
+        "tts_output": (
+            selection.tts_output["name"] if selection.tts_output is not None else None
         ),
         "codex_after": selection.policy.name,
         "turn_silence": args.turn_silence,
@@ -284,13 +276,10 @@ def startup_settings(selection, args):
 
 def print_startup_summary(args, selection, stream=sys.stderr):
     """Report the resolved startup choices before the slow model load begins."""
-    them_output = selection.them_output
-    playback_output = selection.playback_output
+    them_stream = selection.them_stream
+    tts_output = selection.tts_output
     print(f"\nUser microphone: {selection.device['name']}", file=stream)
-    if them_output is None:
-        print("Them audio output: None", file=stream)
-    else:
-        print(f"Them audio output: {them_output['description']}", file=stream)
+    print(f"Them application: {them_stream or 'None'}", file=stream)
     print(f"Codex response policy: {selection.policy.label}", file=stream)
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
     print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
@@ -300,15 +289,8 @@ def print_startup_summary(args, selection, stream=sys.stderr):
         print(f"Codex audio: {engine} ({args.tts_voice})", file=stream)
     else:
         print("Codex audio: Off", file=stream)
-    if playback_output is not None:
-        print(
-            f"Meeting and TTS playback: {playback_output['description']}", file=stream
-        )
-    elif selection.tts_enabled and them_output is not None:
-        print(
-            "Warning: a non-isolated Them monitor may transcribe Codex TTS.",
-            file=stream,
-        )
+    if tts_output is not None:
+        print(f"Codex speaks through: {tts_output['description']}", file=stream)
     print(f"Loading Moonshine {args.model} model...", file=stream)
 
 
@@ -316,35 +298,16 @@ def resolve_startup_selection(args):
     """Run the interactive choosers and capture what they resolved to."""
     device_index, device = choose_microphone(args.microphone)
     tts_enabled = choose_tts(args.tts)
-    them_output = choose_them_output(args.them_output, require_isolation=tts_enabled)
-    them_output_setting = them_output_name(them_output)
-    virtual_meeting = None
-    playback_output = None
-    if them_output is not None and them_output.get(ISOLATED_OUTPUT):
-        playback_output = choose_playback_output(args.playback_output)
-        virtual_meeting = VirtualMeetingOutput(playback_output)
-        them_output = virtual_meeting.transcript_output
-        print(
-            "\nCreated isolated meeting output: Voice Codex Meeting",
-            file=sys.stderr,
-        )
-        print(
-            "Set Zoom or the meeting app's speaker to Voice Codex Meeting.",
-            file=sys.stderr,
-        )
+    them_stream = choose_them_stream(args.them_stream)
     policy = choose_codex_after(args.codex_after)
-    return (
-        StartupSelection(
-            device_index=device_index,
-            device=device,
-            tts_enabled=tts_enabled,
-            tts_provider=args.tts_provider,
-            them_output=them_output,
-            them_output_setting=them_output_setting,
-            playback_output=playback_output,
-            policy=policy,
-        ),
-        virtual_meeting,
+    return StartupSelection(
+        device_index=device_index,
+        device=device,
+        tts_enabled=tts_enabled,
+        tts_provider=args.tts_provider,
+        them_stream=them_stream,
+        tts_output=choose_tts_output(args.tts_output),
+        policy=policy,
     )
 
 
@@ -368,12 +331,16 @@ def build_session_state(args, selection):
     )
 
 
-def run_session(tui, channels, conversation, virtual_meeting):
+def run_session(tui, channels, conversation, them=None):
     """Run the interface until it quits, then tear every channel down in order.
 
     Transcribers stop before their listeners close so a listener cannot be fed
     a partial turn after it has flushed, and every transcriber is closed only
     once no listener can still be called back.
+
+    The far end closes first and closes itself, because it may not exist, may
+    have been built minutes into the session, and owns the only reference to
+    what it built.
     """
     try:
         for transcriber, _ in channels:
@@ -388,6 +355,8 @@ def run_session(tui, channels, conversation, virtual_meeting):
     except KeyboardInterrupt:
         print("\nStopping...", flush=True)
     finally:
+        if them is not None:
+            them.close()
         for transcriber, _ in channels:
             transcriber.stop()
         for _, listener in channels:
@@ -395,5 +364,3 @@ def run_session(tui, channels, conversation, virtual_meeting):
         for transcriber, _ in channels:
             transcriber.close()
         conversation.close()
-        if virtual_meeting is not None:
-            virtual_meeting.close()

@@ -476,6 +476,80 @@ def test_the_speech_picker_offers_every_provider_and_silence(tui) -> None:
     ]
 
 
+def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
+    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._them_options() == [
+        (tui.NO_THEM_LABEL, tui.NO_THEM),
+        ("Brave (playing)", "Brave"),
+    ]
+
+
+def test_the_far_end_picker_shows_silence_when_nothing_is_chosen(tui) -> None:
+    """None is not a value a Select can hold, so silence is spelled."""
+    sidebar = tui.Sidebar(tui.SessionState(them_stream=None), tui.TuiHooks())
+
+    assert sidebar._them_selection() == tui.NO_THEM
+
+
+def test_choosing_an_application_asks_the_host_and_adopts_it(tui) -> None:
+    chosen: list[str | None] = []
+    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_them_stream=lambda name: chosen.append(name) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#them-select", Select).value = "Brave"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == ["Brave"]
+    assert state.them_stream == "Brave"
+
+
+def test_choosing_silence_asks_the_host_to_drop_the_far_end(tui) -> None:
+    chosen: list[str | None] = []
+    state = tui.SessionState(
+        them_stream="Brave", them_streams=[("Brave (playing)", "Brave")]
+    )
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_them_stream=lambda name: chosen.append(name) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#them-select", Select).value = tui.NO_THEM
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == [None]
+    assert state.them_stream is None
+
+
+def test_a_refused_application_leaves_the_picker_where_it_was(tui) -> None:
+    shown: list[str] = []
+    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(on_them_stream=lambda _name: False))
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#them-select", Select).value = "Brave"
+            await pilot.pause()
+            shown.append(str(app.query_one("#them-select", Select).value))
+
+    asyncio.run(exercise())
+
+    assert state.them_stream is None
+    assert shown == [tui.NO_THEM]
+
+
 def test_the_speech_picker_shows_silence_while_the_voice_is_off(tui) -> None:
     from voice_codex.speech import NO_VOICE
 
@@ -1114,7 +1188,7 @@ def test_ticking_the_speaker_box_blocks_listening_to_the_speaker(tui) -> None:
     assert mic == []
     assert app.state.them.muted is True
     assert app.state.mic.muted is False
-    assert app.entries[-1].text == "speaker muted"
+    assert app.entries[-1].text == "Audio Stream muted"
 
 
 def test_a_session_without_a_speaker_channel_still_ticks_its_box(tui) -> None:

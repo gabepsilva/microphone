@@ -23,6 +23,7 @@ count-based gate would fire on legitimate use and be silenced.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -37,14 +38,24 @@ SEMGREP_RULES = "semgrep.yml"
 MAKEFILE = "Makefile"
 
 
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Ask git about the working directory, not about whoever invoked this.
+
+    Git exports GIT_DIR and GIT_INDEX_FILE to the hooks it runs, and they
+    outrank the current directory. Inherited, this gate would compare the
+    thresholds of the repository that launched it rather than the one being
+    checked — which is exactly the silent no-op it exists to prevent, and it
+    would only happen from a hook, where nobody is watching the output.
+    """
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=False, env=environment
+    )
+
+
 def _read_base(base: str, path: str) -> str | None:
     """Return `path` as of `base`, or None when it did not exist there."""
-    result = subprocess.run(
-        ["git", "show", f"{base}:{path}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _git("show", f"{base}:{path}")
     return result.stdout if result.returncode == 0 else None
 
 
@@ -234,12 +245,7 @@ def _check_semgrep_rules(base: str, failures: list[str]) -> None:
 def main(argv: list[str]) -> int:
     base = argv[1] if len(argv) > 1 else "origin/master"
 
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    resolved = _git("rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
     if resolved.returncode != 0:
         # Never pass quietly on a missing base: a ratchet that cannot compare
         # is exactly the silent no-op this gate exists to prevent.

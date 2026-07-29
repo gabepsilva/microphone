@@ -526,16 +526,29 @@ class SpeakerGate:
     """Decide which completed turns trigger a reply, as the policy changes.
 
     A policy names speakers that may not exist in this session: selecting
-    "both" with no Them output must not make Them replies possible. The gate
+    "both" with no far end must not make Them replies possible. The gate
     therefore intersects every policy with the speakers actually available.
+
+    Both halves move while the session runs — the policy from its picker, the
+    available speakers as a far end is chosen or dropped — so the policy is
+    kept rather than folded into the result. Folding it would mean a far end
+    arriving after the policy was set could never be answered, because nothing
+    would remember that the policy had asked for it.
     """
 
     def __init__(self, speakers, available):
         self.available = frozenset(available)
-        self.active = frozenset(speakers) & self.available
+        self.requested = frozenset(speakers)
+        self.active = self.requested & self.available
 
     def set_policy(self, policy_name: str) -> None:
-        self.active = resolve_response_policy(policy_name).speakers & self.available
+        self.requested = resolve_response_policy(policy_name).speakers
+        self.active = self.requested & self.available
+
+    def set_available(self, available) -> None:
+        """Say which speakers this session now has, keeping the policy asked for."""
+        self.available = frozenset(available)
+        self.active = self.requested & self.available
 
     def should_respond(self, speaker: str) -> bool:
         return speaker in self.active

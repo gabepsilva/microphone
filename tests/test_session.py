@@ -1,0 +1,174 @@
+"""Recognizing this program's own helper processes, and sweeping up leftovers.
+
+``/proc`` is stood up as a directory of files rather than mocked, because what
+these read is a file format: a NUL-separated environment block. A fake that
+returned dictionaries would agree with any parser, including a wrong one.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+
+import pytest
+
+from voice_codex.session import (
+    SESSION_MARKER,
+    is_running,
+    orphans,
+    session_of,
+    started_here,
+    sweep_orphans,
+    tagged_environment,
+)
+
+
+def fake_proc(tmp_path, processes):
+    """Build a /proc holding one environ file per process."""
+    for pid, environment in processes.items():
+        directory = tmp_path / str(pid)
+        directory.mkdir()
+        block = b"".join(
+            f"{name}={value}".encode() + b"\0" for name, value in environment.items()
+        )
+        (directory / "environ").write_bytes(block)
+    return str(tmp_path)
+
+
+def test_a_started_process_carries_the_session_that_started_it() -> None:
+    environment = tagged_environment({"PATH": "/usr/bin"})
+
+    assert environment[SESSION_MARKER] == str(os.getpid())
+    assert environment["PATH"] == "/usr/bin"
+
+
+def test_the_tag_names_the_session_rather_than_the_process_it_lands_in() -> None:
+    """The sweep matches a helper to its owner, not to itself."""
+    assert tagged_environment({}, pid=4242)[SESSION_MARKER] == "4242"
+
+
+def test_a_tagged_process_reports_the_session_that_started_it(tmp_path) -> None:
+    proc = fake_proc(tmp_path, {7: {"PATH": "/usr/bin", SESSION_MARKER: "99"}})
+
+    assert session_of(7, proc=proc) == 99
+
+
+def test_an_untagged_process_belongs_to_nobody_here(tmp_path) -> None:
+    proc = fake_proc(tmp_path, {7: {"PATH": "/usr/bin"}})
+
+    assert session_of(7, proc=proc) is None
+    assert started_here(7, proc=proc) is False
+
+
+def test_a_process_that_cannot_be_read_belongs_to_nobody_here(tmp_path) -> None:
+    """Another user's process is not this program's to claim or to kill."""
+    assert session_of(7, proc=str(tmp_path)) is None
+
+
+def test_a_tag_that_is_not_a_number_is_no_tag_at_all(tmp_path) -> None:
+    proc = fake_proc(tmp_path, {7: {SESSION_MARKER: "not-a-pid"}})
+
+    assert session_of(7, proc=proc) is None
+
+
+def test_a_variable_that_merely_starts_the_same_is_not_the_tag(tmp_path) -> None:
+    proc = fake_proc(tmp_path, {7: {f"{SESSION_MARKER}_EXTRA": "99"}})
+
+    assert session_of(7, proc=proc) is None
+
+
+def test_a_helper_of_this_program_is_recognized_however_it_was_reparented(
+    tmp_path,
+) -> None:
+    """An orphan's parent is init, so ancestry cannot answer this."""
+    proc = fake_proc(tmp_path, {7: {SESSION_MARKER: "99"}})
+
+    assert started_here(7, proc=proc) is True
+
+
+def test_a_live_process_is_running() -> None:
+    assert is_running(os.getpid()) is True
+
+
+def test_a_process_that_is_gone_is_not_running() -> None:
+    def refuse(_pid, _signal):
+        raise ProcessLookupError
+
+    assert is_running(4242, kill=refuse) is False
+
+
+def test_a_helper_whose_session_is_gone_is_an_orphan(tmp_path) -> None:
+    proc = fake_proc(
+        tmp_path,
+        {
+            11: {SESSION_MARKER: "900"},
+            12: {"PATH": "/usr/bin"},
+        },
+    )
+
+    assert orphans(proc=proc, own_pid=1, running=lambda _pid: False) == [11]
+
+
+def test_a_helper_of_a_living_session_is_left_alone(tmp_path) -> None:
+    """Another session's helpers are its business, not this one's."""
+    proc = fake_proc(tmp_path, {11: {SESSION_MARKER: "900"}})
+
+    assert orphans(proc=proc, own_pid=1, running=lambda _pid: True) == []
+
+
+def test_this_sessions_own_helpers_are_never_orphans(tmp_path) -> None:
+    """The sweep runs while this session is starting the very helpers it lists."""
+    proc = fake_proc(tmp_path, {11: {SESSION_MARKER: "42"}})
+
+    assert orphans(proc=proc, own_pid=42, running=lambda _pid: False) == []
+
+
+def test_entries_that_are_not_processes_are_skipped(tmp_path) -> None:
+    (tmp_path / "self").mkdir()
+    (tmp_path / "cpuinfo").write_text("", encoding="utf-8")
+    proc = fake_proc(tmp_path, {11: {SESSION_MARKER: "900"}})
+
+    assert orphans(proc=proc, own_pid=1, running=lambda _pid: False) == [11]
+
+
+def test_an_unreadable_proc_yields_no_orphans() -> None:
+    assert orphans(proc="/nonexistent", own_pid=1) == []
+
+
+def test_sweeping_ends_the_orphans_and_counts_them(tmp_path) -> None:
+    proc = fake_proc(
+        tmp_path,
+        {11: {SESSION_MARKER: "900"}, 12: {SESSION_MARKER: "901"}},
+    )
+    signalled: list[tuple[int, int]] = []
+
+    swept = sweep_orphans(
+        proc=proc,
+        own_pid=1,
+        running=lambda _pid: False,
+        kill=lambda pid, sig: signalled.append((pid, sig)),
+    )
+
+    assert swept == 2
+    assert sorted(signalled) == [(11, signal.SIGTERM), (12, signal.SIGTERM)]
+
+
+def test_an_orphan_that_exits_first_is_not_counted(tmp_path) -> None:
+    """Being gone already is the outcome the sweep wanted."""
+    proc = fake_proc(tmp_path, {11: {SESSION_MARKER: "900"}})
+
+    def refuse(_pid, _sig):
+        raise ProcessLookupError
+
+    swept = sweep_orphans(proc=proc, own_pid=1, running=lambda _pid: False, kill=refuse)
+
+    assert swept == 0
+
+
+@pytest.mark.parametrize("marker", ["", "="])
+def test_a_malformed_environment_entry_is_survived(tmp_path, marker) -> None:
+    directory = tmp_path / "7"
+    directory.mkdir()
+    (directory / "environ").write_bytes(marker.encode() + b"\0")
+
+    assert session_of(7, proc=str(tmp_path)) is None

@@ -1005,3 +1005,13 @@ def test_muting_forgets_what_a_turn_was_held_open_on() -> None:
 
     assert listener.extensions == 0
     listener.close()
+
+
+def test_retiring_a_channel_that_was_never_registered_is_quiet() -> None:
+    """A far end can be dropped before its listener ever reached the submitter."""
+    submitter = TranscriptSubmitter(None, SpeakerGate({"Them"}, {"Them"}), None)
+    submitter.add_listener("kept")
+
+    submitter.remove_listener("never added")
+
+    assert submitter.listeners == ["kept"]

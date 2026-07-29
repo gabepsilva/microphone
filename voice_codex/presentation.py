@@ -11,6 +11,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
+# What a capture channel shows in place of a device name when it has none. A
+# far end can be chosen and dropped while the session runs, so this is a state
+# the interface returns to rather than only a value it starts in. It lives here
+# because the runtime sets it and the interface draws it, and the runtime must
+# not import the interface to name it.
+NO_DEVICE = "—"
+
 
 class TranscriptSink(Protocol):
     """Show speech as it arrives and mark where a turn ends."""
@@ -39,6 +46,17 @@ class SessionStatusSink(Protocol):
         efforts_by_model: dict[str, list[str]],
         default_effort_by_model: dict[str, str],
     ) -> None: ...
+
+
+class ApplicationListSink(Protocol):
+    """Offer the applications a session can be pointed at as its far end.
+
+    Its own role rather than a line in the status sink: only the refresher
+    calls it, and folding it in would make every Codex fake in the tests grow
+    a method its subject never reaches for.
+    """
+
+    def set_them_streams(self, applications: list[tuple[str, str]]) -> None: ...
 
 
 class CodexStreamSink(Protocol):
@@ -79,5 +97,7 @@ class CodexPresentation(CodexStreamSink, SessionStatusSink, Protocol):
     """What a Codex conversation needs: the stream plus its settings display."""
 
 
-class TranscriptPresentation(TranscriptSink, CodexPresentation, Protocol):
+class TranscriptPresentation(
+    TranscriptSink, CodexPresentation, ApplicationListSink, Protocol
+):
     """The whole display surface, as the Textual interface provides it."""

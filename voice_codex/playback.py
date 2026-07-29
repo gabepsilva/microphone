@@ -14,11 +14,12 @@ thread that is blocked writing audio into it.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
 from contextlib import suppress
+
+from .session import tagged_environment
 
 
 def describe_tool_failure(headline, stderr):
@@ -59,8 +60,13 @@ def raw_pcm_args(sample_rate, channels=1):
 
 
 def player_environment(output_sink, base_environment=None):
-    """Copy the environment, routing playback to a specific sink when given."""
-    environment = dict(os.environ if base_environment is None else base_environment)
+    """Copy the environment, routing playback to a specific sink when given.
+
+    The session tag rides along so the graph can tell this program's own voice
+    from a player someone is running for their own reasons — including after a
+    hard stop leaves one behind with init for a parent.
+    """
+    environment = tagged_environment(base_environment)
     if output_sink is not None:
         environment["PULSE_SINK"] = output_sink
     return environment

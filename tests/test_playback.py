@@ -123,13 +123,15 @@ def test_raw_audio_is_described_so_the_player_need_not_guess() -> None:
 def test_playback_is_routed_to_a_chosen_sink() -> None:
     environment = player_environment("alsa_output.pci", {"PATH": "/usr/bin"})
 
-    assert environment == {"PATH": "/usr/bin", "PULSE_SINK": "alsa_output.pci"}
+    assert environment["PULSE_SINK"] == "alsa_output.pci"
+    assert environment["PATH"] == "/usr/bin"
 
 
 def test_playback_uses_the_default_sink_when_none_was_chosen() -> None:
     environment = player_environment(None, {"PATH": "/usr/bin"})
 
-    assert environment == {"PATH": "/usr/bin"}
+    assert "PULSE_SINK" not in environment
+    assert environment["PATH"] == "/usr/bin"
 
 
 def test_audio_reaches_the_player(spawns) -> None:

@@ -5,8 +5,11 @@ tts: null
 # "piper" synthesizes locally and reaches the first word fastest; "edge" uses
 # Microsoft's online voices. Null keeps the default, piper.
 tts_provider: null
-them_output: null
-playback_output: null
+# The application whose audio is transcribed as Them, by the name the
+# desktop shows for it, or "none". Null asks at startup.
+them_stream: null
+# The sink Codex speaks through. Null uses the system default.
+tts_output: null
 codex_after: null
 # Left null, these take the built-in defaults: 3.0 seconds, gpt-5.6-luna, low,
 # and Codex Fast on — a spoken reply cannot start before the first token, so

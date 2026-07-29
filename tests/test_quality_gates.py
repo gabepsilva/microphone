@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -436,8 +437,15 @@ def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
     for name, content in base_files.items():
         (repo / name).write_text(content, encoding="utf-8")
 
+    # Git exports GIT_DIR, GIT_INDEX_FILE, and a blank GIT_AUTHOR_NAME to the
+    # hooks it runs, and every one of them outranks what this repository sets
+    # for itself: inherited, the commit below lands in the real repository or
+    # is refused for having no author. That makes these tests pass from a
+    # terminal and fail from the pre-commit hook, which is the one place the
+    # gates most need to run.
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     run = lambda *args: subprocess.run(  # noqa: E731 - terse local helper
-        args, cwd=repo, check=True, capture_output=True
+        args, cwd=repo, check=True, capture_output=True, env=environment
     )
     run("git", "init", "--quiet")
     run("git", "config", "user.email", "gate@example.invalid")

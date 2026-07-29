@@ -290,6 +290,23 @@ def test_a_discovered_catalog_adopts_the_models_efforts(tui) -> None:
     assert facade.state.codex_effort == "high"
 
 
+def test_the_applications_on_offer_are_installed_from_the_refresher(tui) -> None:
+    facade = tui.VoiceCodexTUI(tui.SessionState())
+
+    facade.set_them_streams([("Brave (playing)", "Brave")])
+
+    assert facade.state.them_streams == [("Brave (playing)", "Brave")]
+
+
+def test_the_application_being_listened_to_survives_leaving_the_graph(tui) -> None:
+    """An application that stops playing must not read as a changed choice."""
+    facade = tui.VoiceCodexTUI(tui.SessionState(them_stream="Brave"))
+
+    facade.set_them_streams([])
+
+    assert facade.state.them_stream == "Brave"
+
+
 def test_a_catalog_keeps_an_effort_the_model_still_supports(tui) -> None:
     facade = tui.VoiceCodexTUI(tui.SessionState(codex_model="m1", codex_effort="low"))
 
@@ -599,6 +616,7 @@ def protocol_methods():
         presentation.TranscriptSink,
         presentation.SessionStatusSink,
         presentation.CodexStreamSink,
+        presentation.ApplicationListSink,
     ):
         names |= {name for name in vars(protocol) if not name.startswith("_")}
     return names
