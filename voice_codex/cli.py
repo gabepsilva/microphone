@@ -168,6 +168,25 @@ class ChannelParts:
     model_arch: object
 
 
+def muting(transcriber, listener):
+    """Build the mute hook for one channel, from the capture end backwards.
+
+    Both ends are needed. The transcriber stops the work — a muted channel that
+    only discards transcripts has already paid for them. The listener stops
+    everything that was arranged around the words: its buffer, its silence
+    timers, and any turn it has speculatively started.
+
+    Capture is gated first so that no audio recorded after the click can reach
+    a listener that has already cleared itself.
+    """
+
+    def set_muted(muted):
+        transcriber.set_muted(muted)
+        listener.set_muted(muted)
+
+    return set_muted
+
+
 def open_them_channel(parts, activity, tap):
     """Build the far end's listener and transcriber around one tap."""
     listener = parts.submitter.channel(
@@ -300,7 +319,7 @@ class ThemChannel:
             self.desired = None
             return
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
-        self.tui.hooks.on_them_mute = listener.set_muted
+        self.tui.hooks.on_them_mute = muting(transcriber, listener)
         self.gate.set_available(BASE_SPEAKERS | {"Them"})
         self._announce(application)
 
@@ -495,7 +514,7 @@ def main():
     )
     user_transcriber.add_listener(user_listener)
 
-    tui.hooks.on_mute = user_listener.set_muted
+    tui.hooks.on_mute = muting(user_transcriber, user_listener)
     tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
     if selection.tts_output is not None:

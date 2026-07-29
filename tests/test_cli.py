@@ -67,6 +67,7 @@ class FakeTranscriber:
         self.started = False
         self.stopped = False
         self.closed = False
+        self.muted = False
 
     def add_listener(self, listener):
         self.listeners.append(listener)
@@ -79,6 +80,9 @@ class FakeTranscriber:
 
     def close(self):
         self.closed = True
+
+    def set_muted(self, muted):
+        self.muted = muted
 
 
 class FakeConversation:
@@ -273,6 +277,44 @@ def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
     tui.hooks.on_them_mute(True)
 
     assert them.listener.muted is True
+    assert channels[0][1].muted is False
+
+
+def test_the_speaker_mute_box_stops_the_them_capture(wiring) -> None:
+    """Muting has to reach the transcriber, or it only discards finished work."""
+    wiring["them_stream"] = THEM_APPLICATION
+
+    cli.main()
+    tui, channels, _ = wiring["session"]
+    them = wiring["them"]
+    them.reconcile()
+
+    tui.hooks.on_them_mute(True)
+
+    assert them.transcriber.muted is True
+    assert channels[0][0].muted is False
+
+
+def test_the_microphone_mute_box_stops_the_microphone_capture(wiring) -> None:
+    """The same for the channel the user speaks on."""
+    cli.main()
+    tui, channels, _ = wiring["session"]
+
+    tui.hooks.on_mute(True)
+
+    assert channels[0][0].muted is True
+    assert channels[0][1].muted is True
+
+
+def test_unmuting_reaches_the_capture_layer_too(wiring) -> None:
+    """A gate that only ever closes would end the session in silence."""
+    cli.main()
+    tui, channels, _ = wiring["session"]
+
+    tui.hooks.on_mute(True)
+    tui.hooks.on_mute(False)
+
+    assert channels[0][0].muted is False
     assert channels[0][1].muted is False
 
 

@@ -20,6 +20,7 @@ import pytest
 from voice_codex.capture import (
     ApplicationStreamTranscriber,
     CaptureSettings,
+    MuteGate,
     SoundActivityReporter,
     audio_level,
     decode_pcm,
@@ -584,3 +585,178 @@ def test_capture_settings_reach_the_stream_and_the_reader(capture) -> None:
     assert monitor.transcriber.update_interval == 1
     assert monitor.capture.samplerate == 8000
     assert monitor.capture.blocksize == 256
+
+
+class RecordingReporter(SoundActivityReporter):
+    """A level tap that keeps every block it was handed."""
+
+    def __init__(self):
+        super().__init__(display=None, channel="mic")
+        self.blocks: list[np.ndarray] = []
+
+    def update(self, samples: np.ndarray) -> None:
+        self.blocks.append(samples)
+
+
+def test_an_unmuted_gate_passes_the_audio_through() -> None:
+    samples = np.array([0.5, -0.5], dtype=np.float32)
+
+    assert MuteGate().apply(samples) is samples
+
+
+def test_a_muted_gate_replaces_speech_with_silence() -> None:
+    """Mute has to be applied before recognition, not to its results."""
+    gate = MuteGate()
+    gate.set_muted(True)
+
+    gated = gate.apply(np.array([0.5, -0.5], dtype=np.float32))
+
+    assert gated.tolist() == [0.0, 0.0]
+
+
+def test_a_muted_gate_keeps_the_block_it_silences() -> None:
+    """Silence rather than nothing, so the open line still meets a gap."""
+    gate = MuteGate()
+    gate.set_muted(True)
+
+    gated = gate.apply(np.zeros(7, dtype=np.float32))
+
+    assert gated.shape == (7,)
+    assert gated.dtype == np.float32
+
+
+def test_a_muted_gate_leaves_the_captured_block_alone() -> None:
+    """The level tap reads the same buffer, and reads it after the gate."""
+    samples = np.array([0.5, -0.5], dtype=np.float32)
+    gate = MuteGate()
+    gate.set_muted(True)
+
+    gate.apply(samples)
+
+    assert samples.tolist() == [0.5, -0.5]
+
+
+def test_unmuting_lets_the_audio_through_again() -> None:
+    gate = MuteGate()
+    gate.set_muted(True)
+    gate.set_muted(False)
+
+    assert gate.apply(np.array([0.5], dtype=np.float32)).tolist() == [0.5]
+
+
+def test_a_muted_far_end_sends_no_speech_to_the_recognizer(capture) -> None:
+    """The regression: a muted channel must not pay for words nobody reads."""
+    monitor = capture(reads=[stereo(16384, -16384)])
+    monitor.set_muted(True)
+    monitor.start()
+    try:
+        assert monitor.stream.received.wait(WAIT_SECONDS)
+        samples, _ = monitor.stream.audio[0]
+
+        assert samples == [0.0, 0.0]
+    finally:
+        monitor.stop()
+
+
+def test_a_muted_far_end_still_reports_what_it_is_doing(capture) -> None:
+    """Mute stops the transcription, not the activity the sidebar shows."""
+    reporter = RecordingReporter()
+    monitor = capture(reads=[stereo(16384, -16384)], level_reporter=reporter)
+    monitor.set_muted(True)
+    monitor.start()
+    try:
+        assert monitor.stream.received.wait(WAIT_SECONDS)
+
+        assert [block.tolist() for block in reporter.blocks] == [[0.5, -0.5]]
+    finally:
+        monitor.stop()
+
+
+def test_an_unmuted_far_end_reaches_the_recognizer_again(capture) -> None:
+    """Unmuting has to restore capture, not just the transcript."""
+    monitor = capture(reads=[stereo(16384, -16384)])
+    monitor.set_muted(True)
+    monitor.set_muted(False)
+    monitor.start()
+    try:
+        assert monitor.stream.received.wait(WAIT_SECONDS)
+        samples, _ = monitor.stream.audio[0]
+
+        assert samples == pytest.approx([0.5, -0.5])
+    finally:
+        monitor.stop()
+
+
+class FakeMicBase:
+    """Stand in for Moonshine's ``MicTranscriber`` at the capture boundary."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.opened_callback = None
+
+    def _open_input_stream(self, samplerate, callback):
+        self.samplerate = samplerate
+        self.opened_callback = callback
+        return object()
+
+
+def metered_mic(monkeypatch, reporter):
+    """Build the microphone channel with the Moonshine base class faked."""
+    monkeypatch.setitem(
+        sys.modules,
+        "moonshine_voice",
+        types.SimpleNamespace(MicTranscriber=FakeMicBase),
+    )
+    return metered_mic_transcriber(model_path="model", level_reporter=reporter)
+
+
+def recorded_microphone_block(transcriber, block):
+    """Push one captured block through the transcriber's capture callback."""
+    heard: list[np.ndarray] = []
+    transcriber._open_input_stream(16000, lambda in_data, *_: heard.append(in_data))
+    transcriber.opened_callback(block, len(block), None, None)
+    return heard
+
+
+def test_an_unmuted_microphone_reaches_the_recognizer(monkeypatch) -> None:
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    block = np.array([0.5, -0.5], dtype=np.float32)
+
+    heard = recorded_microphone_block(transcriber, block)
+
+    assert [samples.tolist() for samples in heard] == [[0.5, -0.5]]
+
+
+def test_a_muted_microphone_sends_no_speech_to_the_recognizer(monkeypatch) -> None:
+    """The regression on the channel the user speaks on."""
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    transcriber.set_muted(True)
+
+    heard = recorded_microphone_block(
+        transcriber, np.array([0.5, -0.5], dtype=np.float32)
+    )
+
+    assert [samples.tolist() for samples in heard] == [[0.0, 0.0]]
+
+
+def test_a_muted_microphone_still_shows_that_it_can_hear_you(monkeypatch) -> None:
+    """Checking the microphone is alive is exactly what you do before unmuting."""
+    reporter = RecordingReporter()
+    transcriber = metered_mic(monkeypatch, reporter)
+    transcriber.set_muted(True)
+
+    recorded_microphone_block(transcriber, np.array([0.5, -0.5], dtype=np.float32))
+
+    assert [samples.tolist() for samples in reporter.blocks] == [[0.5, -0.5]]
+
+
+def test_an_unmuted_microphone_is_heard_again(monkeypatch) -> None:
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    transcriber.set_muted(True)
+    transcriber.set_muted(False)
+
+    heard = recorded_microphone_block(
+        transcriber, np.array([0.5, -0.5], dtype=np.float32)
+    )
+
+    assert [samples.tolist() for samples in heard] == [[0.5, -0.5]]

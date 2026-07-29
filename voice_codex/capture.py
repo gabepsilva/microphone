@@ -115,21 +115,67 @@ def transcriber_options(options=None):
     return merged
 
 
+class MuteGate:
+    """Make a channel silent to the recognizer while it is muted.
+
+    Muting used to be applied after recognition, in the listener's transcript
+    handlers: the words were decoded and then thrown away. A muted channel
+    still paid full inference for speech nobody would read, and still held the
+    GIL against the channel that was not muted.
+
+    The gate replaces the captured audio with silence rather than dropping it.
+    Dropping is cheaper by the few milliseconds silence costs to recognize, but
+    it leaves the line that was open when the mute arrived open forever: no
+    further audio means no further updates, so the recognizer never sees the
+    gap that ends a line, and the half-sentence spoken before the mute is still
+    there to be glued onto the first words spoken after the unmute — and
+    submitted, because by then the listener is listening again. Feeding silence
+    is what mute means physically, and it lets the recognizer close that line
+    the same way it closes every other one.
+
+    Written from the interface thread and read from an audio thread with no
+    lock, like ``SoundActivityReporter``'s release deadline: the assignment is
+    atomic, and the only cost of reading the previous value is gating one block
+    later than the click.
+    """
+
+    def __init__(self, muted: bool = False):
+        self.muted = muted
+
+    def set_muted(self, muted) -> None:
+        """Start or stop replacing this channel's audio with silence."""
+        self.muted = bool(muted)
+
+    def apply(self, samples: np.ndarray) -> np.ndarray:
+        """Return the audio the recognizer should hear for these samples."""
+        if not self.muted:
+            return samples
+        return np.zeros_like(samples)
+
+
 def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwargs):
     """Create microphone capture only when the audio runtime is starting."""
     from moonshine_voice import MicTranscriber
 
     class MeteredMicTranscriber(MicTranscriber):
-        """Add a non-blocking level tap to Moonshine Voice microphone capture."""
+        """Add a non-blocking level tap and a mute gate to microphone capture."""
 
         def __init__(self, *args, level_reporter: SoundActivityReporter, **kwargs):
             super().__init__(*args, **kwargs)
             self.level_reporter = level_reporter
+            self.mute_gate = MuteGate()
+
+        def set_muted(self, muted) -> None:
+            """Stop feeding microphone speech to the recognizer."""
+            self.mute_gate.set_muted(muted)
 
         def _open_input_stream(self, samplerate, callback):
             def metered_callback(in_data, frames, time_info, status):
+                # The level tap reads the microphone, not the gated audio: a
+                # muted channel still has to show that it can hear you, which
+                # is how you check the microphone is alive before unmuting.
                 self.level_reporter.update(in_data)
-                callback(in_data, frames, time_info, status)
+                callback(self.mute_gate.apply(in_data), frames, time_info, status)
 
             return super()._open_input_stream(samplerate, metered_callback)
 
@@ -231,9 +277,14 @@ class ApplicationStreamTranscriber:
         self.audio_queue = queue.Queue()
         self.stop_item = object()
         self.started = False
+        self.mute_gate = MuteGate()
 
     def add_listener(self, listener):
         self.stream.add_listener(listener)
+
+    def set_muted(self, muted):
+        """Stop feeding far-end speech to the recognizer."""
+        self.mute_gate.set_muted(muted)
 
     def _read_audio(self):
         try:
@@ -260,8 +311,12 @@ class ApplicationStreamTranscriber:
                 self.audio_queue, self.stop_item, item
             )
             audio = to_mono(decode_pcm(raw_audio), self.tap.CHANNELS)
+            # As on the microphone, the level tap reads the tapped application
+            # rather than the gated audio, so a muted speaker channel still
+            # shows the far end talking.
             if self.level_reporter is not None:
                 self.level_reporter.update(audio)
+            audio = self.mute_gate.apply(audio)
             try:
                 self.stream.add_audio(audio.tolist(), self.capture.samplerate)
             except Exception as error:
