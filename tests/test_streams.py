@@ -650,6 +650,41 @@ def test_a_refresh_tells_the_display_what_is_playing() -> None:
     assert display.offered == [[("Brave — Playback (playing)", "Brave")]]
 
 
+IDLE_DAEMON = [node(2, application="speech-dispatcher-dummy", state="idle")]
+
+
+def test_an_application_that_has_never_played_is_not_offered() -> None:
+    """A system speech daemon holds a stream open from boot and never uses it."""
+    display = FakeDisplay()
+    refresher = ApplicationRefresher(display, dump=lambda: IDLE_DAEMON)
+
+    assert refresher.refresh() is False
+    assert display.offered == []
+
+
+def test_an_application_is_offered_as_soon_as_it_plays() -> None:
+    display = FakeDisplay()
+    graphs = [IDLE_DAEMON, [*IDLE_DAEMON, *PLAYING]]
+    refresher = ApplicationRefresher(display, dump=lambda: graphs.pop(0))
+    refresher.refresh()
+
+    assert refresher.refresh() is True
+    assert [value for _, value in display.offered[-1]] == ["Brave"]
+
+
+def test_an_application_heard_once_stays_offered_while_it_is_quiet() -> None:
+    """A meeting is worth choosing during a pause in it."""
+    quiet = [node(1, application="Brave", state="idle", **{"media.name": "Playback"})]
+    display = FakeDisplay()
+    graphs = [PLAYING, quiet]
+    refresher = ApplicationRefresher(display, dump=lambda: graphs.pop(0))
+    refresher.refresh()
+
+    refresher.refresh()
+
+    assert display.offered[-1] == [("Brave — Playback (idle)", "Brave")]
+
+
 def test_an_unchanged_list_is_not_reported_again() -> None:
     """Every report repaints the sidebar, and the list is usually the same."""
     display = FakeDisplay()

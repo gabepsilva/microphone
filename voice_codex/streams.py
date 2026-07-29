@@ -474,6 +474,12 @@ class ApplicationRefresher:
     for. Polling rather than watching the graph for events: this decides what
     a menu says, so being a few seconds stale costs nothing and a second
     subscription to the graph would cost a thread either way.
+
+    Only applications that have been heard playing are offered. Some hold a
+    stream open from boot without ever putting anything through it — a system
+    speech daemon does — and those are not far ends anyone can choose, only
+    entries to read past. Having played is the test rather than playing now,
+    because a meeting is worth choosing during a pause in it.
     """
 
     POLL_SECONDS = 4.0
@@ -484,7 +490,11 @@ class ApplicationRefresher:
         self.dump = dump
         self.stopping = threading.Event()
         self.worker = None
-        self.offered = None
+        # Empty rather than unknown, because that is the list the sidebar
+        # already starts holding: a first pass that finds nothing worth
+        # offering then has nothing to report either.
+        self.offered = []
+        self.heard = set()
 
     def start(self):
         if self.worker is not None:
@@ -501,7 +511,13 @@ class ApplicationRefresher:
         every pass, so an unconditional one would redraw the interface every
         few seconds for the whole session.
         """
-        offered = offered_applications(self.dump())
+        streams = applications(application_streams(self.dump()))
+        self.heard.update(stream.application for stream in streams if stream.playing)
+        offered = [
+            (stream_label(stream), stream.application)
+            for stream in streams
+            if stream.application in self.heard
+        ]
         if offered == self.offered:
             return False
         self.offered = offered
