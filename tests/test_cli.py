@@ -12,6 +12,7 @@ Nothing here fakes ``main`` itself.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,10 +22,29 @@ import pytest
 from voice_codex import cli
 from voice_codex.catalog import CodexModelOption
 from voice_codex.domain import RESPONSE_POLICIES, TurnLatencyEstimator
+from voice_codex.tui import SessionState
 
 MIC = {"name": "Yeti"}
 THEM_APPLICATION = "ZOOM VoiceEngine"
 PLAYBACK = {"name": "alsa_output.pci", "description": "Speakers"}
+INPUTS = [
+    (
+        3,
+        {
+            "name": "Yeti",
+            "default_samplerate": 48000.0,
+            "max_input_channels": 1,
+        },
+    ),
+    (
+        7,
+        {
+            "name": "Webcam",
+            "default_samplerate": 16000.0,
+            "max_input_channels": 1,
+        },
+    ),
+]
 
 
 class FakeTUI:
@@ -32,6 +52,7 @@ class FakeTUI:
 
     def __init__(self, session_state, countdown=None, speech=None, **hooks):
         self.session_state = session_state
+        self.state = session_state
         self.countdown = countdown
         self.speech = speech
         self.hook_arguments = hooks
@@ -56,6 +77,9 @@ class FakeTUI:
     def set_them_streams(self, applications):
         self.them_streams = list(applications)
 
+    def set_microphones(self, microphones):
+        self.microphones = list(microphones)
+
 
 class FakeTranscriber:
     def __init__(self, **kwargs):
@@ -65,7 +89,6 @@ class FakeTranscriber:
         self.stopped = False
         self.closed = False
         self.muted = False
-        self.devices: list[int] = []
 
     def add_listener(self, listener):
         self.listeners.append(listener)
@@ -81,9 +104,6 @@ class FakeTranscriber:
 
     def set_muted(self, muted):
         self.muted = muted
-
-    def switch_device(self, device):
-        self.devices.append(device)
 
 
 class FakeConversation:
@@ -131,6 +151,47 @@ class FakeTTS:
         return False
 
 
+class SwitchListener:
+    def __init__(self):
+        self.muted = False
+        self.closed = False
+
+    def set_muted(self, muted):
+        self.muted = muted
+
+    def close(self):
+        self.closed = True
+
+
+def managed_microphone(devices=(), discover=None, open_error=None):
+    """Build a dynamic microphone around recording capture fakes."""
+    tui = FakeTUI(SessionState())
+    opened: list[tuple[int, FakeTranscriber, SwitchListener]] = []
+
+    def open_channel(index):
+        if open_error is not None:
+            raise open_error
+        transcriber = FakeTranscriber(device=index)
+        listener = SwitchListener()
+        opened.append((index, transcriber, listener))
+        return transcriber, listener
+
+    def close_channel(transcriber, listener):
+        transcriber.stop()
+        listener.close()
+        transcriber.close()
+
+    microphone = cli.MicrophoneChannel(
+        tui,
+        open_channel,
+        close_channel,
+        devices=devices,
+        discover=(lambda: list(devices)) if discover is None else discover,
+    )
+    microphone.poll = 0.001
+    return microphone, tui, opened
+
+
 @pytest.fixture
 def wiring(monkeypatch, tmp_path):
     """Fake every adapter ``main`` reaches for and record what it built."""
@@ -139,9 +200,10 @@ def wiring(monkeypatch, tmp_path):
     built: dict[str, object] = {}
 
     def resolve(_args):
+        device = built["input_device"]
         return SimpleNamespace(
-            device_index=3,
-            device=MIC,
+            device_index=3 if device is not None else None,
+            device=device,
             tts_enabled=built["tts_enabled"],
             tts_provider="piper",
             them_stream=built["them_stream"],
@@ -149,8 +211,14 @@ def wiring(monkeypatch, tmp_path):
             policy=RESPONSE_POLICIES["them"],
         )
 
-    def run_session(tui, channels, conversation, them=None):
-        built["session"] = (tui, channels, conversation)
+    def run_session(tui, channels, conversation, microphone=None, them=None):
+        microphone_channels = (
+            [(microphone.transcriber, microphone.listener)]
+            if microphone is not None and microphone.transcriber is not None
+            else []
+        )
+        built["session"] = (tui, [*channels, *microphone_channels], conversation)
+        built["microphone"] = microphone
         built["them"] = them
 
     # The real lock is a file in the user's runtime directory, so leaving it
@@ -177,11 +245,6 @@ def wiring(monkeypatch, tmp_path):
         raising=False,
     )
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
-    monkeypatch.setattr(
-        cli,
-        "input_devices",
-        lambda: [(3, MIC), (7, {"name": "Webcam"})],
-    )
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -211,6 +274,7 @@ def wiring(monkeypatch, tmp_path):
     # that choice themselves, through the same reconcile the worker calls, so
     # what they assert on is the real wiring rather than a race with it.
     monkeypatch.setattr(cli.ThemChannel, "start", lambda self: None)
+    monkeypatch.setattr(cli.MicrophoneChannel, "start", lambda self: None)
     monkeypatch.setattr(cli.ApplicationRefresher, "start", lambda self: None)
     monkeypatch.setattr(
         cli, "get_model_for_language", lambda **kwargs: ("model-path", "arch")
@@ -218,8 +282,225 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr("voice_codex.tui.VoiceCodexTUI", FakeTUI)
     monkeypatch.setattr(cli.sys, "argv", ["voice_codex.py", "--config", str(config)])
 
-    built.update(tts_enabled=False, them_stream=None, tts_output=None)
+    built.update(
+        input_device=MIC,
+        tts_enabled=False,
+        them_stream=None,
+        tts_output=None,
+    )
     return built
+
+
+def test_an_unavailable_saved_microphone_waits_without_opening_capture() -> None:
+    microphone, tui, opened = managed_microphone()
+
+    microphone.select("Yeti")
+    microphone.reconcile()
+
+    assert opened == []
+    assert microphone.desired == "Yeti"
+    assert tui.audio == {}
+
+
+def test_a_saved_microphone_opens_when_it_appears_later() -> None:
+    available: list[tuple[int, dict]] = []
+    microphone, tui, opened = managed_microphone(discover=lambda: list(available))
+    microphone.select("Yeti")
+
+    microphone.refresh()
+    microphone.reconcile()
+    available.extend(INPUTS)
+    microphone.refresh()
+    microphone.reconcile()
+
+    assert [index for index, _, _ in opened] == [3]
+    assert microphone.current == "Yeti"
+    assert tui.audio["mic"] == "Yeti"
+    assert tui.microphones == [
+        ("Yeti (device 3, 48000 Hz)", "Yeti"),
+        ("Webcam (device 7, 16000 Hz)", "Webcam"),
+    ]
+
+
+def test_switching_microphones_retires_the_old_capture_before_opening_the_new() -> None:
+    microphone, tui, opened = managed_microphone(INPUTS)
+    microphone.select("Yeti")
+    microphone.reconcile()
+    _, first_transcriber, first_listener = opened[0]
+
+    microphone.select("Webcam")
+    microphone.reconcile()
+
+    assert [index for index, _, _ in opened] == [3, 7]
+    assert (first_transcriber.stopped, first_transcriber.closed) == (True, True)
+    assert first_listener.closed is True
+    assert microphone.current == "Webcam"
+    assert tui.audio["mic"] == "Webcam"
+
+
+def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
+    microphone, tui, opened = managed_microphone(INPUTS)
+    microphone.select("Yeti")
+    microphone.reconcile()
+    _, transcriber, listener = opened[0]
+
+    microphone.select(None)
+    microphone.reconcile()
+
+    assert (transcriber.stopped, transcriber.closed, listener.closed) == (
+        True,
+        True,
+        True,
+    )
+    assert microphone.current is None
+    assert tui.audio["mic"] == cli.NO_DEVICE
+    assert tui.hooks.on_mute is None
+
+
+def test_a_microphone_open_failure_leaves_the_session_running() -> None:
+    microphone, tui, opened = managed_microphone(
+        INPUTS, open_error=RuntimeError("device busy")
+    )
+
+    microphone.select("Yeti")
+    microphone.reconcile()
+
+    assert opened == []
+    assert microphone.current is None
+    assert tui.notes == ["could not listen to Yeti: device busy"]
+
+
+def test_a_microphone_start_failure_is_cleaned_up_and_reported_once() -> None:
+    tui = FakeTUI(SessionState())
+
+    class StartFailingTranscriber(FakeTranscriber):
+        def start(self):
+            raise RuntimeError("device busy")
+
+    transcriber = StartFailingTranscriber()
+    listener = SwitchListener()
+    closed: list[tuple[FakeTranscriber, SwitchListener]] = []
+    microphone = cli.MicrophoneChannel(
+        tui,
+        lambda _index: (transcriber, listener),
+        lambda opened, heard: closed.append((opened, heard)),
+        devices=INPUTS,
+        discover=lambda: INPUTS,
+    )
+    microphone.select("Yeti")
+
+    microphone.reconcile()
+    microphone.reconcile()
+
+    assert closed == [(transcriber, listener), (transcriber, listener)]
+    assert tui.notes == ["could not listen to Yeti: device busy"]
+
+
+def test_building_a_microphone_closes_capture_if_the_listener_cannot_be_built(
+    monkeypatch,
+) -> None:
+    transcriber = FakeTranscriber()
+
+    class RefusingSubmitter:
+        def channel(self, *_args, **_kwargs):
+            raise RuntimeError("listener unavailable")
+
+    parts = SimpleNamespace(
+        submitter=RefusingSubmitter(),
+        confidence=0.6,
+        turn_silence=object(),
+        display=object(),
+        countdown=object(),
+        model_path="model",
+        model_arch="arch",
+    )
+    monkeypatch.setattr(cli, "metered_mic_transcriber", lambda **_kwargs: transcriber)
+
+    with pytest.raises(RuntimeError, match="listener unavailable"):
+        cli.open_microphone_channel(parts, object(), object(), 3)
+
+    assert transcriber.closed is True
+
+
+def test_closing_a_microphone_unregisters_its_listener() -> None:
+    events: list[str] = []
+
+    class Transcriber:
+        def stop(self):
+            events.append("stop capture")
+
+        def close(self):
+            events.append("close capture")
+
+    class Listener:
+        def close(self):
+            events.append("close listener")
+
+    listener = Listener()
+    parts = SimpleNamespace(
+        submitter=SimpleNamespace(
+            remove_listener=lambda removed: events.append(
+                "unregister listener" if removed is listener else "wrong listener"
+            )
+        )
+    )
+
+    cli.close_microphone_channel(parts, Transcriber(), listener)
+
+    assert events == [
+        "stop capture",
+        "close listener",
+        "close capture",
+        "unregister listener",
+    ]
+
+
+def test_a_microphone_opened_while_muted_starts_muted() -> None:
+    microphone, tui, opened = managed_microphone(INPUTS)
+    tui.state.mic.muted = True
+
+    microphone.select("Yeti")
+    microphone.reconcile()
+
+    assert opened[0][1].muted is True
+    assert opened[0][2].muted is True
+
+
+def test_a_discovery_failure_is_reported_once_until_it_changes() -> None:
+    errors = [
+        RuntimeError("PortAudio unavailable"),
+        RuntimeError("PortAudio unavailable"),
+        RuntimeError("different failure"),
+    ]
+    microphone, tui, _ = managed_microphone(
+        discover=lambda: (_ for _ in ()).throw(errors.pop(0))
+    )
+
+    microphone.refresh()
+    microphone.refresh()
+    microphone.refresh()
+
+    assert tui.notes == [
+        "could not discover microphones: PortAudio unavailable",
+        "could not discover microphones: different failure",
+    ]
+    assert tui.microphones == []
+
+
+def test_the_microphone_worker_refreshes_until_it_is_closed() -> None:
+    refreshed = threading.Event()
+    microphone, _, _ = managed_microphone(discover=lambda: refreshed.set() or INPUTS)
+
+    microphone.start()
+    worker = microphone.worker
+    microphone.start()
+    try:
+        assert refreshed.wait(1)
+        assert microphone.worker is worker
+    finally:
+        microphone.close()
+
+    assert microphone.worker is None
 
 
 def test_a_user_only_session_registers_one_channel(wiring) -> None:
@@ -231,6 +512,20 @@ def test_a_user_only_session_registers_one_channel(wiring) -> None:
     assert listener.speaker == "User Voice"
     assert transcriber.listeners == [listener]
     assert tui.audio == {"mic": "Yeti"}
+
+
+def test_a_session_without_an_input_device_still_reaches_the_interface(wiring) -> None:
+    wiring["input_device"] = None
+
+    cli.main()
+    tui, channels, conversation = wiring["session"]
+
+    assert channels == []
+    assert tui.session_state.microphone is None
+    tui.hooks.on_user_text("typed while the microphone is absent")
+    assert conversation.ingested == [
+        ("User Text", "typed while the microphone is absent", True)
+    ]
 
 
 def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
@@ -331,47 +626,6 @@ def test_the_microphone_mute_box_stops_the_microphone_capture(wiring) -> None:
     assert channels[0][1].muted is True
 
 
-def test_the_microphone_picker_moves_the_live_capture(wiring) -> None:
-    cli.main()
-    tui, channels, _ = wiring["session"]
-
-    assert tui.hooks.on_microphone("7") is True
-    assert channels[0][0].devices == [7]
-
-
-def test_an_unknown_microphone_choice_is_refused(wiring) -> None:
-    cli.main()
-    tui, channels, _ = wiring["session"]
-
-    assert tui.hooks.on_microphone("99") is False
-    assert channels[0][0].devices == []
-
-
-def test_a_microphone_that_cannot_open_is_reported_and_refused(wiring) -> None:
-    cli.main()
-    tui, channels, _ = wiring["session"]
-    transcriber = channels[0][0]
-
-    def reject(_device):
-        raise RuntimeError("device busy")
-
-    transcriber.switch_device = reject
-
-    assert tui.hooks.on_microphone("7") is False
-    assert tui.notes == ["could not use microphone Webcam: device busy"]
-
-
-def test_the_started_microphone_stays_selectable_if_discovery_loses_it(
-    wiring, monkeypatch
-) -> None:
-    monkeypatch.setattr(cli, "input_devices", lambda: [(7, {"name": "Webcam"})])
-
-    cli.main()
-    tui, _, _ = wiring["session"]
-
-    assert tui.session_state.microphones == [("Yeti", "3"), ("Webcam", "7")]
-
-
 def test_unmuting_reaches_the_capture_layer_too(wiring) -> None:
     """A gate that only ever closes would end the session in silence."""
     cli.main()
@@ -401,7 +655,6 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_codex_model",
         "on_codex_effort",
         "on_tts",
-        "on_microphone",
         "on_mute",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
@@ -578,7 +831,6 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     tui.hooks.on_codex_model("gpt-5.6-sol")
     tui.hooks.on_codex_effort("high")
     tui.hooks.on_turn_silence(1.25)
-    tui.hooks.on_microphone("7")
     tui.hooks.on_tts(False)
 
     saved = saved_config(tmp_path)
@@ -586,7 +838,6 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     assert saved["codex_model"] == "gpt-5.6-sol"
     assert saved["codex_reasoning"] == "high"
     assert saved["turn_silence"] == 1.25
-    assert saved["microphone"] == "Webcam"
     assert saved["tts"] == "off"
 
 

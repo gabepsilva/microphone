@@ -22,9 +22,13 @@ def input_devices():
         raise RuntimeError(
             "Audio device discovery requires the PortAudio system library."
         ) from error
+    try:
+        devices = sd.query_devices()
+    except Exception as error:
+        raise RuntimeError(f"Could not query audio input devices: {error}") from error
     return [
         (index, device)
-        for index, device in enumerate(sd.query_devices())
+        for index, device in enumerate(devices)
         if device["max_input_channels"] > 0
     ]
 

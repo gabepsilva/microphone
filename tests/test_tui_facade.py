@@ -595,6 +595,7 @@ HOST_ONLY_METHODS = frozenset(
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",
+        "set_microphones",
         "set_session",
         "set_status",
     }

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Resolve every startup choice before the runtime is wired together.
+"""Resolve startup configuration before the runtime is wired together.
 
-Command line, then startup config file, then the interactive prompts: this
-module answers what the session will be, and nothing here opens an audio
-device or contacts Codex.
+Command line, then startup config file, then built-in defaults: this module
+answers what the session will be, and nothing here opens an audio device or
+contacts Codex.
 """
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ from .catalog import CodexModelOption
 from .choosers import (
     NO_THEM_STREAM,
     choose_codex_after,
-    choose_microphone,
     choose_them_stream,
     choose_tts,
     choose_tts_output,
+    input_devices,
+    select_microphone,
 )
 from .config import load_startup_config
 from .domain import POLICY_NAMES, ResponsePolicy, TurnSilence
@@ -29,6 +30,9 @@ from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
+DEFAULT_TTS = "on"
+DEFAULT_THEM_STREAM = NO_THEM_STREAM
+DEFAULT_CODEX_AFTER = "both"
 
 # Pre-firing overlaps Codex's thinking with the silence a finished turn is
 # already waiting out, which is the difference between the first word landing
@@ -67,7 +71,10 @@ def build_parser():
     )
     parser.add_argument(
         "--microphone",
-        help="Microphone device index or exact name; prompts when omitted",
+        help=(
+            "Microphone device index or exact name; the first available input "
+            "when omitted"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -124,7 +131,7 @@ def build_parser():
         "--them-stream",
         help=(
             "Application whose audio is transcribed as Them, or 'none'; "
-            "prompts when omitted"
+            f"default: {DEFAULT_THEM_STREAM}"
         ),
     )
     parser.add_argument(
@@ -134,12 +141,15 @@ def build_parser():
     parser.add_argument(
         "--codex-after",
         choices=POLICY_NAMES,
-        help="Which completed transcript turns trigger Codex; prompts when omitted",
+        help=(
+            "Which completed transcript turns trigger Codex "
+            f"(default: {DEFAULT_CODEX_AFTER})"
+        ),
     )
     parser.add_argument(
         "--tts",
         choices=("on", "off"),
-        help="Speak Codex responses; prompts when omitted",
+        help=f"Speak Codex responses (default: {DEFAULT_TTS})",
     )
     parser.add_argument(
         "--tts-provider",
@@ -157,17 +167,23 @@ def _apply_startup_config(parser, args):
     """Fill options the command line left unset from the startup config file.
 
     ``--config`` always names a file, defaulting to ``voice.yaml`` beside the
-    package, so there is no unconfigured case to guard: a path that does not
-    exist yet is a question for the loader, not for this.
+    package. A missing file is an empty configuration layer so a first run can
+    start from built-in defaults; every other read failure remains fatal.
     """
     try:
-        loaded_settings = load_startup_config(args.config)
+        loaded_settings = load_startup_config(args.config, missing_ok=True)
     except RuntimeError as error:
         parser.error(str(error))
     for key, value in loaded_settings.items():
         if getattr(args, key) is None:
             setattr(args, key, value)
-    print(f"Loaded startup config: {args.config}", file=sys.stderr)
+    if loaded_settings:
+        print(f"Loaded startup config: {args.config}", file=sys.stderr)
+    else:
+        print(
+            f"Startup config is empty or unavailable; using defaults: {args.config}",
+            file=sys.stderr,
+        )
 
 
 def _resolve_defaults(args):
@@ -180,6 +196,9 @@ def _resolve_defaults(args):
     provider, which the config file may only have supplied a moment ago.
     """
     for option, fallback in (
+        ("tts", DEFAULT_TTS),
+        ("them_stream", DEFAULT_THEM_STREAM),
+        ("codex_after", DEFAULT_CODEX_AFTER),
         ("tts_provider", DEFAULT_PROVIDER),
         ("turn_silence", DEFAULT_TURN_SILENCE),
         ("codex_model", DEFAULT_CODEX_MODEL),
@@ -253,10 +272,10 @@ def validate_codex_reasoning(parser, args, models: list[CodexModelOption]) -> No
 
 @dataclass(frozen=True)
 class StartupSelection:
-    """The interactive choices resolved before the runtime is wired together."""
+    """The choices resolved before the runtime is wired together."""
 
-    device_index: int
-    device: dict
+    device_index: int | None
+    device: dict | None
     tts_enabled: bool
     tts_provider: str
     them_stream: str | None
@@ -267,7 +286,11 @@ class StartupSelection:
 def startup_settings(selection, args):
     """Build the flat mapping the config file holds."""
     return {
-        "microphone": selection.device["name"],
+        "microphone": (
+            selection.device["name"]
+            if selection.device is not None
+            else args.microphone
+        ),
         "tts": "on" if selection.tts_enabled else "off",
         "tts_provider": selection.tts_provider,
         "them_stream": (
@@ -289,7 +312,10 @@ def print_startup_summary(args, selection, stream=sys.stderr):
     """Report the resolved startup choices before the slow model load begins."""
     them_stream = selection.them_stream
     tts_output = selection.tts_output
-    print(f"\nUser microphone: {selection.device['name']}", file=stream)
+    microphone = (
+        selection.device["name"] if selection.device is not None else "None yet"
+    )
+    print(f"\nUser microphone: {microphone}", file=stream)
     print(f"Them application: {them_stream or 'None'}", file=stream)
     print(f"Codex response policy: {selection.policy.label}", file=stream)
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
@@ -306,8 +332,26 @@ def print_startup_summary(args, selection, stream=sys.stderr):
 
 
 def resolve_startup_selection(args):
-    """Run the interactive choosers and capture what they resolved to."""
-    device_index, device = choose_microphone(args.microphone)
+    """Resolve startup choices without requiring a device or terminal prompt."""
+    try:
+        devices = input_devices()
+    except RuntimeError as error:
+        print(f"Microphone discovery unavailable: {error}", file=sys.stderr)
+        devices = []
+
+    device_index = None
+    device = None
+    if args.microphone is None and devices:
+        device_index, device = devices[0]
+    elif args.microphone is not None:
+        try:
+            device_index, device = select_microphone(devices, args.microphone)
+        except RuntimeError:
+            print(
+                f"Microphone {args.microphone!r} is not available yet; "
+                "select one from the sidebar after startup.",
+                file=sys.stderr,
+            )
     tts_enabled = choose_tts(args.tts)
     them_stream = choose_them_stream(args.them_stream)
     policy = choose_codex_after(args.codex_after)
@@ -322,29 +366,20 @@ def resolve_startup_selection(args):
     )
 
 
-def build_session_state(
-    args,
-    selection,
-    models: list[CodexModelOption] | None = None,
-    microphones: list[tuple[int, dict]] | None = None,
-):
+def build_session_state(args, selection, models: list[CodexModelOption] | None = None):
     """Build the sidebar's view of the resolved startup choices."""
-    from .tui import Channel, SessionState
+    from .tui import SessionState
 
     models = [] if models is None else models
-    microphones = [] if microphones is None else microphones
-    microphone_options = [(device["name"], str(index)) for index, device in microphones]
-    if not any(value == str(selection.device_index) for _, value in microphone_options):
-        microphone_options.insert(
-            0, (selection.device["name"], str(selection.device_index))
-        )
     model_choices = [(model.label, model.slug) for model in models]
     efforts_by_model = {model.slug: list(model.efforts) for model in models}
     default_effort_by_model = {model.slug: model.default_effort for model in models}
     return SessionState(
-        mic=Channel("mic", device=selection.device["name"]),
-        microphone=str(selection.device_index),
-        microphones=microphone_options,
+        microphone=(
+            selection.device["name"]
+            if selection.device is not None
+            else args.microphone
+        ),
         policy=selection.policy.name,
         tts_enabled=selection.tts_enabled,
         tts_provider=selection.tts_provider,
@@ -364,7 +399,7 @@ def build_session_state(
     )
 
 
-def run_session(tui, channels, conversation, them=None):
+def run_session(tui, channels, conversation, them=None, microphone=None):
     """Run the interface until it quits, then tear every channel down in order.
 
     Transcribers stop before their listeners close so a listener cannot be fed
@@ -384,6 +419,8 @@ def run_session(tui, channels, conversation, them=None):
     finally:
         if them is not None:
             them.close()
+        if microphone is not None:
+            microphone.close()
         for transcriber, _ in channels:
             transcriber.stop()
         for _, listener in channels:

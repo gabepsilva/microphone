@@ -28,12 +28,25 @@ STARTUP_CONFIG_KEYS = (
 )
 
 
-def load_startup_config(filename: str | Path) -> dict[str, object]:
-    """Load the flat YAML subset emitted by :func:`save_startup_config`."""
+def load_startup_config(
+    filename: str | Path, *, missing_ok: bool = False
+) -> dict[str, object]:
+    """Load the flat YAML subset emitted by :func:`save_startup_config`.
+
+    A first run has no file yet. Callers that supply ``missing_ok`` get an
+    empty layer in that one case; an existing file that cannot be read still
+    fails loudly rather than looking like an intentional empty config.
+    """
     settings: dict[str, object] = {}
     try:
         with Path(filename).open(encoding="utf-8") as config_file:
             lines = config_file.readlines()
+    except FileNotFoundError:
+        if missing_ok:
+            return settings
+        raise RuntimeError(
+            f"Could not read startup config {str(filename)!r}: file not found"
+        ) from None
     except OSError as error:
         raise RuntimeError(
             f"Could not read startup config {str(filename)!r}: {error}"
