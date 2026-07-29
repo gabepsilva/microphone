@@ -693,6 +693,10 @@ class FakeMicBase:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.opened_callback = None
+        self._device = kwargs.get("device")
+        self._samplerate = kwargs.get("samplerate", 16000)
+        self._sd_stream = None
+        self._should_listen = False
 
     def _open_input_stream(self, samplerate, callback):
         self.samplerate = samplerate
@@ -760,3 +764,66 @@ def test_an_unmuted_microphone_is_heard_again(monkeypatch) -> None:
     )
 
     assert [samples.tolist() for samples in heard] == [[0.5, -0.5]]
+
+
+class FakeInputStream:
+    def __init__(self):
+        self.events: list[str] = []
+
+    def start(self):
+        self.events.append("start")
+
+    def stop(self):
+        self.events.append("stop")
+
+    def close(self):
+        self.events.append("close")
+
+
+def test_switching_microphones_reopens_only_the_input_stream(monkeypatch) -> None:
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    previous = FakeInputStream()
+    replacement = FakeInputStream()
+    transcriber._device = 1
+    transcriber._sd_stream = previous
+    transcriber._should_listen = True
+
+    def open_replacement():
+        transcriber._sd_stream = replacement
+        replacement.start()
+
+    transcriber._start_listening = open_replacement
+
+    transcriber.switch_device(2)
+
+    assert transcriber._device == 2
+    assert transcriber._sd_stream is replacement
+    assert previous.events == ["stop", "close"]
+    assert replacement.events == ["start"]
+    assert transcriber._should_listen is True
+
+
+def test_a_microphone_that_cannot_open_restores_the_previous_stream(
+    monkeypatch,
+) -> None:
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    previous = FakeInputStream()
+    rejected = FakeInputStream()
+    transcriber._device = 1
+    transcriber._sd_stream = previous
+    transcriber._should_listen = True
+
+    def reject_replacement():
+        transcriber._sd_stream = rejected
+        raise RuntimeError("device busy")
+
+    transcriber._start_listening = reject_replacement
+
+    with pytest.raises(RuntimeError, match="device busy"):
+        transcriber.switch_device(2)
+
+    assert transcriber._device == 1
+    assert transcriber._sd_stream is previous
+    assert previous.events == ["stop", "start"]
+    assert rejected.events == ["close"]
+    assert transcriber._should_listen is True

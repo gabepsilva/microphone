@@ -534,6 +534,62 @@ def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
     ]
 
 
+def test_the_microphone_picker_offers_every_input_device(tui) -> None:
+    state = tui.SessionState(
+        microphone="2",
+        microphones=[("Yeti", "0"), ("Webcam", "2")],
+    )
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._microphone_options() == [("Yeti", "0"), ("Webcam", "2")]
+
+
+def test_choosing_a_microphone_asks_the_host_and_adopts_it(tui) -> None:
+    chosen: list[str] = []
+    state = tui.SessionState(
+        mic=tui.Channel("mic", device="Yeti"),
+        microphone="0",
+        microphones=[("Yeti", "0"), ("Webcam", "2")],
+    )
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_microphone=lambda device: chosen.append(device) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-select", Select).value = "2"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == ["2"]
+    assert state.microphone == "2"
+    assert state.mic.device == "Webcam"
+
+
+def test_a_refused_microphone_leaves_the_picker_where_it_was(tui) -> None:
+    shown: list[str] = []
+    state = tui.SessionState(
+        mic=tui.Channel("mic", device="Yeti"),
+        microphone="0",
+        microphones=[("Yeti", "0"), ("Webcam", "2")],
+    )
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(on_microphone=lambda _device: False))
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-select", Select).value = "2"
+            await pilot.pause()
+            shown.append(str(app.query_one("#mic-select", Select).value))
+
+    asyncio.run(exercise())
+
+    assert state.microphone == "0"
+    assert state.mic.device == "Yeti"
+    assert shown == ["0"]
+
+
 def test_the_far_end_picker_shows_silence_when_nothing_is_chosen(tui) -> None:
     """None is not a value a Select can hold, so silence is spelled."""
     sidebar = tui.Sidebar(tui.SessionState(them_stream=None), tui.TuiHooks())

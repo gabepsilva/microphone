@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 
 import numpy as np
@@ -115,6 +116,33 @@ def transcriber_options(options=None):
     return merged
 
 
+def switch_microphone_input(transcriber, device: int) -> None:
+    """Move a live transcriber to another PortAudio input, rolling back errors."""
+    previous_device = transcriber._device
+    previous_samplerate = transcriber._samplerate
+    previous_stream = transcriber._sd_stream
+
+    transcriber._should_listen = False
+    previous_stream.stop()
+    transcriber._device = device
+    transcriber._sd_stream = None
+    try:
+        transcriber._start_listening()
+    except Exception:
+        replacement = transcriber._sd_stream
+        if replacement is not None:
+            with suppress(Exception):
+                replacement.close()
+        transcriber._device = previous_device
+        transcriber._samplerate = previous_samplerate
+        transcriber._sd_stream = previous_stream
+        previous_stream.start()
+        transcriber._should_listen = True
+        raise
+    previous_stream.close()
+    transcriber._should_listen = True
+
+
 class MuteGate:
     """Make a channel silent to the recognizer while it is muted.
 
@@ -168,6 +196,10 @@ def metered_mic_transcriber(*args, level_reporter: SoundActivityReporter, **kwar
         def set_muted(self, muted) -> None:
             """Stop feeding microphone speech to the recognizer."""
             self.mute_gate.set_muted(muted)
+
+        def switch_device(self, device: int) -> None:
+            """Move capture to another input without reloading Moonshine."""
+            switch_microphone_input(self, device)
 
         def _open_input_stream(self, samplerate, callback):
             def metered_callback(in_data, frames, time_info, status):
