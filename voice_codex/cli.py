@@ -43,7 +43,7 @@ from .capture import (
     metered_mic_transcriber,
 )
 from .catalog import probe_codex_models
-from .choosers import NO_THEM_STREAM
+from .choosers import NO_THEM_STREAM, input_devices
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
 from .domain import (
@@ -217,6 +217,41 @@ def open_them_channel(parts, activity, tap):
     return transcriber, listener
 
 
+def open_microphone_channel(parts, activity, presence, device_index):
+    """Build the user's listener and transcriber for one available device."""
+    transcriber = metered_mic_transcriber(
+        model_path=parts.model_path,
+        model_arch=parts.model_arch,
+        update_interval=0.25,
+        device=device_index,
+        samplerate=16000,
+        channels=1,
+        level_reporter=activity,
+    )
+    try:
+        listener = parts.submitter.channel(
+            parts.confidence,
+            parts.turn_silence,
+            "User Voice",
+            parts.display,
+            countdown=parts.countdown,
+            presence=presence,
+        )
+    except Exception:
+        transcriber.close()
+        raise
+    transcriber.add_listener(listener)
+    return transcriber, listener
+
+
+def close_microphone_channel(parts, transcriber, listener):
+    """Retire one microphone without leaving its listener registered."""
+    transcriber.stop()
+    listener.close()
+    transcriber.close()
+    parts.submitter.remove_listener(listener)
+
+
 def close_them_channel(parts, transcriber, listener):
     """Retire the far end's channel in the order the session's shutdown uses.
 
@@ -228,6 +263,147 @@ def close_them_channel(parts, transcriber, listener):
     listener.close()
     transcriber.close()
     parts.submitter.remove_listener(listener)
+
+
+class MicrophoneChannel:
+    """Keep a session alive while input devices appear, disappear, or change."""
+
+    POLL_SECONDS = 2.0
+    JOIN_TIMEOUT_SECONDS = 30
+
+    def __init__(
+        self,
+        tui,
+        open_channel,
+        close_channel,
+        *,
+        devices=(),
+        discover=None,
+    ):
+        self.tui = tui
+        self.open_channel = open_channel
+        self.close_channel = close_channel
+        self.discover = input_devices if discover is None else discover
+        self.poll = self.POLL_SECONDS
+        self.devices = self._by_name(devices)
+        self.desired = None
+        self.current = None
+        self.transcriber = None
+        self.listener = None
+        self.wake = threading.Event()
+        self.stopping = threading.Event()
+        self.lock = threading.Lock()
+        self.worker = None
+        self._discovery_error = None
+        self._open_error = None
+
+    @staticmethod
+    def _by_name(devices):
+        return {device["name"]: (index, device) for index, device in devices}
+
+    @staticmethod
+    def _options(devices):
+        return [
+            (
+                f"{device['name']} "
+                f"(device {index}, {int(device['default_samplerate'])} Hz)",
+                device["name"],
+            )
+            for index, device in devices
+        ]
+
+    def start(self):
+        """Begin refreshing devices and serving choices."""
+        if self.worker is not None:
+            return
+        self.worker = threading.Thread(
+            target=self._serve, name="MicrophoneSwitch", daemon=True
+        )
+        self.worker.start()
+
+    def select(self, microphone):
+        """Ask for a named microphone, or for none. Always accepted."""
+        self.desired = microphone
+        self.wake.set()
+        return True
+
+    def refresh(self):
+        """Publish currently available inputs and retry the desired one."""
+        try:
+            devices = self.discover()
+        except RuntimeError as error:
+            message = str(error)
+            if message != self._discovery_error:
+                self.tui.note(f"could not discover microphones: {message}")
+                self._discovery_error = message
+            devices = []
+        else:
+            self._discovery_error = None
+        self.devices = self._by_name(devices)
+        self.tui.set_microphones(self._options(devices))
+
+    def _serve(self):
+        while not self.stopping.is_set():
+            self.refresh()
+            self.reconcile()
+            self.wake.wait(self.poll)
+            self.wake.clear()
+
+    def reconcile(self):
+        """Make the open capture channel agree with the newest available choice."""
+        with self.lock:
+            wanted = self.desired
+            if wanted == self.current:
+                return
+            if wanted is None:
+                self._retire()
+                return
+            selected = self.devices.get(wanted)
+            if selected is None:
+                return
+            self._retire()
+            self._open(*selected)
+
+    def _open(self, device_index, device):
+        transcriber = None
+        listener = None
+        try:
+            transcriber, listener = self.open_channel(device_index)
+            transcriber.start()
+        except Exception as error:
+            if transcriber is not None and listener is not None:
+                self.close_channel(transcriber, listener)
+            message = f"could not listen to {device['name']}: {error}"
+            if message != self._open_error:
+                self.tui.note(message)
+                self._open_error = message
+            return
+        self._open_error = None
+        self.transcriber, self.listener = transcriber, listener
+        self.current = device["name"]
+        self.tui.hooks.on_mute = muting(transcriber, listener)
+        if self.tui.state.mic.muted:
+            self.tui.hooks.on_mute(True)
+        self.tui.set_audio("mic", device=device["name"])
+
+    def _retire(self):
+        transcriber, listener = self.transcriber, self.listener
+        self.transcriber = self.listener = None
+        self.current = None
+        self.tui.hooks.on_mute = None
+        self.tui.set_audio("mic", device=NO_DEVICE)
+        if transcriber is not None and listener is not None:
+            self.close_channel(transcriber, listener)
+
+    def close(self):
+        """Stop refreshing devices and close the active microphone, if any."""
+        self.stopping.set()
+        self.wake.set()
+        if self.worker is not None:
+            self.worker.join(timeout=self.JOIN_TIMEOUT_SECONDS)
+            self.worker = None
+        self.desired = None
+        self.reconcile()
 
 
 class ThemChannel:
@@ -499,27 +675,6 @@ def main():
     # from the person in the room.
     mic_activity, them_activity = sound_taps(tui)
 
-    user_listener = submitter.channel(
-        args.confidence,
-        turn_silence,
-        "User Voice",
-        transcript_display,
-        countdown=countdown,
-        presence=microphone_presence(mic_activity, them_activity, tts),
-    )
-    user_transcriber = metered_mic_transcriber(
-        model_path=model_path,
-        model_arch=downloaded_arch,
-        update_interval=0.25,
-        device=selection.device_index,
-        samplerate=16000,
-        channels=1,
-        level_reporter=mic_activity,
-    )
-    user_transcriber.add_listener(user_listener)
-
-    tui.hooks.on_mute = muting(user_transcriber, user_listener)
-    tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
 
     parts = ChannelParts(
@@ -531,6 +686,30 @@ def main():
         model_path=model_path,
         model_arch=downloaded_arch,
     )
+    initial_devices = (
+        [(selection.device_index, selection.device)]
+        if selection.device_index is not None and selection.device is not None
+        else []
+    )
+    microphone = MicrophoneChannel(
+        tui,
+        partial(
+            open_microphone_channel,
+            parts,
+            mic_activity,
+            microphone_presence(mic_activity, them_activity, tts),
+        ),
+        partial(close_microphone_channel, parts),
+        devices=initial_devices,
+    )
+    desired_microphone = (
+        selection.device["name"] if selection.device is not None else args.microphone
+    )
+    tui.hooks.on_microphone = remembering(microphone.select, config, "microphone")
+    microphone.select(desired_microphone)
+    microphone.reconcile()
+    microphone.start()
+
     them = ThemChannel(
         tui,
         gate,
@@ -545,7 +724,13 @@ def main():
         them.select, config, "them_stream", encode=them_stream_setting
     )
     them.select(them_stream)
-    run_session(tui, [(user_transcriber, user_listener)], conversation, them)
+    run_session(
+        tui,
+        [],
+        conversation,
+        microphone=microphone,
+        them=them,
+    )
     applications.stop()
 
 

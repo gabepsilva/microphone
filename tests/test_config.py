@@ -148,6 +148,20 @@ def test_an_unreadable_config_names_the_file_it_could_not_read(tmp_path) -> None
         load_startup_config(missing)
 
 
+def test_a_missing_config_can_be_read_as_an_empty_layer(tmp_path) -> None:
+    missing = tmp_path / "absent.yaml"
+
+    assert load_startup_config(missing, missing_ok=True) == {}
+
+
+def test_missing_ok_does_not_hide_other_read_failures(tmp_path) -> None:
+    directory = tmp_path / "voice.yaml"
+    directory.mkdir()
+
+    with pytest.raises(RuntimeError, match="Could not read startup config"):
+        load_startup_config(directory, missing_ok=True)
+
+
 def test_an_unwritable_config_names_the_file_it_could_not_write(tmp_path) -> None:
     unwritable = tmp_path / "missing-directory" / "voice.yaml"
 

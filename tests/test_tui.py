@@ -88,10 +88,12 @@ def test_facade_updates_state_before_the_app_starts(tui) -> None:
 
     facade.update(tui.USER_VOICE, "testing")
     facade.set_audio("mic", device="USB mic", active=True)
+    facade.set_microphones([("USB mic (device 1)", "USB mic")])
 
     assert facade.state.partial_text == "testing"
     assert facade.state.mic.device == "USB mic"
     assert facade.state.mic.active is True
+    assert facade.state.microphones == [("USB mic (device 1)", "USB mic")]
 
 
 def test_facade_implements_runtime_display_events_before_the_app_starts(tui) -> None:
@@ -532,6 +534,77 @@ def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
         (tui.NO_THEM_LABEL, tui.NO_THEM),
         ("Brave (playing)", "Brave"),
     ]
+
+
+def test_the_microphone_picker_offers_none_before_available_inputs(tui) -> None:
+    state = tui.SessionState(microphones=[("Yeti (device 2, 48000 Hz)", "Yeti")])
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    assert sidebar._microphone_options() == [
+        (tui.NO_MICROPHONE_LABEL, tui.NO_MICROPHONE),
+        ("Yeti (device 2, 48000 Hz)", "Yeti"),
+    ]
+
+
+def test_the_microphone_picker_shows_none_before_an_input_is_chosen(tui) -> None:
+    sidebar = tui.Sidebar(tui.SessionState(microphone=None), tui.TuiHooks())
+
+    assert sidebar._microphone_selection() == tui.NO_MICROPHONE
+
+
+def test_choosing_a_microphone_asks_the_host_and_adopts_it(tui) -> None:
+    chosen: list[str | None] = []
+    state = tui.SessionState(microphones=[("Yeti", "Yeti")])
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_microphone=lambda name: chosen.append(name) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-select", Select).value = "Yeti"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == ["Yeti"]
+    assert state.microphone == "Yeti"
+
+
+def test_choosing_no_microphone_asks_the_host_to_close_the_input(tui) -> None:
+    chosen: list[str | None] = []
+    state = tui.SessionState(microphone="Yeti", microphones=[("Yeti", "Yeti")])
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_microphone=lambda name: chosen.append(name) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-select", Select).value = tui.NO_MICROPHONE
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == [None]
+    assert state.microphone is None
+
+
+def test_a_refused_microphone_leaves_the_picker_where_it_was(tui) -> None:
+    state = tui.SessionState(microphones=[("Yeti", "Yeti")])
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(on_microphone=lambda _name: False))
+    shown: list[str] = []
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-select", Select).value = "Yeti"
+            await pilot.pause()
+            shown.append(str(app.query_one("#mic-select", Select).value))
+
+    asyncio.run(exercise())
+
+    assert state.microphone is None
+    assert shown == [tui.NO_MICROPHONE]
 
 
 def test_the_far_end_picker_shows_silence_when_nothing_is_chosen(tui) -> None:

@@ -12,13 +12,14 @@ development or CI.
 
 ```bash
 uv sync --locked --all-groups
-cp voice.example.yaml voice.yaml
 make hooks
 ```
 
-`voice.yaml` holds local audio-device choices and is deliberately ignored by
-Git. The example keeps all choices interactive, so it is safe to copy on a new
-machine.
+`voice.yaml` is optional and holds local audio-device choices when present; it
+is deliberately ignored by Git. With no file, Voice Codex uses Piper speech,
+listens for both voice sources, starts without a meeting application, and
+chooses the first available microphone. `voice.example.yaml` documents every
+setting if you want to create the file by hand.
 
 The file is also where a session records itself: every setting the sidebar can
 change — response policy, speech on/off, speech engine, turn silence, Codex
@@ -58,8 +59,11 @@ off, and choosing one again turns it back on. A session started with
 uv run voice_codex.py
 ```
 
-The command loads `voice.yaml`, initializes User Voice transcription, and
-also transcribes Them when `them_stream` names an application.
+The command loads `voice.yaml` when it exists, initializes User Voice
+transcription, and also transcribes Them when `them_stream` names an
+application. If the file or an input device is absent, the typed/Codex session
+still starts. The microphone picker under the mic meter refreshes as devices
+are connected, so an input can be selected later without restarting.
 
 ## Hearing the far end
 

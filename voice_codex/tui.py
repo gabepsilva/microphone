@@ -65,6 +65,8 @@ from .speech import (
 # second vocabulary for the channel its meter already labels.
 NO_THEM = "none"
 NO_THEM_LABEL = "None"
+NO_MICROPHONE = "__none__"
+NO_MICROPHONE_LABEL = "None"
 REPOSITORY_URL = "https://github.com/gabepsilva/microphone"
 
 # --------------------------------------------------------------------------
@@ -128,6 +130,8 @@ class SessionState:
 
     mic: Channel = field(default_factory=lambda: Channel("mic"))
     them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
+    microphone: str | None = None
+    microphones: list[tuple[str, str]] = field(default_factory=list)
     # The application transcribed as Them, and the ones currently offered. The
     # list is refreshed while the session runs, because an application is only
     # in the audio graph while it is playing.
@@ -178,6 +182,7 @@ class TuiHooks:
     on_codex_model: Callable[[str], bool | None] | None = None
     on_codex_effort: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
+    on_microphone: Callable[[str | None], bool | None] | None = None
     on_them_mute: Callable[[bool], None] | None = None
     on_them_stream: Callable[[str | None], bool | None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
@@ -409,6 +414,12 @@ class Sidebar(Vertical):
     def _effort_options(self) -> list[tuple[str, str]]:
         return [(effort, effort) for effort in self.state.codex_efforts]
 
+    def _microphone_options(self) -> list[tuple[str, str]]:
+        return [(NO_MICROPHONE_LABEL, NO_MICROPHONE), *self.state.microphones]
+
+    def _microphone_selection(self) -> str:
+        return NO_MICROPHONE if self.state.microphone is None else self.state.microphone
+
     def _them_options(self) -> list[tuple[str, str]]:
         return [(NO_THEM_LABEL, NO_THEM), *self.state.them_streams]
 
@@ -462,6 +473,11 @@ class Sidebar(Vertical):
         # the level it silences read as one thing.
         with Vertical(id="mic-row"):
             yield Static(id="panel-mic")
+            yield self._picker(
+                "mic-select",
+                self._microphone_options(),
+                self._microphone_selection(),
+            )
             yield self._mute_box("mic-mute", self.state.mic)
         with Vertical(id="them-row"):
             yield Static(id="panel-them")
@@ -518,6 +534,11 @@ class Sidebar(Vertical):
         )
         self._sync_select(
             "#reasoning-select", self._effort_options(), self.state.codex_effort
+        )
+        self._sync_select(
+            "#mic-select",
+            self._microphone_options(),
+            self._microphone_selection(),
         )
         self._sync_select("#them-select", self._them_options(), self._them_selection())
         self._sync_select(
@@ -641,6 +662,7 @@ class Sidebar(Vertical):
             "policy-select": self._policy_selected,
             "model-select": self._model_selected,
             "reasoning-select": self._effort_selected,
+            "mic-select": self._microphone_selected,
             "them-select": self._them_selected,
             "speech-select": self._provider_selected,
         }.get(event.select.id)
@@ -666,6 +688,17 @@ class Sidebar(Vertical):
         self.state.policy = value
         if self.hooks.on_policy:
             self.hooks.on_policy(value)
+
+    def _microphone_selected(self, value: str) -> None:
+        """Ask the host to open another microphone, or to close the current one."""
+        if value == self._microphone_selection():
+            return
+        microphone = None if value == NO_MICROPHONE else value
+        if self.hooks.on_microphone and self.hooks.on_microphone(microphone) is False:
+            self.sync()
+            return
+        self.state.microphone = microphone
+        self.sync()
 
     def _them_selected(self, value: str) -> None:
         """Ask the host to listen to another application, or to none.
@@ -1898,6 +1931,11 @@ class VoiceCodexTUI:
         pointed somewhere else.
         """
         self.state.them_streams = list(applications)
+        self._call(self.app.refresh_sidebar)
+
+    def set_microphones(self, microphones: list[tuple[str, str]]) -> None:
+        """Install the input devices currently available for selection."""
+        self.state.microphones = list(microphones)
         self._call(self.app.refresh_sidebar)
 
     def set_session(self, **fields) -> None:

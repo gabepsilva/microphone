@@ -48,14 +48,19 @@ def answer_with(monkeypatch, answers):
     return asked
 
 
-def fake_sounddevice(monkeypatch, devices=None, error=None):
+def fake_sounddevice(monkeypatch, devices=None, error=None, query_error=None):
     real_import = builtins.__import__
+
+    def query_devices():
+        if query_error is not None:
+            raise query_error
+        return devices
 
     def guarded_import(name, *args, **kwargs):
         if name == "sounddevice":
             if error is not None:
                 raise error
-            return SimpleNamespace(query_devices=lambda: devices)
+            return SimpleNamespace(query_devices=query_devices)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
@@ -158,6 +163,18 @@ def test_a_missing_portaudio_library_is_reported_as_a_runtime_error(
     fake_sounddevice(monkeypatch, error=OSError("libportaudio.so not found"))
 
     with pytest.raises(RuntimeError, match="PortAudio system library"):
+        input_devices()
+
+
+def test_a_portaudio_query_failure_is_reported_as_a_runtime_error(
+    monkeypatch,
+) -> None:
+    fake_sounddevice(
+        monkeypatch,
+        query_error=RuntimeError("PortAudio not initialized"),
+    )
+
+    with pytest.raises(RuntimeError, match="Could not query audio input devices"):
         input_devices()
 
 

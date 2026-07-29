@@ -89,7 +89,8 @@ def test_parser_defaults_match_the_documented_startup_choices(tmp_path) -> None:
         "en_US-lessac-medium",
     )
     assert args.codex_fast is True
-    assert (args.tts, args.codex_after, args.microphone) == (None, None, None)
+    assert (args.tts, args.codex_after, args.microphone) == ("on", "both", None)
+    assert args.them_stream == "none"
 
 
 def test_command_line_overrides_the_startup_config_file(tmp_path) -> None:
@@ -104,11 +105,24 @@ def test_command_line_overrides_the_startup_config_file(tmp_path) -> None:
     assert (args.tts, args.codex_after) == ("on", "user")
 
 
-def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> None:
+def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
     missing = str(tmp_path / "absent.yaml")
 
+    _, args = parse_startup_args(["--config", missing])
+
+    assert (args.tts, args.them_stream, args.codex_after) == (
+        "on",
+        "none",
+        "both",
+    )
+
+
+def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> None:
+    unreadable = tmp_path / "voice.yaml"
+    unreadable.mkdir()
+
     with pytest.raises(SystemExit, match="2"):
-        parse_startup_args(["--config", missing])
+        parse_startup_args(["--config", str(unreadable)])
 
 
 @pytest.mark.parametrize(
@@ -299,9 +313,7 @@ def test_the_chosen_application_and_speech_output_reach_the_selection(
     monkeypatch, tmp_path
 ) -> None:
     speakers = {"name": "alsa", "description": "Speakers"}
-    monkeypatch.setattr(
-        startup, "choose_microphone", lambda requested: (2, {"name": "M"})
-    )
+    monkeypatch.setattr(startup, "input_devices", lambda: [(2, {"name": "M"})])
     monkeypatch.setattr(startup, "choose_tts", lambda requested: False)
     monkeypatch.setattr(startup, "choose_them_stream", lambda requested: "Chromium")
     monkeypatch.setattr(startup, "choose_tts_output", lambda requested: speakers)
@@ -321,9 +333,7 @@ def test_a_session_with_no_them_application_resolves_to_nothing(
     monkeypatch, tmp_path
 ) -> None:
     """Speech no longer constrains the Them choice, so None must survive it."""
-    monkeypatch.setattr(
-        startup, "choose_microphone", lambda requested: (0, {"name": "M"})
-    )
+    monkeypatch.setattr(startup, "input_devices", lambda: [(0, {"name": "M"})])
     monkeypatch.setattr(startup, "choose_tts", lambda requested: True)
     monkeypatch.setattr(startup, "choose_them_stream", lambda requested: None)
     monkeypatch.setattr(
@@ -336,6 +346,55 @@ def test_a_session_with_no_them_application_resolves_to_nothing(
     assert chosen.them_stream is None
     assert chosen.tts_output is None
     assert chosen.tts_enabled is True
+
+
+def test_startup_keeps_running_without_a_microphone(monkeypatch, tmp_path) -> None:
+    # Fake the adapter where both the old startup chooser and the new direct
+    # resolver reach it, so the regression fails on behavior rather than on a
+    # refactor-specific missing attribute.
+    monkeypatch.setattr("voice_codex.choosers.input_devices", list)
+    if hasattr(startup, "input_devices"):
+        monkeypatch.setattr(startup, "input_devices", list)
+    _, args = parse_startup_args(["--config", empty_config(tmp_path)])
+
+    chosen = resolve_startup_selection(args)
+
+    assert chosen.device_index is None
+    assert chosen.device is None
+
+
+def test_startup_keeps_running_when_microphone_discovery_is_unavailable(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    def unavailable():
+        raise RuntimeError("PortAudio is unavailable")
+
+    monkeypatch.setattr(startup, "input_devices", unavailable)
+    _, args = parse_startup_args(["--config", str(tmp_path / "missing.yaml")])
+
+    chosen = resolve_startup_selection(args)
+
+    assert chosen.device is None
+    assert (
+        "Microphone discovery unavailable: PortAudio is unavailable"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_saved_microphone_can_be_unavailable_at_startup(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setattr(startup, "input_devices", list)
+    config = write_config(tmp_path, 'microphone: "Yeti"\n')
+    _, args = parse_startup_args(["--config", config])
+
+    chosen = resolve_startup_selection(args)
+
+    assert chosen.device is None
+    assert startup_settings(chosen, saved_args(microphone="Yeti"))["microphone"] == (
+        "Yeti"
+    )
+    assert "select one from the sidebar" in capsys.readouterr().err
 
 
 class FakeTTS:
@@ -558,9 +617,34 @@ def test_a_session_closes_the_far_end_before_the_channels_it_started_with(
     events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
     them = SimpleNamespace(close=lambda: events.append("close them"))
 
-    run_session(tui, channels, conversation, them)
+    run_session(tui, channels, conversation, them=them)
 
     assert events[:3] == ["start mic", "start them", "close them"]
+
+
+def test_a_session_closes_dynamic_audio_channels_before_static_ones(
+    monkeypatch,
+) -> None:
+    events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
+    them = SimpleNamespace(close=lambda: events.append("close dynamic them"))
+    microphone = SimpleNamespace(
+        close=lambda: events.append("close dynamic microphone")
+    )
+
+    run_session(
+        tui,
+        channels,
+        conversation,
+        them=them,
+        microphone=microphone,
+    )
+
+    assert events[:4] == [
+        "start mic",
+        "start them",
+        "close dynamic them",
+        "close dynamic microphone",
+    ]
 
 
 def test_an_interrupted_session_still_closes_everything(monkeypatch, capsys) -> None:
