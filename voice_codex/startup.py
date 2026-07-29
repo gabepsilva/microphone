@@ -11,10 +11,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import threading
 from dataclasses import dataclass
 
-from .catalog import populate_codex_model_catalog
+from .catalog import CodexModelOption
 from .choosers import (
     NO_THEM_STREAM,
     choose_codex_after,
@@ -30,7 +29,6 @@ from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
-CODEX_EFFORTS = ("none", "low", "medium", "high")
 
 # Pre-firing overlaps Codex's thinking with the silence a finished turn is
 # already waiting out, which is the difference between the first word landing
@@ -206,9 +204,10 @@ def _validate_startup_args(parser, args):
         parser.error("startup config 'codex_fast' must be true or false")
     if args.codex_prefire is not None and not isinstance(args.codex_prefire, bool):
         parser.error("startup config 'codex_prefire' must be true or false")
-    if args.codex_reasoning is not None and args.codex_reasoning not in CODEX_EFFORTS:
-        allowed = ", ".join(repr(name) for name in CODEX_EFFORTS)
-        parser.error(f"startup config 'codex_reasoning' must be one of {allowed}")
+    if args.codex_reasoning is not None and (
+        not isinstance(args.codex_reasoning, str) or not args.codex_reasoning
+    ):
+        parser.error("startup config 'codex_reasoning' must be a non-empty string")
     # bool is a subclass of int, so a YAML `true` would otherwise pass as a
     # one-second window rather than being rejected as the mistake it is.
     if args.turn_silence is not None and (
@@ -238,6 +237,18 @@ def parse_startup_args(argv=None):
     _validate_startup_args(parser, args)
     _resolve_defaults(args)
     return parser, args
+
+
+def validate_codex_reasoning(parser, args, models: list[CodexModelOption]) -> None:
+    """Reject an effort the selected catalog model does not support."""
+    selected = next((model for model in models if model.slug == args.codex_model), None)
+    if selected is None or args.codex_reasoning in selected.efforts:
+        return
+    allowed = ", ".join(repr(effort) for effort in selected.efforts)
+    parser.error(
+        f"startup config 'codex_reasoning' for model {args.codex_model!r} "
+        f"must be one of {allowed}"
+    )
 
 
 @dataclass(frozen=True)
@@ -311,10 +322,14 @@ def resolve_startup_selection(args):
     )
 
 
-def build_session_state(args, selection):
+def build_session_state(args, selection, models: list[CodexModelOption] | None = None):
     """Build the sidebar's view of the resolved startup choices."""
     from .tui import SessionState
 
+    models = [] if models is None else models
+    model_choices = [(model.label, model.slug) for model in models]
+    efforts_by_model = {model.slug: list(model.efforts) for model in models}
+    default_effort_by_model = {model.slug: model.default_effort for model in models}
     return SessionState(
         policy=selection.policy.name,
         tts_enabled=selection.tts_enabled,
@@ -326,6 +341,10 @@ def build_session_state(args, selection):
         moonshine=args.model,
         codex_model=args.codex_model,
         codex_effort=args.codex_reasoning,
+        codex_models=model_choices or [(args.codex_model, args.codex_model)],
+        codex_efforts=efforts_by_model.get(args.codex_model, [args.codex_reasoning]),
+        codex_efforts_by_model=efforts_by_model,
+        codex_default_effort_by_model=default_effort_by_model,
         codex_tier="fast" if args.codex_fast else "standard",
         codex_sandbox=args.sandbox,
     )
@@ -345,12 +364,6 @@ def run_session(tui, channels, conversation, them=None):
     try:
         for transcriber, _ in channels:
             transcriber.start()
-        threading.Thread(
-            target=populate_codex_model_catalog,
-            args=(tui,),
-            name="CodexModelCatalog",
-            daemon=True,
-        ).start()
         tui.run()
     except KeyboardInterrupt:
         print("\nStopping...", flush=True)

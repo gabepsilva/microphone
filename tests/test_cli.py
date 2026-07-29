@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from voice_codex import cli
+from voice_codex.catalog import CodexModelOption
 from voice_codex.domain import RESPONSE_POLICIES, TurnLatencyEstimator
 
 MIC = {"name": "Yeti"}
@@ -152,6 +153,25 @@ def wiring(monkeypatch, tmp_path):
     # unfaked makes every ``main`` test fail whenever a session happens to be
     # running on the machine. The lock has its own tests below.
     monkeypatch.setattr(cli, "acquire_single_instance_lock", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli,
+        "probe_codex_models",
+        lambda: [
+            CodexModelOption(
+                "gpt-5.6-luna",
+                "GPT-5.6 Luna",
+                ("none", "low", "medium", "high", "xhigh", "max"),
+                "medium",
+            ),
+            CodexModelOption(
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol",
+                ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+                "low",
+            ),
+        ],
+        raising=False,
+    )
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
@@ -552,6 +572,31 @@ def test_a_session_reopens_with_what_the_last_one_left(wiring, tmp_path) -> None
 
     assert args.turn_silence == 1.25
     assert args.codex_reasoning == "high"
+
+
+def test_a_catalog_reasoning_effort_saved_by_the_sidebar_reopens(wiring) -> None:
+    """A catalog choice outside the legacy fixed list survives the round trip."""
+    cli.main()
+    tui, _, _ = wiring["session"]
+    tui.hooks.on_codex_model("gpt-5.6-sol")
+    tui.hooks.on_codex_effort("ultra")
+
+    cli.main()
+    reopened_tui, _, conversation = wiring["session"]
+
+    assert (conversation.settings.model, conversation.settings.reasoning_effort) == (
+        "gpt-5.6-sol",
+        "ultra",
+    )
+    assert reopened_tui.session_state.codex_efforts == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
 
 
 def test_a_single_instance_lock_is_acquired_once(monkeypatch, tmp_path) -> None:

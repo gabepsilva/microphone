@@ -26,6 +26,7 @@ from voice_codex.startup import (
     resolve_startup_selection,
     run_session,
     startup_settings,
+    validate_codex_reasoning,
 )
 
 
@@ -221,6 +222,77 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
     assert state.tts_enabled is True
     assert (state.turn_silence, state.confidence) == (3.0, 0.60)
     assert (state.moonshine, state.language) == ("medium-streaming", "en")
+
+
+def test_the_sidebar_state_uses_each_models_catalog_efforts(tmp_path) -> None:
+    _, args = parse_startup_args(
+        [
+            "--config",
+            empty_config(tmp_path),
+            "--codex-model",
+            "sol",
+            "--codex-reasoning",
+            "ultra",
+        ]
+    )
+    models = [
+        catalog.CodexModelOption("sol", "Sol", ("none", "low", "ultra"), "low"),
+        catalog.CodexModelOption("luna", "Luna", ("none", "low", "medium"), "medium"),
+    ]
+
+    state = build_session_state(args, selection(), models)
+
+    assert state.codex_models == [("Sol", "sol"), ("Luna", "luna")]
+    assert state.codex_efforts == ["none", "low", "ultra"]
+    assert state.codex_efforts_by_model == {
+        "sol": ["none", "low", "ultra"],
+        "luna": ["none", "low", "medium"],
+    }
+    assert state.codex_default_effort_by_model == {
+        "sol": "low",
+        "luna": "medium",
+    }
+
+
+def test_a_reasoning_effort_the_selected_model_does_not_offer_is_rejected(
+    tmp_path, capsys
+) -> None:
+    parser, args = parse_startup_args(
+        [
+            "--config",
+            empty_config(tmp_path),
+            "--codex-model",
+            "luna",
+            "--codex-reasoning",
+            "sometimes",
+        ]
+    )
+    models = [
+        catalog.CodexModelOption("luna", "Luna", ("none", "low", "medium"), "medium")
+    ]
+
+    with pytest.raises(SystemExit, match="2"):
+        validate_codex_reasoning(parser, args, models)
+
+    assert (
+        "startup config 'codex_reasoning' for model 'luna' must be one of "
+        "'none', 'low', 'medium'"
+    ) in capsys.readouterr().err
+
+
+def test_a_configured_model_the_catalog_omits_keeps_its_effort(tmp_path) -> None:
+    parser, args = parse_startup_args(
+        [
+            "--config",
+            empty_config(tmp_path),
+            "--codex-model",
+            "private-model",
+            "--codex-reasoning",
+            "private-effort",
+        ]
+    )
+
+    assert validate_codex_reasoning(parser, args, []) is None
 
 
 def test_the_chosen_application_and_speech_output_reach_the_selection(
@@ -612,7 +684,7 @@ def test_a_turn_silence_inside_the_editable_range_is_accepted(
 @pytest.mark.parametrize(
     "body",
     [
-        'codex_reasoning: "sometimes"\n',
+        "codex_reasoning: 7\n",
         'turn_silence: "three"\n',
         "turn_silence: true\n",
         'codex_fast: "yes"\n',

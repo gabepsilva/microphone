@@ -42,6 +42,7 @@ from .capture import (
     SoundActivityReporter,
     metered_mic_transcriber,
 )
+from .catalog import probe_codex_models
 from .choosers import NO_THEM_STREAM
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
@@ -63,6 +64,7 @@ from .startup import (
     resolve_startup_selection,
     run_session,
     startup_settings,
+    validate_codex_reasoning,
 )
 from .streams import ApplicationRefresher, StreamTap
 
@@ -431,6 +433,8 @@ def main():
     # After the lock, so two sessions can never sweep each other's helpers, and
     # before anything is started, so this session's own are never candidates.
     sweep_orphans()
+    codex_models = probe_codex_models()
+    validate_codex_reasoning(parser, args, codex_models)
     selection = resolve_startup_selection(args)
     them_stream = selection.them_stream
 
@@ -460,7 +464,7 @@ def main():
     countdown = TurnSilenceClock(turn_silence)
     tts = build_speech(selection, args)
     tui = VoiceCodexTUI(
-        build_session_state(args, selection),
+        build_session_state(args, selection, codex_models),
         countdown=countdown,
         speech=tts,
         on_policy=remembering(gate.set_policy, config, "codex_after"),
