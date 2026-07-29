@@ -29,6 +29,7 @@ os.environ.pop("TEXTUAL_ALLOW_SIGNALS", None)
 os.environ.pop("TEXTUAL_DISABLE_KITTY_KEY", None)
 
 from rich.console import Group, RenderableType
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from textual import events
@@ -39,7 +40,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
-from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets import Checkbox, Input, Link, Select, Static
 
 from .domain import (
     CODEX,
@@ -64,6 +65,7 @@ from .speech import (
 # second vocabulary for the channel its meter already labels.
 NO_THEM = "none"
 NO_THEM_LABEL = "None"
+REPOSITORY_URL = "https://github.com/gabepsilva/microphone"
 
 # --------------------------------------------------------------------------
 # Sources and palette
@@ -126,7 +128,6 @@ class SessionState:
 
     mic: Channel = field(default_factory=lambda: Channel("mic"))
     them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
-    out_device: str = "—"
     # The application transcribed as Them, and the ones currently offered. The
     # list is refreshed while the session runs, because an application is only
     # in the audio graph while it is playing.
@@ -153,7 +154,6 @@ class SessionState:
     tts_enabled: bool = True
     tts_provider: str = DEFAULT_PROVIDER
     tts_voice: str = default_voice(DEFAULT_PROVIDER)
-    tts_queue: list[str] = field(default_factory=list)
 
     turn_silence: float = 3.0
     # Seconds until the pending turn is submitted, or None when none is.
@@ -469,9 +469,17 @@ class Sidebar(Vertical):
                 "them-select", self._them_options(), self._them_selection()
             )
             yield self._mute_box("them-mute", self.state.them)
-        yield Static(id="panel-out")
+        with Horizontal(id="silence-row"):
+            yield Static("Silence Turn", id="silence-label")
+            yield Input(
+                value=format_seconds(self.state.turn_silence),
+                id="silence-input",
+                compact=True,
+            )
+            yield Static(" sec", id="silence-unit")
+        yield Static(id="panel-countdown")
+        yield Static(id="panel-codex-head")
         with Vertical(id="model-row"):
-            yield Static("AI model", id="model-label")
             yield self._picker(
                 "model-select", self.state.codex_models, self.state.codex_model
             )
@@ -481,22 +489,15 @@ class Sidebar(Vertical):
                 "reasoning-select", self._effort_options(), self.state.codex_effort
             )
         yield Static(id="panel-codex")
+        yield Static(id="panel-bottom")
         with Vertical(id="speech-row"):
             yield Static("speech engine", id="speech-label")
             yield self._picker(
                 "speech-select", self._speech_options(), self._speech_selection()
             )
-        yield Static(id="panel-bottom")
-        with Horizontal(id="silence-row"):
-            yield Static("turn silence", id="silence-label")
-            yield Input(
-                value=format_seconds(self.state.turn_silence),
-                id="silence-input",
-                compact=True,
-            )
-            yield Static("s", id="silence-unit")
-        yield Static(id="panel-countdown")
+        yield Static(id="panel-tts")
         yield Static(id="panel-session")
+        yield Link(" GitHub ↗", url=REPOSITORY_URL, id="repository-link")
 
     def on_mount(self) -> None:
         self.sync()
@@ -504,10 +505,11 @@ class Sidebar(Vertical):
     def sync(self) -> None:
         self.sync_clock()
         self.query_one("#panel-audio", Static).update(Group(*self._audio_head()))
-        self.query_one("#panel-out", Static).update(Group(*self._audio_foot()))
+        self.query_one("#panel-codex-head", Static).update(Group(*self._codex_head()))
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
-        self.query_one("#panel-bottom", Static).update(Group(*self._bottom()))
+        self.query_one("#panel-bottom", Static).update(Group(*self._tts_head()))
+        self.query_one("#panel-tts", Static).update(Group(*self._bottom()))
         self.query_one("#panel-session", Static).update(Group(*self._session()))
         self.sync_countdown()
         self._sync_select("#policy-select", self._policy_options(), self.state.policy)
@@ -771,7 +773,7 @@ class Sidebar(Vertical):
         )
 
     def _audio_head(self) -> list[RenderableType]:
-        return [Text(), Text("AUDIO", style="#5a6068")]
+        return [Rule(style="#23272b"), Text("AUDIO", style="#5a6068")]
 
     def _channel(self, channel: Channel, style: str) -> list[RenderableType]:
         """Name one capture channel, its device, and whether it hears anything.
@@ -791,12 +793,8 @@ class Sidebar(Vertical):
         head.add_row(name, Text(channel.device, style="#9aa3ad"))
         return [head]
 
-    def _audio_foot(self) -> list[RenderableType]:
-        return [
-            _kv([("out", Text(self.state.out_device, style="#9aa3ad"))]),
-            Text(),
-            Text("CODEX", style="#5a6068"),
-        ]
+    def _codex_head(self) -> list[RenderableType]:
+        return [Rule(style="#23272b"), Text("CODEX", style="#5a6068")]
 
     def _codex(self) -> list[RenderableType]:
         state = self.state
@@ -816,11 +814,12 @@ class Sidebar(Vertical):
                         ),
                     ),
                     ("sandbox", sandbox),
-                    ("thread", Text(state.codex_thread, style="#9aa3ad")),
-                    ("state", self._activity()),
                 ]
             )
         )
+        blocks.append(Text("Codex Session", style="#6f757e"))
+        blocks.append(Text(state.codex_thread, style="#9aa3ad"))
+        blocks.append(_kv([("state", self._activity())]))
         return blocks
 
     def _activity(self) -> Text:
@@ -838,39 +837,17 @@ class Sidebar(Vertical):
             return Text()
         return countdown_bar(state.turn_countdown, state.turn_silence)
 
+    def _tts_head(self) -> list[RenderableType]:
+        return [Text(), Rule(style="#23272b"), Text("TTS QUEUE", style="#5a6068")]
+
     def _bottom(self) -> list[RenderableType]:
         state = self.state
-        blocks: list[RenderableType] = [Text()]
-
-        head = Table.grid(expand=True)
-        head.add_column(justify="left", no_wrap=True)
-        head.add_column(justify="right", ratio=1)
-        head.add_row(
-            Text("TTS QUEUE", style="#5a6068"),
-            Text(
-                PROVIDER_LABELS[state.tts_provider] if state.tts_enabled else "off",
-                style="#5a6068",
-            ),
+        voice = Text(
+            state.tts_voice if state.tts_enabled else "—",
+            style="#9aa3ad" if state.tts_enabled else "#5a6068",
         )
-        blocks.append(head)
-        blocks.append(
-            Text(
-                state.tts_voice if state.tts_enabled else "—",
-                style="#9aa3ad" if state.tts_enabled else "#5a6068",
-            )
-        )
-        if state.tts_queue:
-            for line in state.tts_queue[:3]:
-                blocks.append(
-                    Text(
-                        f"\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} {line}",
-                        style="#6f757e",
-                        overflow="ellipsis",
-                    )
-                )
-        else:
-            blocks.append(Text("— empty —", style="#5a6068"))
-        blocks.append(Text())
+        blocks: list[RenderableType] = [_kv([("voice", voice)]), Text()]
+        blocks.append(Rule(style="#23272b"))
 
         blocks.append(Text("SESSION", style="#5a6068"))
         return blocks
@@ -956,7 +933,7 @@ class VoiceCodexApp(App):
     }
     #input:focus { border: none; background: #0f1113; }
     #input-hint { width: auto; color: #5a6068; }
-    #silence-row { height: auto; margin-bottom: 1; }
+    #silence-row { height: auto; }
     #silence-label { width: 13; color: #6f757e; }
     #silence-input {
         width: 8;
@@ -1014,10 +991,20 @@ class VoiceCodexApp(App):
     #panel-clock { margin-bottom: 1; }
     #model-row, #reasoning-row, #speech-row { height: auto; margin-bottom: 1; }
     #policy-row { height: auto; margin-bottom: 1; }
-    #model-label { width: 6; color: #6f757e; }
     #reasoning-label { color: #6f757e; }
     #speech-label { color: #6f757e; }
     #policy-label { color: #6f757e; }
+    #repository-link {
+        height: 1;
+        margin-top: 1;
+        dock: bottom;
+        color: #6f757e;
+        text-style: none;
+    }
+    #repository-link:hover, #repository-link:focus {
+        color: #cdd6e4;
+        text-style: underline;
+    }
     #sidebar Select {
         width: 1fr;
         margin: 0;
@@ -1549,15 +1536,13 @@ class VoiceCodexApp(App):
         """Speak Codex responses or stop; report whether the session could.
 
         Both the key binding and the sidebar's "No voice reply" arrive here,
-        so the queue, the note, and the picker say the same thing however the
-        voice was turned off.
+        so the note and the picker say the same thing however the voice was
+        turned off.
         """
         if self.hooks.on_tts and self.hooks.on_tts(enabled) is False:
             self.add_entry(Entry(kind="note", text="tts unavailable for this session"))
             return False
         self.state.tts_enabled = enabled
-        if not enabled:
-            self.state.tts_queue.clear()
         self.refresh_sidebar()
         self.add_entry(Entry(kind="note", text=f"tts {'on' if enabled else 'off'}"))
         return True
@@ -1574,7 +1559,6 @@ class VoiceCodexApp(App):
         # without waiting for the next flush.
         self.flush_stream()
         self.state.codex_state = "idle"
-        self.state.tts_queue.clear()
         self.refresh_sidebar()
 
     def action_save(self) -> None:
@@ -1874,10 +1858,6 @@ class VoiceCodexTUI:
         else:
             self._call(self.app.refresh_sidebar)
 
-    def set_output(self, device: str) -> None:
-        self.state.out_device = device
-        self._call(self.app.refresh_sidebar)
-
     def set_codex(self, **fields) -> None:
         """Update any of model/effort/tier/sandbox/thread/state."""
         for key, value in fields.items():
@@ -1918,10 +1898,6 @@ class VoiceCodexTUI:
         pointed somewhere else.
         """
         self.state.them_streams = list(applications)
-        self._call(self.app.refresh_sidebar)
-
-    def set_tts_queue(self, sentences: list[str]) -> None:
-        self.state.tts_queue = list(sentences)
         self._call(self.app.refresh_sidebar)
 
     def set_session(self, **fields) -> None:

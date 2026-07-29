@@ -261,22 +261,18 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
         facade.set_audio("mic", device="Blue Yeti")
         facade.set_audio("mic", active=True)
         facade.set_audio("nonexistent", device="ignored")
-        facade.set_output("Speakers")
         facade.set_codex(model="gpt-5.6-nova", thread="thread-9")
         facade.set_session(tokens=42)
         facade.set_status("listening", live=True)
-        facade.set_tts_queue(["one", "two"])
         await pilot.pause()
 
     drive(facade, body)
 
     assert facade.state.mic.device == "Blue Yeti"
     assert facade.state.mic.active is True
-    assert facade.state.out_device == "Speakers"
     assert facade.state.codex_model == "gpt-5.6-nova"
     assert facade.state.codex_thread == "thread-9"
     assert facade.state.tokens == 42
-    assert facade.state.tts_queue == ["one", "two"]
 
 
 def test_a_discovered_catalog_adopts_the_models_efforts(tui) -> None:
@@ -389,9 +385,9 @@ def test_muting_toggles_the_channel_and_calls_back(tui) -> None:
     assert facade.state.mic.muted is False
 
 
-def test_toggling_tts_off_clears_the_queue(tui) -> None:
+def test_toggling_tts_off_updates_the_session(tui) -> None:
     facade = tui.VoiceCodexTUI(
-        tui.SessionState(tts_enabled=True, tts_queue=["pending"]),
+        tui.SessionState(tts_enabled=True),
         on_tts=lambda enabled: True,
     )
 
@@ -402,7 +398,6 @@ def test_toggling_tts_off_clears_the_queue(tui) -> None:
     drive(facade, body)
 
     assert facade.state.tts_enabled is False
-    assert facade.state.tts_queue == []
 
 
 def test_tts_stays_off_when_the_session_has_no_speech(tui) -> None:
@@ -600,10 +595,8 @@ HOST_ONLY_METHODS = frozenset(
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",
-        "set_output",
         "set_session",
         "set_status",
-        "set_tts_queue",
     }
 )
 

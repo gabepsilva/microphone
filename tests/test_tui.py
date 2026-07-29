@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from rich.console import Console
-from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets import Checkbox, Input, Link, Select, Static
 
 
 def _rendered(renderable, width: int = 40) -> str:
@@ -18,6 +18,54 @@ def _rendered(renderable, width: int = 40) -> str:
     with console.capture() as capture:
         console.print(renderable)
     return capture.get()
+
+
+def test_sidebar_setting_groups_are_divided_by_visible_separators(tui) -> None:
+    sidebar = tui.Sidebar(tui.SessionState(), tui.TuiHooks())
+
+    audio = [_rendered(item) for item in sidebar._audio_head()]
+    codex = [_rendered(item) for item in sidebar._codex_head()]
+    tts = [_rendered(item) for item in sidebar._tts_head()]
+    lower_sections = [_rendered(item) for item in sidebar._bottom()]
+
+    separator = "─" * 40 + "\n"
+    assert audio[0] == separator
+    assert codex[0] == separator
+    assert tts[1] == separator
+    assert lower_sections[-2] == separator
+
+
+def test_speech_engine_and_voice_are_grouped_in_the_tts_section(tui) -> None:
+    state = tui.SessionState(tts_voice="en_US-amy-medium")
+    app = tui.VoiceCodexApp(state, tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            ids = [child.id for child in sidebar.children]
+            details = app.query_one("#panel-tts", Static)
+
+            assert ids.index("panel-bottom") < ids.index("speech-row")
+            assert ids.index("speech-row") < ids.index("panel-tts")
+            assert "voice" in _rendered(details.content)
+            assert "en_US-amy-medium" in _rendered(details.content)
+
+    asyncio.run(exercise())
+
+
+def test_sidebar_links_to_the_github_repository(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            link = app.query_one("#repository-link", Link)
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+
+            assert str(link.render()) == " GitHub ↗"
+            assert link.url == "https://github.com/gabepsilva/microphone"
+            assert link.region.bottom == sidebar.content_region.bottom
+
+    asyncio.run(exercise())
 
 
 def test_the_sound_dot_shows_whether_a_channel_hears_anything(tui) -> None:
@@ -576,7 +624,7 @@ def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
     from voice_codex.speech import NO_VOICE
 
     toggled: list[bool] = []
-    state = tui.SessionState(tts_provider="piper", tts_queue=["pending sentence"])
+    state = tui.SessionState(tts_provider="piper")
     app = tui.VoiceCodexApp(
         state,
         tui.TuiHooks(on_tts=lambda enabled: toggled.append(enabled) or True),
@@ -591,7 +639,6 @@ def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
 
     assert toggled == [False]
     assert state.tts_enabled is False
-    assert state.tts_queue == []
     assert state.tts_provider == "piper"
 
 
