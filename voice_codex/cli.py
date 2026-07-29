@@ -517,8 +517,6 @@ def main():
     tui.hooks.on_mute = muting(user_transcriber, user_listener)
     tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
-    if selection.tts_output is not None:
-        tui.set_output(selection.tts_output["description"])
 
     parts = ChannelParts(
         submitter=submitter,

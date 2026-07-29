@@ -37,7 +37,6 @@ class FakeTUI:
         self.hooks = SimpleNamespace(**hooks)
         self.audio: dict[str, str] = {}
         self.codex_fields: dict[str, object] = {}
-        self.output = None
         self.notes: list[str] = []
         self.them_streams: list[tuple[str, str]] = []
 
@@ -46,9 +45,6 @@ class FakeTUI:
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
-
-    def set_output(self, description):
-        self.output = description
 
     def note(self, text):
         self.notes.append(text)
@@ -369,7 +365,6 @@ def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:
 
     assert conversation.tts.output_sink == "alsa_output.pci"
     assert conversation.tts.voice == "en_US-lessac-medium"
-    assert tui.output == "Speakers"
     assert tui.hooks.on_tts(True) is True
 
 
