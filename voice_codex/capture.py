@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 from moonshine_voice.transcriber import Transcriber
 
+from .session import tagged_environment
 from .streams import require_pipewire
 
 
@@ -258,6 +259,9 @@ class ApplicationStreamTranscriber:
             self.tap.command(self.capture.samplerate),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            # Tagged so a recorder this session leaves behind can be recognized
+            # and swept by the next one, whatever it ends up parented to.
+            env=tagged_environment(),
         )
         time.sleep(self.STARTUP_GRACE_SECONDS)
         if self.process.poll() is not None:

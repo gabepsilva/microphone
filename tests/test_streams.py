@@ -158,20 +158,34 @@ def test_a_status_without_a_parent_line_has_no_parent(tmp_path) -> None:
 
 
 def test_this_process_owns_its_own_stream() -> None:
-    assert spawned_here(os.getpid()) is True
+    assert spawned_here(os.getpid(), tagged=lambda _pid: False) is True
 
 
 def test_a_stream_started_by_this_process_is_its_own() -> None:
     """Codex speaks through a child player, and the graph names the child."""
     parents = {55: 9, 9: os.getpid()}
 
-    assert spawned_here(55, parent=parents.get) is True
+    assert spawned_here(55, parent=parents.get, tagged=lambda _pid: False) is True
 
 
 def test_an_unrelated_process_is_not_this_program() -> None:
     parents = {55: 9, 9: 1}
 
-    assert spawned_here(55, own_pid=1234, parent=parents.get) is False
+    assert (
+        spawned_here(55, own_pid=1234, parent=parents.get, tagged=lambda _pid: False)
+        is False
+    )
+
+
+def test_a_helper_this_program_left_behind_is_never_offered() -> None:
+    """An orphaned player has init for a parent, so ancestry cannot catch it."""
+    assert spawned_here(55, own_pid=1, parent=lambda _pid: 1, tagged=lambda _pid: True)
+
+
+def test_an_untagged_stream_still_falls_back_to_its_ancestry() -> None:
+    parents = {55: 9, 9: 42}
+
+    assert spawned_here(55, own_pid=42, parent=parents.get, tagged=lambda _pid: False)
 
 
 def test_a_stream_with_no_process_id_belongs_to_someone_else() -> None:
@@ -180,7 +194,12 @@ def test_a_stream_with_no_process_id_belongs_to_someone_else() -> None:
 
 def test_an_ancestry_walk_gives_up_rather_than_looping() -> None:
     """A cycle in the reported parents must not hang the picker."""
-    assert spawned_here(1, own_pid=999, parent=lambda _pid: 1, limit=3) is False
+    assert (
+        spawned_here(
+            1, own_pid=999, parent=lambda _pid: 1, limit=3, tagged=lambda _pid: False
+        )
+        is False
+    )
 
 
 # --------------------------------------------------------------------------

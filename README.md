@@ -82,7 +82,7 @@ every stream it opens, which is what makes a browser with several tabs work.
 
 The sidebar picks it too, at any point in the session: the far-end picker sits
 under the speaker meter, refreshes itself as applications start and stop
-playing, and offers `No far end` alongside them. It lists only applications it
+playing, and offers `None` alongside them. It lists only applications it
 has heard streaming — a system speech daemon holds a stream open from boot
 without ever using it, and that is not a far end anyone can choose. Having
 streamed is the test rather than streaming now, so a meeting stays selectable

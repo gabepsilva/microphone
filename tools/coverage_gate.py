@@ -59,6 +59,9 @@ FLOORS = {
     "voice_codex/piper_tts.py": 95.0,
     "voice_codex/playback.py": 98.0,
     "voice_codex/presentation.py": 100.0,
+    # Recorded 2026-07-29 with the session tagging that lets an orphaned
+    # helper be recognized and swept.
+    "voice_codex/session.py": 100.0,
     "voice_codex/speech.py": 100.0,
     "voice_codex/startup.py": 100.0,
     # Recorded 2026-07-28 with the PipeWire stream tap.

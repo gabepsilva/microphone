@@ -1188,7 +1188,7 @@ def test_ticking_the_speaker_box_blocks_listening_to_the_speaker(tui) -> None:
     assert mic == []
     assert app.state.them.muted is True
     assert app.state.mic.muted is False
-    assert app.entries[-1].text == "speaker muted"
+    assert app.entries[-1].text == "Audio Stream muted"
 
 
 def test_a_session_without_a_speaker_channel_still_ticks_its_box(tui) -> None:

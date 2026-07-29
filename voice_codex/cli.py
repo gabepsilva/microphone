@@ -54,6 +54,7 @@ from .domain import (
 )
 from .listener import TranscriptSubmitter, tts_switch
 from .presentation import NO_DEVICE
+from .session import sweep_orphans
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
     build_session_state,
@@ -408,6 +409,9 @@ def main():
     # a session is running; the lock comes before anything that reads or changes
     # the audio graph.
     acquire_single_instance_lock()
+    # After the lock, so two sessions can never sweep each other's helpers, and
+    # before anything is started, so this session's own are never candidates.
+    sweep_orphans()
     selection = resolve_startup_selection(args)
     them_stream = selection.them_stream
 

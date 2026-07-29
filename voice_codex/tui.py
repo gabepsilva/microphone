@@ -58,10 +58,12 @@ from .speech import (
     default_voice,
 )
 
-# The picker's own name for "no far end". A Select needs a value for every
-# entry and None is not one, so silence is spelled rather than left out.
+# The picker's own name for transcribing nothing. A Select needs a value for
+# every entry and None is not one, so it is spelled rather than left out. The
+# word is the startup menu's, because the interface should not introduce a
+# second vocabulary for the channel its meter already labels.
 NO_THEM = "none"
-NO_THEM_LABEL = "No far end"
+NO_THEM_LABEL = "None"
 
 # --------------------------------------------------------------------------
 # Sources and palette
@@ -123,7 +125,7 @@ class SessionState:
     started: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     mic: Channel = field(default_factory=lambda: Channel("mic"))
-    them: Channel = field(default_factory=lambda: Channel("speaker"))
+    them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
     out_device: str = "—"
     # The application transcribed as Them, and the ones currently offered. The
     # list is refreshed while the session runs, because an application is only

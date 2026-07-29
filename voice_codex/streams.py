@@ -31,6 +31,8 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
+from .session import started_here
+
 PW_DUMP = "pw-dump"
 PW_LINK = "pw-link"
 PW_RECORD = "pw-record"
@@ -104,7 +106,9 @@ def parent_process(pid, proc="/proc"):
     return None
 
 
-def spawned_here(pid, own_pid=None, parent=parent_process, limit=ANCESTRY_LIMIT):
+def spawned_here(
+    pid, own_pid=None, parent=parent_process, limit=ANCESTRY_LIMIT, tagged=started_here
+):
     """Report whether a stream belongs to this program rather than to a user app.
 
     Codex speaks through a short-lived player process, and the graph names that
@@ -114,10 +118,17 @@ def spawned_here(pid, own_pid=None, parent=parent_process, limit=ANCESTRY_LIMIT)
 
     Ancestry rather than the process name, because the player is an ordinary
     tool a user may also be running for their own reasons: what distinguishes
-    Codex's copy of it is that this process started it.
+    Codex's copy of it is that this program started it.
+
+    The tag is checked first and ancestry second, because ancestry alone
+    cannot see an orphan: a player left behind by a session that was killed
+    has init for a parent, and the walk up from it never arrives anywhere near
+    this process.
     """
     if not isinstance(pid, int):
         return False
+    if tagged(pid):
+        return True
     own = os.getpid() if own_pid is None else own_pid
     current = pid
     for _ in range(limit):
