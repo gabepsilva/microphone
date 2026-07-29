@@ -39,8 +39,8 @@ FLOORS = {
     "tools/worker_gate.py": 97.0,
     "voice_codex.py": 83.0,
     "voice_codex/__init__.py": 100.0,
-    "voice_codex/capture.py": 87.0,
-    "voice_codex/catalog.py": 95.0,
+    "voice_codex/capture.py": 94.0,
+    "voice_codex/catalog.py": 97.0,
     # Raised 2026-07-28 from 94, then to 100 when the virtual meeting sink
     # left and the application-stream chooser that replaced it arrived fully
     # covered.
@@ -48,7 +48,7 @@ FLOORS = {
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
     # Raised 2026-07-28 from 98.
     "voice_codex/cli.py": 99.0,
-    "voice_codex/codex.py": 98.0,
+    "voice_codex/codex.py": 99.0,
     "voice_codex/config.py": 100.0,
     "voice_codex/domain.py": 98.0,
     "voice_codex/listener.py": 100.0,

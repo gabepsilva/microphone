@@ -17,7 +17,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -96,3 +96,8 @@ hooks:
 hook-check:
 	uv run pre-commit run --all-files
 	uv run pre-commit run --hook-stage pre-push --all-files
+
+# Explicitly opt in: this records from the default microphone, reaches local
+# audio services and Codex, and may download Piper/Edge voice data.
+smoke-real:
+	uv run pytest smoke_tests --no-cov -q

@@ -105,20 +105,30 @@ skip_empty = true
 # iterator, which ``_warm_up`` cannot close. That had been killing the worker
 # thread silently for as long as the test existed.
 #
-# The remaining modules are the same shape of work again. Adding catalog.py
-# alone took the older run to 411 mutants with 63 survivors; catalog.py and
-# choosers.py together, 836 mutants and 256 survivors. Each belongs in its own
-# pull request.
+# catalog.py joined on 2026-07-29. The first honest run had 861 mutants and 71
+# survivors (91.2%); assertions on ordering, malformed entries, and the exact
+# CLI fallback contract brought that to 36 survivors (95.2%). A trial adding
+# choosers.py at the same time produced 1,116 mutants and 146 survivors, so it
+# remains the next module-sized change rather than being hidden in this one.
 #
 # Widening also needs `also_copy = ["voice_codex/"]`: mutmut runs the suite
 # against a copy of source_paths alone, and a selected test that imports an
 # unlisted sibling makes collection fail rather than the gate.
-source_paths = ["voice_codex/domain.py", "voice_codex/config.py", "voice_codex/codex.py"]
-also_copy = ["voice_codex/"]
+source_paths = [
+    "voice_codex/domain.py",
+    "voice_codex/config.py",
+    "voice_codex/codex.py",
+    "voice_codex/catalog.py",
+]
+also_copy = ["voice_codex/", "voice_codex.py", "voice.example.yaml"]
 pytest_add_cli_args_test_selection = [
     "tests/test_domain.py",
     "tests/test_config.py",
     "tests/test_conversation.py",
+    "tests/test_choosers.py",
+    "tests/test_remainders.py",
+    "tests/test_runtime.py",
+    "tests/test_startup.py",
 ]
 # Coverage thresholds must not decide mutant survival; a run scoped to one
 # test file would fail the global floor and mark every mutant killed.

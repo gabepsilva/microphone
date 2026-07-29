@@ -89,6 +89,17 @@ def test_models_are_ordered_by_priority_then_label() -> None:
     assert [option.label for option in options] == ["Alpha", "Beta", "Third"]
 
 
+def test_model_priority_outranks_alphabetical_label_order() -> None:
+    options = _parse_codex_model_catalog(
+        catalog(
+            model(slug="slow", display_name="Alpha", priority=9),
+            model(slug="fast", display_name="Zulu", priority=1),
+        )
+    )
+
+    assert [option.slug for option in options] == ["fast", "slow"]
+
+
 def test_a_model_without_a_priority_sorts_last() -> None:
     options = _parse_codex_model_catalog(
         catalog(
@@ -104,6 +115,26 @@ def test_a_missing_display_name_falls_back_to_the_slug() -> None:
     (option,) = _parse_codex_model_catalog(catalog(model(display_name=None)))
 
     assert option.label == "gpt-5.6-luna"
+
+
+def test_a_non_text_display_name_falls_back_to_the_slug() -> None:
+    (option,) = _parse_codex_model_catalog(catalog(model(display_name=7)))
+
+    assert option.label == "gpt-5.6-luna"
+
+
+def test_an_invalid_reasoning_level_does_not_hide_a_later_valid_one() -> None:
+    (option,) = _parse_codex_model_catalog(
+        catalog(
+            model(
+                supported_reasoning_levels=[7, {"effort": "high"}],
+                default_reasoning_level="high",
+            )
+        )
+    )
+
+    assert option.efforts == ("none", "high")
+    assert option.default_effort == "high"
 
 
 def test_an_unlisted_default_effort_falls_back_to_the_first() -> None:

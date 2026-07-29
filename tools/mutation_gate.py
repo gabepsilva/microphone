@@ -44,6 +44,10 @@ the same kinds plus two the earlier modules had no occasion for:
     0.2s to 1.2s. Both are still bounded, which is the property that matters;
     pinning the exact number would be a test of the clock.
 
+catalog.py joined on 2026-07-29. Its three survivors replace static-only
+``typing.cast`` calls with other cast targets. A cast is erased at runtime, so
+all three execute exactly the same parsing behavior.
+
 Do not chase the difference, and do not silence it with `# pragma: no mutate`
 either — an equivalent mutant is evidence the code is precise, not evidence a
 test is missing.

@@ -215,6 +215,99 @@ def test_mutation_gate_rejects_a_run_that_mutated_nothing(
 
 
 # --------------------------------------------------------------------------
+# tools/verify_regression.sh
+# --------------------------------------------------------------------------
+
+
+def _regression_repository(tmp_path: Path, uv_body: str) -> tuple[Path, dict[str, str]]:
+    repo = tmp_path / "repo"
+    source = repo / "voice_codex" / "behavior.py"
+    source.parent.mkdir(parents=True)
+    source.write_text('STATE = "broken"\n', encoding="utf-8")
+    (repo / "voice_codex.py").write_text(
+        "from voice_codex.behavior import STATE\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "config", "user.email", "quality@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", repo, "config", "user.name", "Quality Gate"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", repo, "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "commit", "-qm", "broken implementation"], check=True
+    )
+    source.write_text('STATE = "fixed"\n', encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(f"#!/bin/sh\n{uv_body}\n", encoding="utf-8")
+    uv.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    return repo, env
+
+
+def test_regression_verification_observes_fail_then_pass_and_restores_the_fix(
+    tmp_path,
+) -> None:
+    repo, env = _regression_repository(
+        tmp_path,
+        "grep -q '\"fixed\"' voice_codex/behavior.py",
+    )
+
+    result = subprocess.run(
+        [TOOLS / "verify_regression.sh", "tests/test_behavior.py::test_fix"],
+        cwd=repo,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "good: the test failed without the fix" in result.stdout
+    assert "regression verified" in result.stdout
+    assert (repo / "voice_codex" / "behavior.py").read_text(
+        encoding="utf-8"
+    ) == 'STATE = "fixed"\n'
+    assert (
+        subprocess.run(
+            ["git", "-C", repo, "stash", "list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+
+
+def test_regression_verification_rejects_a_test_that_passes_without_the_fix(
+    tmp_path,
+) -> None:
+    repo, env = _regression_repository(tmp_path, "exit 0")
+
+    result = subprocess.run(
+        [TOOLS / "verify_regression.sh", "tests/test_behavior.py::test_fix"],
+        cwd=repo,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "test passed without the fix" in result.stdout
+    assert (repo / "voice_codex" / "behavior.py").read_text(
+        encoding="utf-8"
+    ) == 'STATE = "fixed"\n'
+
+
+# --------------------------------------------------------------------------
 # tools/context_budget.py
 # --------------------------------------------------------------------------
 
