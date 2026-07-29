@@ -28,6 +28,25 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 
 
+@pytest.fixture(autouse=True)
+def outside_any_git_hook(monkeypatch):
+    """Detach these tests from the environment of a git hook that runs them.
+
+    Git exports ``GIT_DIR`` and ``GIT_INDEX_FILE`` to its hooks, and both
+    outrank the working directory for every git that inherits them. The
+    ratchet tests below build a temporary repository and ``chdir`` into it, so
+    under the pre-commit hook that runs this suite they were reading and
+    writing the real repository instead: ``git add -A`` staged into the index
+    of the very commit being verified, and the ratchet compared the planted
+    thresholds against real history rather than the planted base.
+
+    That made the whole file fail whenever it ran from a hook — which is the
+    one time these gates most need to be believable.
+    """
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
 def _load_gate(name: str):
     """Import a gate script by path; tools/ is deliberately not a package."""
     spec = importlib.util.spec_from_file_location(f"_gate_{name}", TOOLS / f"{name}.py")
