@@ -128,6 +128,10 @@ class SessionState:
 
     mic: Channel = field(default_factory=lambda: Channel("mic"))
     them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
+    microphone: str = NO_DEVICE
+    microphones: list[tuple[str, str]] = field(
+        default_factory=lambda: [(NO_DEVICE, NO_DEVICE)]
+    )
     # The application transcribed as Them, and the ones currently offered. The
     # list is refreshed while the session runs, because an application is only
     # in the audio graph while it is playing.
@@ -177,6 +181,7 @@ class TuiHooks:
     on_policy: Callable[[str], None] | None = None
     on_codex_model: Callable[[str], bool | None] | None = None
     on_codex_effort: Callable[[str], bool | None] | None = None
+    on_microphone: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
     on_them_mute: Callable[[bool], None] | None = None
     on_them_stream: Callable[[str | None], bool | None] | None = None
@@ -412,6 +417,9 @@ class Sidebar(Vertical):
     def _them_options(self) -> list[tuple[str, str]]:
         return [(NO_THEM_LABEL, NO_THEM), *self.state.them_streams]
 
+    def _microphone_options(self) -> list[tuple[str, str]]:
+        return self.state.microphones
+
     def _them_selection(self) -> str:
         return NO_THEM if self.state.them_stream is None else self.state.them_stream
 
@@ -462,6 +470,9 @@ class Sidebar(Vertical):
         # the level it silences read as one thing.
         with Vertical(id="mic-row"):
             yield Static(id="panel-mic")
+            yield self._picker(
+                "mic-select", self._microphone_options(), self.state.microphone
+            )
             yield self._mute_box("mic-mute", self.state.mic)
         with Vertical(id="them-row"):
             yield Static(id="panel-them")
@@ -518,6 +529,9 @@ class Sidebar(Vertical):
         )
         self._sync_select(
             "#reasoning-select", self._effort_options(), self.state.codex_effort
+        )
+        self._sync_select(
+            "#mic-select", self._microphone_options(), self.state.microphone
         )
         self._sync_select("#them-select", self._them_options(), self._them_selection())
         self._sync_select(
@@ -641,6 +655,7 @@ class Sidebar(Vertical):
             "policy-select": self._policy_selected,
             "model-select": self._model_selected,
             "reasoning-select": self._effort_selected,
+            "mic-select": self._microphone_selected,
             "them-select": self._them_selected,
             "speech-select": self._provider_selected,
         }.get(event.select.id)
@@ -666,6 +681,19 @@ class Sidebar(Vertical):
         self.state.policy = value
         if self.hooks.on_policy:
             self.hooks.on_policy(value)
+
+    def _microphone_selected(self, value: str) -> None:
+        """Ask the host to capture another microphone and adopt it on success."""
+        if value == self.state.microphone:
+            return
+        if self.hooks.on_microphone and self.hooks.on_microphone(value) is False:
+            self.sync()
+            return
+        self.state.microphone = value
+        self.state.mic.device = next(
+            label for label, option in self._microphone_options() if option == value
+        )
+        self.sync()
 
     def _them_selected(self, value: str) -> None:
         """Ask the host to listen to another application, or to none.

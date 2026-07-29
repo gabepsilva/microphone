@@ -65,6 +65,7 @@ class FakeTranscriber:
         self.stopped = False
         self.closed = False
         self.muted = False
+        self.devices: list[int] = []
 
     def add_listener(self, listener):
         self.listeners.append(listener)
@@ -80,6 +81,9 @@ class FakeTranscriber:
 
     def set_muted(self, muted):
         self.muted = muted
+
+    def switch_device(self, device):
+        self.devices.append(device)
 
 
 class FakeConversation:
@@ -173,6 +177,11 @@ def wiring(monkeypatch, tmp_path):
         raising=False,
     )
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
+    monkeypatch.setattr(
+        cli,
+        "input_devices",
+        lambda: [(3, MIC), (7, {"name": "Webcam"})],
+    )
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -322,6 +331,47 @@ def test_the_microphone_mute_box_stops_the_microphone_capture(wiring) -> None:
     assert channels[0][1].muted is True
 
 
+def test_the_microphone_picker_moves_the_live_capture(wiring) -> None:
+    cli.main()
+    tui, channels, _ = wiring["session"]
+
+    assert tui.hooks.on_microphone("7") is True
+    assert channels[0][0].devices == [7]
+
+
+def test_an_unknown_microphone_choice_is_refused(wiring) -> None:
+    cli.main()
+    tui, channels, _ = wiring["session"]
+
+    assert tui.hooks.on_microphone("99") is False
+    assert channels[0][0].devices == []
+
+
+def test_a_microphone_that_cannot_open_is_reported_and_refused(wiring) -> None:
+    cli.main()
+    tui, channels, _ = wiring["session"]
+    transcriber = channels[0][0]
+
+    def reject(_device):
+        raise RuntimeError("device busy")
+
+    transcriber.switch_device = reject
+
+    assert tui.hooks.on_microphone("7") is False
+    assert tui.notes == ["could not use microphone Webcam: device busy"]
+
+
+def test_the_started_microphone_stays_selectable_if_discovery_loses_it(
+    wiring, monkeypatch
+) -> None:
+    monkeypatch.setattr(cli, "input_devices", lambda: [(7, {"name": "Webcam"})])
+
+    cli.main()
+    tui, _, _ = wiring["session"]
+
+    assert tui.session_state.microphones == [("Yeti", "3"), ("Webcam", "7")]
+
+
 def test_unmuting_reaches_the_capture_layer_too(wiring) -> None:
     """A gate that only ever closes would end the session in silence."""
     cli.main()
@@ -351,6 +401,7 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_codex_model",
         "on_codex_effort",
         "on_tts",
+        "on_microphone",
         "on_mute",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
@@ -527,6 +578,7 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     tui.hooks.on_codex_model("gpt-5.6-sol")
     tui.hooks.on_codex_effort("high")
     tui.hooks.on_turn_silence(1.25)
+    tui.hooks.on_microphone("7")
     tui.hooks.on_tts(False)
 
     saved = saved_config(tmp_path)
@@ -534,6 +586,7 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     assert saved["codex_model"] == "gpt-5.6-sol"
     assert saved["codex_reasoning"] == "high"
     assert saved["turn_silence"] == 1.25
+    assert saved["microphone"] == "Webcam"
     assert saved["tts"] == "off"
 
 

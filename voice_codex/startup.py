@@ -322,15 +322,29 @@ def resolve_startup_selection(args):
     )
 
 
-def build_session_state(args, selection, models: list[CodexModelOption] | None = None):
+def build_session_state(
+    args,
+    selection,
+    models: list[CodexModelOption] | None = None,
+    microphones: list[tuple[int, dict]] | None = None,
+):
     """Build the sidebar's view of the resolved startup choices."""
-    from .tui import SessionState
+    from .tui import Channel, SessionState
 
     models = [] if models is None else models
+    microphones = [] if microphones is None else microphones
+    microphone_options = [(device["name"], str(index)) for index, device in microphones]
+    if not any(value == str(selection.device_index) for _, value in microphone_options):
+        microphone_options.insert(
+            0, (selection.device["name"], str(selection.device_index))
+        )
     model_choices = [(model.label, model.slug) for model in models]
     efforts_by_model = {model.slug: list(model.efforts) for model in models}
     default_effort_by_model = {model.slug: model.default_effort for model in models}
     return SessionState(
+        mic=Channel("mic", device=selection.device["name"]),
+        microphone=str(selection.device_index),
+        microphones=microphone_options,
         policy=selection.policy.name,
         tts_enabled=selection.tts_enabled,
         tts_provider=selection.tts_provider,

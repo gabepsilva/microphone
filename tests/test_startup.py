@@ -212,6 +212,10 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
     state = build_session_state(
         args,
         selection(tts_enabled=True, policy=RESPONSE_POLICIES["user"]),
+        microphones=[
+            (3, {"name": "Yeti"}),
+            (7, {"name": "Webcam"}),
+        ],
     )
 
     assert (state.policy, state.codex_tier, state.codex_effort) == (
@@ -220,6 +224,9 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
         "high",
     )
     assert state.tts_enabled is True
+    assert state.mic.device == "Yeti"
+    assert state.microphone == "3"
+    assert state.microphones == [("Yeti", "3"), ("Webcam", "7")]
     assert (state.turn_silence, state.confidence) == (3.0, 0.60)
     assert (state.moonshine, state.language) == ("medium-streaming", "en")
 

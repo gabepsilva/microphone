@@ -43,7 +43,7 @@ from .capture import (
     metered_mic_transcriber,
 )
 from .catalog import probe_codex_models
-from .choosers import NO_THEM_STREAM
+from .choosers import NO_THEM_STREAM, input_devices
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
 from .domain import (
@@ -387,6 +387,25 @@ def remembering(hook, config, key, encode=lambda value: value):
     return apply
 
 
+def switching_microphone(transcriber, tui, microphones):
+    """Build a picker hook that keeps the current microphone on failure."""
+    devices = {str(index): (index, device) for index, device in microphones}
+
+    def select(value):
+        selected = devices.get(str(value))
+        if selected is None:
+            return False
+        index, device = selected
+        try:
+            transcriber.switch_device(index)
+        except Exception as error:
+            tui.note(f"could not use microphone {device['name']}: {error}")
+            return False
+        return True
+
+    return select
+
+
 def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     """Point the interface's controls at the conversation, its speech, and disk."""
     tui.hooks.on_user_text = lambda text: conversation.ingest(
@@ -455,6 +474,9 @@ def main():
         wanted_language=args.language,
         wanted_model_arch=model_arch,
     )
+    microphones = input_devices()
+    if not any(index == selection.device_index for index, _ in microphones):
+        microphones.insert(0, (selection.device_index, selection.device))
 
     gate = speaker_gate(selection)
 
@@ -464,7 +486,7 @@ def main():
     countdown = TurnSilenceClock(turn_silence)
     tts = build_speech(selection, args)
     tui = VoiceCodexTUI(
-        build_session_state(args, selection, codex_models),
+        build_session_state(args, selection, codex_models, microphones),
         countdown=countdown,
         speech=tts,
         on_policy=remembering(gate.set_policy, config, "codex_after"),
@@ -518,6 +540,13 @@ def main():
     )
     user_transcriber.add_listener(user_listener)
 
+    microphone_names = {str(index): device["name"] for index, device in microphones}
+    tui.hooks.on_microphone = remembering(
+        switching_microphone(user_transcriber, tui, microphones),
+        config,
+        "microphone",
+        encode=microphone_names.__getitem__,
+    )
     tui.hooks.on_mute = muting(user_transcriber, user_listener)
     tui.set_audio("mic", device=selection.device["name"])
     tui.set_codex(thread=conversation.thread.id)
