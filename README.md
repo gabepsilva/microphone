@@ -146,3 +146,19 @@ creating a commit via `make hook-check`.
 GitHub Actions runs the equivalent locked checks in a clean environment and a
 separate immutable Gitleaks action. Protect `master` by requiring both checks
 before merging.
+
+## Real-environment smoke test
+
+The default suite fakes hardware, processes, and network services so CI stays
+deterministic. On a configured Linux desktop, explicitly exercise those real
+boundaries with:
+
+```bash
+make smoke-real
+```
+
+This records a fraction of a second from the default microphone, queries
+PipeWire/PulseAudio outputs and the installed Codex model catalog, and
+synthesizes a short sentence through both Piper and Edge without playing it.
+It may download the default Piper voice and contacts Microsoft's Edge speech
+service. It is intentionally separate from `make ci`.

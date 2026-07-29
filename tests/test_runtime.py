@@ -141,6 +141,60 @@ def test_probe_codex_models_uses_visible_catalog_entries(monkeypatch) -> None:
     ]
 
 
+def test_model_probe_uses_the_exact_cli_contract_then_its_bundled_fallback(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    outputs = iter(
+        [
+            "not json",
+            json.dumps(
+                {
+                    "models": [
+                        {
+                            "slug": "gpt-5.6-luna",
+                            "display_name": "Luna",
+                            "visibility": "list",
+                            "supported_reasoning_levels": [{"effort": "low"}],
+                            "default_reasoning_level": "low",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout=next(outputs))
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert probe_codex_models() == [
+        CodexModelOption("gpt-5.6-luna", "Luna", ("none", "low"), "low")
+    ]
+    assert calls == [
+        (
+            ["codex", "debug", "models"],
+            {
+                "check": True,
+                "capture_output": True,
+                "text": True,
+                "timeout": 3,
+            },
+        ),
+        (
+            ["codex", "debug", "models", "--bundled"],
+            {
+                "check": True,
+                "capture_output": True,
+                "text": True,
+                "timeout": 3,
+            },
+        ),
+    ]
+
+
 def test_model_switch_forks_the_current_codex_thread() -> None:
     # Built without ``__init__``, so the SDK names the fork call reads are
     # bound here rather than by whichever test happened to run first.
