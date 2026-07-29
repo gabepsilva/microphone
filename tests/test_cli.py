@@ -12,6 +12,7 @@ Nothing here fakes ``main`` itself.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,8 @@ class FakeTUI:
         self.audio: dict[str, str] = {}
         self.codex_fields: dict[str, object] = {}
         self.output = None
+        self.notes: list[str] = []
+        self.them_streams: list[tuple[str, str]] = []
 
     def set_audio(self, channel, device):
         self.audio[channel] = device
@@ -47,14 +50,35 @@ class FakeTUI:
     def set_output(self, description):
         self.output = description
 
+    def note(self, text):
+        self.notes.append(text)
+
+    def close_speaker(self, speaker):
+        self.audio.pop(speaker, None)
+
+    def set_them_streams(self, applications):
+        self.them_streams = list(applications)
+
 
 class FakeTranscriber:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.listeners = []
+        self.started = False
+        self.stopped = False
+        self.closed = False
 
     def add_listener(self, listener):
         self.listeners.append(listener)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
 
 
 class FakeConversation:
@@ -120,8 +144,9 @@ def wiring(monkeypatch, tmp_path):
             policy=RESPONSE_POLICIES["them"],
         )
 
-    def run_session(tui, channels, conversation):
+    def run_session(tui, channels, conversation, them=None):
         built["session"] = (tui, channels, conversation)
+        built["them"] = them
 
     # The real lock is a file in the user's runtime directory, so leaving it
     # unfaked makes every ``main`` test fail whenever a session happens to be
@@ -153,6 +178,11 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli, "ApplicationStreamTranscriber", lambda **kwargs: FakeTranscriber(**kwargs)
     )
+    # The far end is built on a worker thread when one is chosen. Tests drive
+    # that choice themselves, through the same reconcile the worker calls, so
+    # what they assert on is the real wiring rather than a race with it.
+    monkeypatch.setattr(cli.ThemChannel, "start", lambda self: None)
+    monkeypatch.setattr(cli.ApplicationRefresher, "start", lambda self: None)
     monkeypatch.setattr(
         cli, "get_model_for_language", lambda **kwargs: ("model-path", "arch")
     )
@@ -174,15 +204,61 @@ def test_a_user_only_session_registers_one_channel(wiring) -> None:
     assert tui.audio == {"mic": "Yeti"}
 
 
-def test_a_them_application_adds_a_second_channel_in_order(wiring) -> None:
+def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
     wiring["them_stream"] = THEM_APPLICATION
 
     cli.main()
-    tui, channels, _ = wiring["session"]
+    tui, _, _ = wiring["session"]
+    them = wiring["them"]
+    them.reconcile()
 
-    assert [listener.speaker for _, listener in channels] == ["User Voice", "Them"]
-    assert channels[1][0].kwargs["tap"].application == THEM_APPLICATION
+    assert them.listener.speaker == "Them"
+    assert them.transcriber.kwargs["tap"].application == THEM_APPLICATION
+    assert them.transcriber.listeners == [them.listener]
     assert tui.audio["them"] == THEM_APPLICATION
+
+
+def test_a_session_with_no_application_opens_nothing(wiring) -> None:
+    """The model this would load is the whole reason it is not built up front."""
+    cli.main()
+    them = wiring["them"]
+    them.reconcile()
+
+    assert them.transcriber is None
+    assert "them" not in wiring["session"][0].audio
+
+
+def test_switching_applications_keeps_the_channel_and_moves_the_tap(wiring) -> None:
+    """Rebuilding would reload a speech model to answer a change of name."""
+    wiring["them_stream"] = THEM_APPLICATION
+
+    cli.main()
+    them = wiring["them"]
+    them.reconcile()
+    opened = them.transcriber
+
+    them.select("Brave")
+    them.reconcile()
+
+    assert them.transcriber is opened
+    assert them.tap.application == "Brave"
+    assert wiring["session"][0].audio["them"] == "Brave"
+
+
+def test_dropping_the_application_closes_the_channel_it_had(wiring) -> None:
+    wiring["them_stream"] = THEM_APPLICATION
+
+    cli.main()
+    them = wiring["them"]
+    them.reconcile()
+    opened = them.transcriber
+
+    them.select(None)
+    them.reconcile()
+
+    assert (opened.stopped, opened.closed) == (True, True)
+    assert them.transcriber is None
+    assert wiring["session"][0].hooks.on_them_mute is None
 
 
 def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
@@ -191,11 +267,12 @@ def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
 
     cli.main()
     tui, channels, _ = wiring["session"]
-    them_listener = channels[1][1]
+    them = wiring["them"]
+    them.reconcile()
 
     tui.hooks.on_them_mute(True)
 
-    assert them_listener.muted is True
+    assert them.listener.muted is True
     assert channels[0][1].muted is False
 
 
@@ -338,9 +415,13 @@ def test_editing_the_window_reaches_the_listeners(wiring) -> None:
 
     cli.main()
     tui, channels, _ = wiring["session"]
+    them = wiring["them"]
+    them.reconcile()
 
     assert tui.hooks.on_turn_silence(1.25) == 1.25
-    assert [listener.turn_silence.seconds for _, listener in channels] == [1.25, 1.25]
+    windows = [listener.turn_silence.seconds for _, listener in channels]
+
+    assert [*windows, them.listener.turn_silence.seconds] == [1.25, 1.25]
     assert tui.countdown.window.seconds == 1.25
 
 
@@ -577,3 +658,160 @@ def test_a_save_config_failure_is_reported_via_parser_error(monkeypatch) -> None
 
     with pytest.raises(SystemExit):
         cli.main()
+
+
+# --------------------------------------------------------------------------
+# The far end's channel, built and retired while the session runs
+# --------------------------------------------------------------------------
+
+
+class FakeGate:
+    def __init__(self):
+        self.available = frozenset({"User Voice"})
+
+    def set_available(self, available):
+        self.available = frozenset(available)
+
+
+def them_channel(open_channel=None, close_channel=None):
+    """A far-end channel over fakes, with its worker thread left unstarted."""
+    tui = FakeTUI(SimpleNamespace(), on_them_mute=None)
+    opened: list[object] = []
+    closed: list[object] = []
+
+    def open_default(tap):
+        transcriber = FakeTranscriber(tap=tap)
+        listener = SimpleNamespace(speaker="Them", set_muted=lambda muted: None)
+        opened.append((transcriber, listener))
+        return transcriber, listener
+
+    channel = cli.ThemChannel(
+        tui,
+        FakeGate(),
+        open_channel or open_default,
+        close_channel or (lambda t, listener: closed.append((t, listener))),
+    )
+    return channel, tui, opened, closed
+
+
+def test_choosing_an_application_makes_them_answerable() -> None:
+    """A policy naming Them cannot fire until a far end actually exists."""
+    channel, _, _, _ = them_channel()
+
+    channel.select("Brave")
+    channel.reconcile()
+
+    assert channel.gate.available == frozenset({"User Voice", "Them"})
+
+
+def test_dropping_the_application_makes_them_unanswerable_again() -> None:
+    channel, _, _, _ = them_channel()
+    channel.select("Brave")
+    channel.reconcile()
+
+    channel.select(None)
+    channel.reconcile()
+
+    assert channel.gate.available == frozenset({"User Voice"})
+
+
+def test_the_newest_choice_wins_rather_than_each_one_building() -> None:
+    """Moving through the picker produces a choice per keystroke."""
+    channel, _, opened, _ = them_channel()
+
+    channel.select("Brave")
+    channel.select("Chromium")
+    channel.select("ZOOM VoiceEngine")
+    channel.reconcile()
+
+    assert len(opened) == 1
+    assert channel.tap.application == "ZOOM VoiceEngine"
+
+
+def test_asking_again_for_what_is_already_open_changes_nothing() -> None:
+    channel, _, opened, closed = them_channel()
+    channel.select("Brave")
+    channel.reconcile()
+
+    channel.select("Brave")
+    channel.reconcile()
+
+    assert (len(opened), len(closed)) == (1, 0)
+
+
+def test_a_far_end_that_cannot_be_opened_leaves_the_session_running() -> None:
+    """The state a failure lands in is the one the session was already in."""
+
+    def refuse(_tap):
+        raise RuntimeError("no pw-record")
+
+    channel, tui, _, _ = them_channel(open_channel=refuse)
+
+    channel.select("Brave")
+    channel.reconcile()
+
+    assert channel.transcriber is None
+    assert channel.desired is None
+    assert "could not listen to Brave: no pw-record" in tui.notes
+
+
+def test_a_failed_far_end_is_not_retried_on_every_later_choice() -> None:
+    """Forgetting the request is what keeps one failure from becoming a loop."""
+    attempts: list[str] = []
+
+    def refuse(tap):
+        attempts.append(tap.application)
+        raise RuntimeError("no")
+
+    channel, _, _, _ = them_channel(open_channel=refuse)
+    channel.select("Brave")
+    channel.reconcile()
+
+    channel.reconcile()
+
+    assert attempts == ["Brave"]
+
+
+def test_the_worker_serves_choices_until_the_session_closes() -> None:
+    channel, _tui, opened, closed = them_channel()
+    channel.start()
+    channel.select("Brave")
+    deadline = time.monotonic() + 10
+    while not opened and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    channel.close()
+
+    assert len(opened) == 1
+    assert len(closed) == 1
+    assert channel.worker is None
+
+
+def test_closing_a_channel_that_was_never_opened_is_quiet() -> None:
+    channel, _, opened, closed = them_channel()
+
+    channel.close()
+
+    assert (opened, closed) == ([], [])
+
+
+def test_starting_the_channel_twice_serves_it_once() -> None:
+    channel, _, _, _ = them_channel()
+    channel.start()
+    worker = channel.worker
+    try:
+        channel.start()
+
+        assert channel.worker is worker
+    finally:
+        channel.close()
+
+
+@pytest.mark.parametrize(
+    ("application", "recorded"),
+    [(None, "none"), ("Brave", "Brave")],
+)
+def test_a_chosen_application_is_saved_the_way_the_parser_reads_it_back(
+    application, recorded
+) -> None:
+    assert cli.them_stream_setting(application) == recorded

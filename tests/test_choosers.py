@@ -30,10 +30,9 @@ from voice_codex.choosers import (
     select_microphone,
     select_them_stream,
     select_tts_output,
-    stream_label,
 )
 from voice_codex.domain import RESPONSE_POLICIES
-from voice_codex.streams import ApplicationStream
+from voice_codex.streams import ApplicationStream, stream_label
 
 
 def answer_with(monkeypatch, answers):
@@ -328,7 +327,8 @@ def test_choosing_a_them_application_maps_each_menu_entry(
 ) -> None:
     monkeypatch.setattr("voice_codex.choosers.graph", list)
     monkeypatch.setattr(
-        "voice_codex.choosers.application_streams", lambda objects: list(STREAMS)
+        "voice_codex.choosers.offered_applications",
+        lambda objects: [(stream_label(s), s.application) for s in STREAMS],
     )
     answer_with(monkeypatch, [answer])
 
@@ -339,7 +339,7 @@ def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr("voice_codex.choosers.graph", list)
-    monkeypatch.setattr("voice_codex.choosers.application_streams", lambda objects: [])
+    monkeypatch.setattr("voice_codex.choosers.offered_applications", lambda objects: [])
     answer_with(monkeypatch, ["0"])
 
     assert choose_them_stream() is None

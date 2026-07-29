@@ -331,12 +331,16 @@ def build_session_state(args, selection):
     )
 
 
-def run_session(tui, channels, conversation):
+def run_session(tui, channels, conversation, them=None):
     """Run the interface until it quits, then tear every channel down in order.
 
     Transcribers stop before their listeners close so a listener cannot be fed
     a partial turn after it has flushed, and every transcriber is closed only
     once no listener can still be called back.
+
+    The far end closes first and closes itself, because it may not exist, may
+    have been built minutes into the session, and owns the only reference to
+    what it built.
     """
     try:
         for transcriber, _ in channels:
@@ -351,6 +355,8 @@ def run_session(tui, channels, conversation):
     except KeyboardInterrupt:
         print("\nStopping...", flush=True)
     finally:
+        if them is not None:
+            them.close()
         for transcriber, _ in channels:
             transcriber.stop()
         for _, listener in channels:

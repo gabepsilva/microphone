@@ -49,6 +49,7 @@ from .domain import (
     USER_VOICE,
     parse_turn_silence,
 )
+from .presentation import NO_DEVICE
 from .speech import (
     DEFAULT_PROVIDER,
     NO_VOICE,
@@ -56,6 +57,11 @@ from .speech import (
     PROVIDER_LABELS,
     default_voice,
 )
+
+# The picker's own name for "no far end". A Select needs a value for every
+# entry and None is not one, so silence is spelled rather than left out.
+NO_THEM = "none"
+NO_THEM_LABEL = "No far end"
 
 # --------------------------------------------------------------------------
 # Sources and palette
@@ -101,7 +107,7 @@ class Entry:
 @dataclass
 class Channel:
     label: str
-    device: str = "—"
+    device: str = NO_DEVICE
     # Whether the channel is hearing anything right now. A bare presence flag
     # rather than a level: it only changes when speech starts or stops, and
     # the interface repaints on change, so a quiet channel costs nothing.
@@ -119,6 +125,11 @@ class SessionState:
     mic: Channel = field(default_factory=lambda: Channel("mic"))
     them: Channel = field(default_factory=lambda: Channel("speaker"))
     out_device: str = "—"
+    # The application transcribed as Them, and the ones currently offered. The
+    # list is refreshed while the session runs, because an application is only
+    # in the audio graph while it is playing.
+    them_stream: str | None = None
+    them_streams: list[tuple[str, str]] = field(default_factory=list)
 
     codex_model: str = "gpt-5.6-luna"
     codex_effort: str = "low"
@@ -166,6 +177,7 @@ class TuiHooks:
     on_codex_effort: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
     on_them_mute: Callable[[bool], None] | None = None
+    on_them_stream: Callable[[str | None], bool | None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
     on_tts_provider: Callable[[str], bool | None] | None = None
     on_turn_silence: Callable[[float], float | None] | None = None
@@ -395,6 +407,12 @@ class Sidebar(Vertical):
     def _effort_options(self) -> list[tuple[str, str]]:
         return [(effort, effort) for effort in self.state.codex_efforts]
 
+    def _them_options(self) -> list[tuple[str, str]]:
+        return [(NO_THEM_LABEL, NO_THEM), *self.state.them_streams]
+
+    def _them_selection(self) -> str:
+        return NO_THEM if self.state.them_stream is None else self.state.them_stream
+
     def _speech_options(self) -> list[tuple[str, str]]:
         options = [(label, name) for name, label in PROVIDER_LABELS.items()]
         options.append((NO_VOICE_LABEL, NO_VOICE))
@@ -445,6 +463,9 @@ class Sidebar(Vertical):
             yield self._mute_box("mic-mute", self.state.mic)
         with Vertical(id="them-row"):
             yield Static(id="panel-them")
+            yield self._picker(
+                "them-select", self._them_options(), self._them_selection()
+            )
             yield self._mute_box("them-mute", self.state.them)
         yield Static(id="panel-out")
         with Vertical(id="model-row"):
@@ -494,6 +515,7 @@ class Sidebar(Vertical):
         self._sync_select(
             "#reasoning-select", self._effort_options(), self.state.codex_effort
         )
+        self._sync_select("#them-select", self._them_options(), self._them_selection())
         self._sync_select(
             "#speech-select", self._speech_options(), self._speech_selection()
         )
@@ -602,6 +624,7 @@ class Sidebar(Vertical):
             "policy-select": self._policy_selected,
             "model-select": self._model_selected,
             "reasoning-select": self._effort_selected,
+            "them-select": self._them_selected,
             "speech-select": self._provider_selected,
         }.get(event.select.id)
         if handler is not None:
@@ -626,6 +649,26 @@ class Sidebar(Vertical):
         self.state.policy = value
         if self.hooks.on_policy:
             self.hooks.on_policy(value)
+
+    def _them_selected(self, value: str) -> None:
+        """Ask the host to listen to another application, or to none.
+
+        The picker only moves if the host accepts, so a session shows the far
+        end it actually has rather than the one it was asked for. Opening one
+        is slow — a speech model has to load — and deliberately not waited on
+        here: the name is adopted now and the channel arrives behind it.
+        """
+        if value == self._them_selection():
+            return
+        application = None if value == NO_THEM else value
+        if (
+            self.hooks.on_them_stream
+            and self.hooks.on_them_stream(application) is False
+        ):
+            self.sync()
+            return
+        self.state.them_stream = application
+        self.sync()
 
     def _provider_selected(self, value: str) -> None:
         """Ask the host to change how Codex answers — either engine, or silence.
@@ -1831,6 +1874,17 @@ class VoiceCodexTUI:
                 self.state.codex_effort = (
                     default_effort_by_model.get(self.state.codex_model) or efforts[0]
                 )
+        self._call(self.app.refresh_sidebar)
+
+    def set_them_streams(self, applications: list[tuple[str, str]]) -> None:
+        """Install the applications currently on offer.
+
+        The one being listened to stays selectable whether or not it is in the
+        list: an application that stops playing leaves the graph, and dropping
+        it from the picker would make the session look as though it had been
+        pointed somewhere else.
+        """
+        self.state.them_streams = list(applications)
         self._call(self.app.refresh_sidebar)
 
     def set_tts_queue(self, sentences: list[str]) -> None:

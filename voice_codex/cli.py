@@ -28,6 +28,9 @@ import fcntl
 import os
 import sys
 import tempfile
+import threading
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from moonshine_voice import get_model_for_language
@@ -39,6 +42,7 @@ from .capture import (
     SoundActivityReporter,
     metered_mic_transcriber,
 )
+from .choosers import NO_THEM_STREAM
 from .codex import CodexConversation, CodexSettings
 from .config import StartupConfigFile, save_startup_config
 from .domain import (
@@ -49,6 +53,7 @@ from .domain import (
     TurnSilenceClock,
 )
 from .listener import TranscriptSubmitter, tts_switch
+from .presentation import NO_DEVICE
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
     build_session_state,
@@ -58,7 +63,7 @@ from .startup import (
     run_session,
     startup_settings,
 )
-from .streams import StreamTap
+from .streams import ApplicationRefresher, StreamTap
 
 # The name carries the user ID because the fallback is a shared directory: on a
 # multi-user box a fixed name in /tmp is one user's lock file blocking every
@@ -114,28 +119,213 @@ def build_speech(selection, args):
     )
 
 
-def sound_taps(tui, them_stream):
+def sound_taps(tui):
     """The two level taps, built before the listeners that read them.
 
     Each channel's listener reads the other's tap: the microphone has to know
     when the far end is playing to tell its voice coming out of the speakers
-    from the person sitting in the room.
+    from the person sitting in the room. Both are built whether or not a far
+    end exists yet, because one can be chosen at any point in the session and
+    a reporter costs a few numbers until it is.
     """
-    them = None if them_stream is None else SoundActivityReporter(tui, "them")
-    return SoundActivityReporter(tui, "mic"), them
+    return SoundActivityReporter(tui, "mic"), SoundActivityReporter(tui, "them")
 
 
-def speaker_gate(selection, them_stream):
+BASE_SPEAKERS = frozenset({"User Voice"})
+
+
+def them_stream_setting(application):
+    """Record a chosen application the way ``--them-stream`` reads it back."""
+    return NO_THEM_STREAM if application is None else application
+
+
+def speaker_gate(selection):
     """Build the response policy, limited to the speakers this session has.
 
-    The gate is told what exists rather than inferring it, because selecting
-    "both" in a session with no Them output must not make Them replies
-    possible.
+    It starts with the microphone alone. Selecting "both" before a far end
+    exists must not make Them replies possible, and the gate is told when one
+    arrives rather than inferring it.
     """
-    available_speakers = {"User Voice"}
-    if them_stream is not None:
-        available_speakers.add("Them")
-    return SpeakerGate(selection.policy.speakers, available_speakers)
+    return SpeakerGate(selection.policy.speakers, BASE_SPEAKERS)
+
+
+@dataclass(frozen=True)
+class ChannelParts:
+    """What a capture channel is built from, gathered once.
+
+    The far end's channel is built long after the composition root has
+    returned — when someone picks an application — so what it needs has to
+    outlive the wiring rather than be closed over inside it.
+    """
+
+    submitter: object
+    display: object
+    confidence: float
+    turn_silence: object
+    countdown: object
+    model_path: str
+    model_arch: object
+
+
+def open_them_channel(parts, activity, tap):
+    """Build the far end's listener and transcriber around one tap."""
+    listener = parts.submitter.channel(
+        parts.confidence,
+        parts.turn_silence,
+        "Them",
+        parts.display,
+        countdown=parts.countdown,
+        # No suppressors: the tap carries the links this session made and
+        # nothing else, and Codex's own playback is never one of them. It is
+        # not that its voice is filtered off this channel — it never reaches it.
+        presence=SpeakerPresence(activity),
+    )
+    transcriber = ApplicationStreamTranscriber(
+        model_path=parts.model_path,
+        model_arch=parts.model_arch,
+        tap=tap,
+        # A smaller block only to sharpen the tap: this channel decides whether
+        # the far end is talking a whole block at a time, and the 4096 default
+        # put that a quarter of a second behind the microphone's. Transcription
+        # is unaffected — it runs off ``update_interval``, not the read size.
+        capture=CaptureSettings(update_interval=0.25, blocksize=1024),
+        level_reporter=activity,
+    )
+    transcriber.add_listener(listener)
+    return transcriber, listener
+
+
+def close_them_channel(parts, transcriber, listener):
+    """Retire the far end's channel in the order the session's shutdown uses.
+
+    Nothing may reach a listener after it has flushed, and the listener is
+    unregistered last so no reply can sweep a closed channel's buffer in as
+    context for a far end nobody is listening to any more.
+    """
+    transcriber.stop()
+    listener.close()
+    transcriber.close()
+    parts.submitter.remove_listener(listener)
+
+
+class ThemChannel:
+    """Transcribe a far end's application, from the moment one is chosen.
+
+    This costs a second Moonshine model — seconds to load, and it stays
+    resident — so a session that never listens to a far end never builds one.
+    That is also why the work runs on its own thread: the choice arrives as a
+    keystroke in the sidebar, and the interface has to go on drawing while a
+    model loads.
+
+    Requests are recorded and reconciled rather than executed where they
+    arrive. Someone moving through the picker produces a choice per keystroke,
+    and each one would otherwise start building a channel that the next one
+    made pointless. Here the newest choice simply wins, and a run of them
+    costs one build.
+
+    Switching between two applications is not a build at all. The tap follows
+    a name, so the existing channel is pointed at the new one and its own
+    relinking does the rest.
+    """
+
+    JOIN_TIMEOUT_SECONDS = 30
+
+    def __init__(self, tui, gate, open_channel, close_channel):
+        self.tui = tui
+        self.gate = gate
+        self.open_channel = open_channel
+        self.close_channel = close_channel
+        self.desired = None
+        self.current = None
+        self.tap = None
+        self.transcriber = None
+        self.listener = None
+        self.wake = threading.Event()
+        self.stopping = threading.Event()
+        self.lock = threading.Lock()
+        self.worker = None
+
+    def start(self):
+        """Begin serving choices."""
+        if self.worker is not None:
+            return
+        self.worker = threading.Thread(
+            target=self._serve, name="ThemChannelSwitch", daemon=True
+        )
+        self.worker.start()
+
+    def select(self, application):
+        """Ask for an application, or for none. Always accepted."""
+        self.desired = application
+        self.wake.set()
+        return True
+
+    def _serve(self):
+        while True:
+            self.wake.wait()
+            self.wake.clear()
+            if self.stopping.is_set():
+                return
+            self.reconcile()
+
+    def reconcile(self):
+        """Make the session agree with the application last asked for.
+
+        Held under a lock because shutdown reconciles too, on the thread that
+        is closing the session, and two of these running at once would build a
+        channel the other is retiring.
+        """
+        with self.lock:
+            wanted = self.desired
+            if wanted == self.current:
+                return
+            if wanted is None:
+                self._retire()
+            elif self.tap is None:
+                self._open(wanted)
+            else:
+                self.tap.follow(wanted)
+                self._announce(wanted)
+
+    def _open(self, application):
+        tap = StreamTap(application)
+        try:
+            transcriber, listener = self.open_channel(tap)
+            transcriber.start()
+        except Exception as error:
+            # A far end that cannot be opened leaves the session running
+            # without one, which is the state it was already in.
+            self.tui.note(f"could not listen to {application}: {error}")
+            self.desired = None
+            return
+        self.tap, self.transcriber, self.listener = tap, transcriber, listener
+        self.tui.hooks.on_them_mute = listener.set_muted
+        self.gate.set_available(BASE_SPEAKERS | {"Them"})
+        self._announce(application)
+
+    def _announce(self, application):
+        self.current = application
+        self.tui.set_audio("them", device=application)
+
+    def _retire(self):
+        """Close the channel, if one is open, and forget the far end."""
+        transcriber, listener = self.transcriber, self.listener
+        self.tap = self.transcriber = self.listener = None
+        self.current = None
+        self.tui.hooks.on_them_mute = None
+        self.gate.set_available(BASE_SPEAKERS)
+        self.tui.set_audio("them", device=NO_DEVICE)
+        self.close_channel(transcriber, listener)
+
+    def close(self):
+        """Stop serving choices and close whatever is open."""
+        self.stopping.set()
+        self.wake.set()
+        if self.worker is not None:
+            self.worker.join(timeout=self.JOIN_TIMEOUT_SECONDS)
+            self.worker = None
+        self.select(None)
+        self.reconcile()
 
 
 def microphone_presence(mic_activity, them_activity, tts):
@@ -145,16 +335,15 @@ def microphone_presence(mic_activity, them_activity, tts):
     tap goes busy for the assistant's own reply and for the far end as readily
     as for the user — and a turn held open by those would be held open for as
     long as they went on. Both are already known here: the speech engine says
-    when it still owes a sentence, and the Them channel's own tap says when the
-    far end is playing.
+    when it still owes a sentence, and the far end's own tap says when it is
+    playing. That tap reports nothing until a far end is chosen, which is the
+    same thing it reports when one is chosen and quiet.
 
     On a headset neither ever fires, and the suppressors cost nothing.
     """
-    suppressors = []
+    suppressors = [lambda: them_activity.hearing_sound]
     if tts is not None:
         suppressors.append(tts.is_speaking)
-    if them_activity is not None:
-        suppressors.append(lambda: them_activity.hearing_sound)
     return SpeakerPresence(mic_activity, suppressors)
 
 
@@ -240,7 +429,7 @@ def main():
         wanted_model_arch=model_arch,
     )
 
-    gate = speaker_gate(selection, them_stream)
+    gate = speaker_gate(selection)
 
     from .tui import VoiceCodexTUI
 
@@ -281,7 +470,7 @@ def main():
     # Built before the listeners because each one reads the other's tap: the
     # microphone has to know when the far end is playing to tell its voice
     # from the person in the room.
-    mic_activity, them_activity = sound_taps(tui, them_stream)
+    mic_activity, them_activity = sound_taps(tui)
 
     user_listener = submitter.channel(
         args.confidence,
@@ -308,40 +497,31 @@ def main():
     if selection.tts_output is not None:
         tui.set_output(selection.tts_output["description"])
 
-    them_listener = None
-    them_transcriber = None
-    if them_stream is not None:
-        them_listener = submitter.channel(
-            args.confidence,
-            turn_silence,
-            "Them",
-            transcript_display,
-            countdown=countdown,
-            # No suppressors: the tap carries the links this session made and
-            # nothing else, and Codex's own playback is never one of them. It
-            # is not that its voice is filtered off this channel — it never
-            # reaches it.
-            presence=SpeakerPresence(them_activity),
-        )
-        them_transcriber = ApplicationStreamTranscriber(
-            model_path=model_path,
-            model_arch=downloaded_arch,
-            tap=StreamTap(them_stream),
-            # A smaller block only to sharpen the tap: this channel decides
-            # whether the far end is talking a whole block at a time, and the
-            # 4096 default put that a quarter of a second behind the
-            # microphone's. Transcription is unaffected — it runs off
-            # ``update_interval``, not off the read size.
-            capture=CaptureSettings(update_interval=0.25, blocksize=1024),
-            level_reporter=them_activity,
-        )
-        them_transcriber.add_listener(them_listener)
-        tui.hooks.on_them_mute = them_listener.set_muted
-        tui.set_audio("them", device=them_stream)
-    channels = [(user_transcriber, user_listener)]
-    if them_transcriber is not None:
-        channels.append((them_transcriber, them_listener))
-    run_session(tui, channels, conversation)
+    parts = ChannelParts(
+        submitter=submitter,
+        display=transcript_display,
+        confidence=args.confidence,
+        turn_silence=turn_silence,
+        countdown=countdown,
+        model_path=model_path,
+        model_arch=downloaded_arch,
+    )
+    them = ThemChannel(
+        tui,
+        gate,
+        partial(open_them_channel, parts, them_activity),
+        partial(close_them_channel, parts),
+    )
+    them.start()
+    applications = ApplicationRefresher(tui)
+    applications.start()
+    tui.hooks.on_quit = applications.stop
+    tui.hooks.on_them_stream = remembering(
+        them.select, config, "them_stream", encode=them_stream_setting
+    )
+    them.select(them_stream)
+    run_session(tui, [(user_transcriber, user_listener)], conversation, them)
+    applications.stop()
 
 
 def run_entrypoint():

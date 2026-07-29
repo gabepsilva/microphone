@@ -479,6 +479,18 @@ def test_a_session_tears_every_channel_down_in_a_safe_order(monkeypatch) -> None
     ]
 
 
+def test_a_session_closes_the_far_end_before_the_channels_it_started_with(
+    monkeypatch,
+) -> None:
+    """It owns the only reference to whatever it built while the session ran."""
+    events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
+    them = SimpleNamespace(close=lambda: events.append("close them"))
+
+    run_session(tui, channels, conversation, them)
+
+    assert events[:3] == ["start mic", "start them", "close them"]
+
+
 def test_an_interrupted_session_still_closes_everything(monkeypatch, capsys) -> None:
     def interrupt():
         raise KeyboardInterrupt

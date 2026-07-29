@@ -225,6 +225,11 @@ def nodes_named(objects, node_name):
     ]
 
 
+def _are_ports(*values):
+    """Whether every value is a port number the tools can be handed."""
+    return all(isinstance(value, int) for value in values)
+
+
 def linked_sources(objects, node_id):
     """The ``(source port, tap port)`` pairs already feeding a node.
 
@@ -238,8 +243,12 @@ def linked_sources(objects, node_id):
         if obj.get("type") != LINK_OBJECT:
             continue
         props = _properties(obj)
-        if props.get("link.input.node") == node_id:
-            pairs.add((props.get("link.output.port"), props.get("link.input.port")))
+        source, tap = props.get("link.output.port"), props.get("link.input.port")
+        # Both ends have to be real port numbers. A half-described link is not
+        # one this tap can cut, and carrying it would only break the ordering
+        # that decides which links to cut first.
+        if props.get("link.input.node") == node_id and _are_ports(source, tap):
+            pairs.add((source, tap))
     return pairs
 
 
@@ -260,14 +269,17 @@ class StreamTap:
     only as long as the application is playing through it: a meeting app that
     restarts, or a browser that opens a second tab, arrives as a new node with a
     new ID, and a tap linked once would fall silent exactly when the thing it
-    was watching came back. So the link pass runs on a timer and is written to
-    be idempotent — it adds what is missing and leaves the rest alone — which
-    makes the cost of polling one graph dump and nothing else.
+    was watching came back. So the pass runs on a timer, and describes what the
+    links should be rather than what to change — it adds what the chosen
+    application is missing and drops what belongs to anything else. That is
+    also what lets the choice change while the session runs: ``follow`` moves
+    the name, and the next pass rewires around it.
 
     The capture node itself belongs to the ``pw-record`` process the caller
     starts; this class only finds it by name and wires it up. That split is why
     a tap whose recorder has not appeared yet is not an error: it links nothing
-    and tries again.
+    and tries again. Following nothing is not an error either — it is how a
+    session waits for someone to choose.
     """
 
     NODE_PREFIX = "voice_codex_tap_"
@@ -285,7 +297,9 @@ class StreamTap:
     # louder than half scale.
     CHANNELS = 2
 
-    def __init__(self, application, poll=POLL_SECONDS, run=subprocess.run, dump=graph):
+    def __init__(
+        self, application=None, poll=POLL_SECONDS, run=subprocess.run, dump=graph
+    ):
         self.application = application
         # The PID is in the name so a session that died without cleaning up
         # cannot be mistaken for this one; the node disappears with the
@@ -296,6 +310,15 @@ class StreamTap:
         self.dump = dump
         self.stopping = threading.Event()
         self.watcher = None
+
+    def follow(self, application):
+        """Point the tap at another application, or at none.
+
+        Only the name moves. The recorder keeps running and the capture node
+        keeps its place in the graph, so what the caller is reading never
+        stops — it goes quiet for as long as the next pass takes to rewire.
+        """
+        self.application = application
 
     def command(self, samplerate):
         """Build the ``pw-record`` command that streams the tap as raw PCM.
@@ -324,19 +347,11 @@ class StreamTap:
             "-",
         ]
 
-    def link(self):
-        """Link every matching stream that is not linked yet; report how many.
-
-        The count is what tells a first attach from a quiet poll, which is the
-        only thing the caller wants to know often enough to be worth returning.
-        """
-        objects = self.dump()
-        taps = nodes_named(objects, self.node_name)
-        inputs = node_ports(objects, taps, INCOMING)
-        if not taps or not inputs:
-            return 0
-        already = linked_sources(objects, taps[0])
-        linked = 0
+    def wanted_links(self, objects, inputs):
+        """The ``(source port, tap port)`` pairs the chosen application needs."""
+        if self.application is None:
+            return set()
+        wanted = set()
         for stream in application_streams(objects):
             if stream.application != self.application:
                 continue
@@ -347,25 +362,50 @@ class StreamTap:
                 # Channel by channel, and a source with fewer channels than the
                 # tap repeats: a mono application feeds both sides rather than
                 # arriving at half strength once the caller averages them.
-                source_port = outputs[index % len(outputs)]
-                if (source_port, tap_port) in already:
-                    continue
-                if self._connect(source_port, tap_port):
-                    linked += 1
-        return linked
+                wanted.add((outputs[index % len(outputs)], tap_port))
+        return wanted
 
-    def _connect(self, source_port, tap_port):
-        """Join two ports, treating a refusal as something the next pass retries."""
+    def link(self):
+        """Make the graph agree with the application currently chosen.
+
+        Both directions, because the choice can change under a running
+        session: a pair the application needs is added, and a pair left over
+        from whatever was chosen before is cut. Stating the whole arrangement
+        rather than the change is what keeps a switch from depending on
+        anything having gone right earlier.
+
+        The count of links altered is what tells a real change from a quiet
+        poll, which is the only thing the caller wants often enough to return.
+        """
+        objects = self.dump()
+        taps = nodes_named(objects, self.node_name)
+        inputs = node_ports(objects, taps, INCOMING)
+        if not taps or not inputs:
+            return 0
+        already = linked_sources(objects, taps[0])
+        wanted = self.wanted_links(objects, inputs)
+        altered = 0
+        for source_port, tap_port in sorted(wanted - already):
+            altered += self._link(source_port, tap_port)
+        for source_port, tap_port in sorted(already - wanted):
+            altered += self._link(source_port, tap_port, disconnect=True)
+        return altered
+
+    def _link(self, source_port, tap_port, disconnect=False):
+        """Join or cut two ports, treating a refusal as the next pass's problem."""
+        command = [PW_LINK]
+        if disconnect:
+            command.append("--disconnect")
         try:
             result = self.run(
-                [PW_LINK, str(source_port), str(tap_port)],
+                [*command, str(source_port), str(tap_port)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
         except OSError:
-            return False
-        return result.returncode == 0
+            return 0
+        return 1 if result.returncode == 0 else 0
 
     def start(self):
         """Begin following the application, linking whatever it is playing now."""
@@ -392,3 +432,91 @@ class StreamTap:
         self.stopping.set()
         self.watcher.join(timeout=5)
         self.watcher = None
+
+
+def offered_applications(objects):
+    """Name the applications a session may be pointed at, as the picker lists them.
+
+    An application playing on more than one stream is offered once, and the
+    ones making sound now come first — that is almost always the one meant,
+    and a browser with a dozen idle tabs would otherwise bury it.
+    """
+    return [
+        (stream_label(stream), stream.application)
+        for stream in applications(application_streams(objects))
+    ]
+
+
+# A stream titles itself with whatever it happens to be playing — a browser
+# tab's heading, or the absolute path of a file. The picker is one column of a
+# sidebar, so a title is a hint at which of an application's streams this is,
+# not something worth the width to read in full.
+TITLE_LIMIT = 32
+
+
+def stream_label(stream):
+    """Describe one application the way the picker offers it."""
+    state = "playing" if stream.playing else "idle"
+    if not stream.title or stream.title == stream.application:
+        return f"{stream.application} ({state})"
+    title = stream.title
+    if len(title) > TITLE_LIMIT:
+        title = f"{title[: TITLE_LIMIT - 1]}…"
+    return f"{stream.application} — {title} ({state})"
+
+
+class ApplicationRefresher:
+    """Keep the picker's list of applications current while the session runs.
+
+    An application is only in the audio graph while it is playing, so a list
+    read once at startup is wrong by the time anyone opens the picker — the
+    meeting that had not started yet is exactly the entry someone is looking
+    for. Polling rather than watching the graph for events: this decides what
+    a menu says, so being a few seconds stale costs nothing and a second
+    subscription to the graph would cost a thread either way.
+    """
+
+    POLL_SECONDS = 4.0
+
+    def __init__(self, display, poll=POLL_SECONDS, dump=graph):
+        self.display = display
+        self.poll = poll
+        self.dump = dump
+        self.stopping = threading.Event()
+        self.worker = None
+        self.offered = None
+
+    def start(self):
+        if self.worker is not None:
+            return
+        self.worker = threading.Thread(
+            target=self._serve, name="ApplicationRefresher", daemon=True
+        )
+        self.worker.start()
+
+    def refresh(self):
+        """Re-read the graph, telling the display only when the list changed.
+
+        Every report repaints the sidebar, and the list is the same on almost
+        every pass, so an unconditional one would redraw the interface every
+        few seconds for the whole session.
+        """
+        offered = offered_applications(self.dump())
+        if offered == self.offered:
+            return False
+        self.offered = offered
+        self.display.set_them_streams(offered)
+        return True
+
+    def _serve(self):
+        while True:
+            self.refresh()
+            if self.stopping.wait(self.poll):
+                return
+
+    def stop(self):
+        if self.worker is None:
+            return
+        self.stopping.set()
+        self.worker.join(timeout=5)
+        self.worker = None

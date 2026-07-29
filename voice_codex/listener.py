@@ -336,6 +336,17 @@ class TranscriptSubmitter:
         """Register a channel whose buffer may be swept into a reply's context."""
         self.listeners.append(listener)
 
+    def remove_listener(self, listener):
+        """Retire a channel that no longer exists.
+
+        A listener left registered after its transcriber is closed is not
+        inert: it still holds whatever it had buffered, and the next reply
+        would sweep that stale text in as context for a far end nobody is
+        listening to any more.
+        """
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
     def channel(  # noqa: PLR0913 - audio adapter wiring, as the listener itself
         self,
         confidence_threshold,

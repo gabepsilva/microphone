@@ -80,6 +80,17 @@ startup menu lists what is making sound right now. A name given with
 whenever that application appears — including after it restarts, and including
 every stream it opens, which is what makes a browser with several tabs work.
 
+The sidebar picks it too, at any point in the session: the far-end picker sits
+under the speaker meter, refreshes itself as applications start and stop
+playing, and offers `No far end` alongside them. Starting a meeting after the
+session is already running needs nothing but that picker.
+
+The channel behind it is built the first time an application is chosen and
+closed again when none is, so a session that only ever listens to the
+microphone never loads the second speech model. Moving between two
+applications is not a rebuild — the tap follows a name, so it is re-pointed
+where it stands.
+
 The Textual TUI is the only presentation surface. It is still under active
 development; model selection remains a startup option because the Codex SDK
 binds it when the conversation thread is created.

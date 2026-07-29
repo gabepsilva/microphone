@@ -12,7 +12,7 @@ import shutil
 import subprocess
 
 from .domain import RESPONSE_POLICIES, resolve_response_policy
-from .streams import application_streams, applications, graph
+from .streams import graph, offered_applications
 
 
 def input_devices():
@@ -183,14 +183,6 @@ def choose_tts_output(requested=None):
     return select_tts_output(audio_outputs(), requested)
 
 
-def stream_label(stream):
-    """Describe one application the way the startup menu offers it."""
-    state = "playing" if stream.playing else "idle"
-    if stream.title and stream.title != stream.application:
-        return f"{stream.application} — {stream.title} ({state})"
-    return f"{stream.application} ({state})"
-
-
 NO_THEM_STREAM = "none"
 
 
@@ -213,19 +205,16 @@ def choose_them_stream(requested=None):
     if requested is not None:
         return select_them_stream(requested)
 
-    streams = applications(application_streams(graph()))
+    offered = offered_applications(graph())
     note = None
-    if not streams:
+    if not offered:
         note = (
             "      No application is playing audio yet. Start the meeting and\n"
             "      run again, or pass --them-stream with the application name."
         )
     return choose_from_menu(
         "\nApplication to transcribe as Them:",
-        [
-            ("None", None),
-            *((stream_label(stream), stream.application) for stream in streams),
-        ],
+        [("None", None), *offered],
         "an application",
         first_number=0,
         note=note,
