@@ -547,6 +547,7 @@ def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
     repo = tmp_path / "repo"
     (repo / "tools").mkdir(parents=True)
     for name, content in base_files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(content, encoding="utf-8")
 
     # Git exports GIT_DIR, GIT_INDEX_FILE, and a blank GIT_AUTHOR_NAME to the
@@ -590,6 +591,10 @@ BASE_FILES = {
     "pyproject.toml": BASE_PYPROJECT,
     "semgrep.yml": BASE_SEMGREP,
     "Makefile": BASE_MAKEFILE,
+    # The module the coverage floor and the mutmut scope both name. It has to
+    # exist for "dropped while the file is still there" to be the thing under
+    # test; when it is missing, dropping it is legitimate and allowed.
+    "tagalong/domain.py": 'VOICE = "Voice"\n',
 }
 
 
@@ -694,6 +699,48 @@ def test_ratchet_allows_a_raised_floor(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(repo)
 
     assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
+
+
+def test_ratchet_allows_a_mutated_module_to_be_renamed(tmp_path, monkeypatch) -> None:
+    """Renaming a package is not narrowing the mutmut scope.
+
+    The comparison is stringwise, so every path changes at once and the base
+    branch still spells the old prefix. The same allowance the coverage floors
+    already have applies: a threshold may be dropped when its file is gone.
+    """
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "renamed").mkdir()
+    (repo / "tagalong/domain.py").rename(repo / "renamed/domain.py")
+    (repo / "tagalong").rmdir()
+    (repo / "pyproject.toml").write_text(
+        "\n[tool.coverage.report]\nfail_under = 46\n\n[tool.mutmut]\n"
+        'source_paths = ["renamed/domain.py"]\n',
+        encoding="utf-8",
+    )
+    (repo / "tools/coverage_gate.py").write_text(
+        'FLOORS = {"renamed/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
+
+
+def test_ratchet_still_rejects_dropping_a_module_that_is_still_there(
+    tmp_path, monkeypatch
+) -> None:
+    """The guard must not become a way to quietly stop mutating live code."""
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "pyproject.toml").write_text(
+        "\n[tool.coverage.report]\nfail_under = 46\n\n[tool.mutmut]\n"
+        "source_paths = []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 1
 
 
 @pytest.mark.parametrize(
