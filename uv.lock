@@ -1087,7 +1087,7 @@ wheels = [
 [[package]]
 name = "tagalong"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "edge-tts" },
     { name = "moonshine-voice" },

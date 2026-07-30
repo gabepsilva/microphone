@@ -56,8 +56,12 @@ off, and choosing one again turns it back on. A session started with
 ## Running and presentation
 
 ```bash
-uv run tagalong.py
+uv run tagalong
 ```
+
+`uv sync` installs the project, so `tagalong` is a real command. The root
+`tagalong.py` launcher still works and does the same thing; it is there for
+running from a checkout without installing.
 
 The command loads `tagalong.yaml` when it exists, initializes User Voice
 transcription, and also transcribes Them when `them_stream` names an

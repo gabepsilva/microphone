@@ -15,6 +15,25 @@ dependencies = [
     "textual==8.2.8",
 ]
 
+[project.urls]
+Homepage = "https://tagalong.you"
+
+# `run_entrypoint` rather than `main`: it is what turns Ctrl-C into "Stopped."
+# and a failure into one line instead of a traceback. An installed `tagalong`
+# has to behave exactly as `uv run tagalong.py` does.
+[project.scripts]
+tagalong = "tagalong.cli:run_entrypoint"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The repo has both a `tagalong` package and a root `tagalong.py` launcher, so
+# the wheel contents cannot be inferred. Only the package ships; the launcher
+# stays a development convenience.
+[tool.hatch.build.targets.wheel]
+packages = ["tagalong"]
+
 [dependency-groups]
 dev = [
     "actionlint-py==1.7.12.24",
