@@ -59,6 +59,12 @@ class ApplicationListSink(Protocol):
     def set_them_streams(self, applications: list[tuple[str, str]]) -> None: ...
 
 
+class NewSessionSink(Protocol):
+    """Clear the visible transcript after the host starts a fresh session."""
+
+    def reset_transcript(self) -> None: ...
+
+
 class CodexStreamSink(Protocol):
     """Render one streamed Codex turn: its reasoning, commands and tool calls."""
 
@@ -98,6 +104,6 @@ class CodexPresentation(CodexStreamSink, SessionStatusSink, Protocol):
 
 
 class TranscriptPresentation(
-    TranscriptSink, CodexPresentation, ApplicationListSink, Protocol
+    TranscriptSink, CodexPresentation, ApplicationListSink, NewSessionSink, Protocol
 ):
     """The whole display surface, as the Textual interface provides it."""

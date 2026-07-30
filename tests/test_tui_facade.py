@@ -258,9 +258,8 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.set_audio("mic", device="Blue Yeti")
         facade.set_audio("mic", active=True)
-        facade.set_audio("nonexistent", device="ignored")
+        facade.set_audio("nonexistent", active=True)
         facade.set_codex(model="gpt-5.6-nova", thread="thread-9")
         facade.set_session(tokens=42)
         facade.set_status("listening", live=True)
@@ -268,7 +267,6 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
 
     drive(facade, body)
 
-    assert facade.state.mic.device == "Blue Yeti"
     assert facade.state.mic.active is True
     assert facade.state.codex_model == "gpt-5.6-nova"
     assert facade.state.codex_thread == "thread-9"
@@ -611,6 +609,7 @@ def protocol_methods():
         presentation.SessionStatusSink,
         presentation.CodexStreamSink,
         presentation.ApplicationListSink,
+        presentation.NewSessionSink,
     ):
         names |= {name for name in vars(protocol) if not name.startswith("_")}
     return names
@@ -1213,19 +1212,3 @@ def test_a_sound_report_never_waits_on_the_application_thread(tui) -> None:
 
     assert waited == []
     assert facade.state.mic.active is True
-
-
-def test_naming_a_capture_device_still_refreshes_the_whole_sidebar(tui) -> None:
-    """A device name is set once, from the main thread, and moves the layout."""
-    facade = tui.VoiceCodexTUI()
-    calls: list[str] = []
-
-    async def body(pilot):
-        sidebar = facade.app.query_one("#sidebar", tui.Sidebar)
-        sidebar.sync = lambda: calls.append("whole sidebar")
-        facade.set_audio("mic", device="Blue Yeti")
-        await pilot.pause()
-
-    drive(facade, body)
-
-    assert calls == ["whole sidebar"]

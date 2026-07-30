@@ -73,8 +73,25 @@ def test_the_sound_dot_shows_whether_a_channel_hears_anything(tui) -> None:
     assert tui.sound_dot(False).plain == tui.SOUND_OFF
 
 
+def test_each_audio_channel_uses_the_same_active_and_inactive_dots(tui) -> None:
+    state = tui.SessionState()
+    sidebar = tui.Sidebar(state, tui.TuiHooks())
+
+    quiet_mic = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
+    quiet_stream = _rendered(sidebar._channel(state.them, "#d7b562")[0])
+    state.mic.active = True
+    state.them.active = True
+    active_mic = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
+    active_stream = _rendered(sidebar._channel(state.them, "#d7b562")[0])
+
+    assert quiet_mic.split() == [tui.SOUND_OFF, "Microphone"]
+    assert active_mic.split() == [tui.SOUND_ON, "Microphone"]
+    assert quiet_stream.split() == [tui.SOUND_OFF, "Audio", "Stream"]
+    assert active_stream.split() == [tui.SOUND_ON, "Audio", "Stream"]
+
+
 def test_a_quiet_channel_dims_its_dot_instead_of_colouring_it(tui) -> None:
-    """The colour is the signal, so silence must not wear the live one."""
+    """The inactive dot must not wear the live channel colour."""
     assert str(tui.sound_dot(True, "#6ba7ff").style) == "#6ba7ff"
     assert str(tui.sound_dot(False, "#6ba7ff").style) != "#6ba7ff"
 
@@ -87,13 +104,12 @@ def test_facade_updates_state_before_the_app_starts(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     facade.update(tui.USER_VOICE, "testing")
-    facade.set_audio("mic", device="USB mic", active=True)
-    facade.set_microphones([("USB mic (device 1)", "USB mic")])
+    facade.set_audio("mic", active=True)
+    facade.set_microphones([("USB mic", "USB mic")])
 
     assert facade.state.partial_text == "testing"
-    assert facade.state.mic.device == "USB mic"
     assert facade.state.mic.active is True
-    assert facade.state.microphones == [("USB mic (device 1)", "USB mic")]
+    assert facade.state.microphones == [("USB mic", "USB mic")]
 
 
 def test_facade_implements_runtime_display_events_before_the_app_starts(tui) -> None:
@@ -537,12 +553,12 @@ def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
 
 
 def test_the_microphone_picker_offers_none_before_available_inputs(tui) -> None:
-    state = tui.SessionState(microphones=[("Yeti (device 2, 48000 Hz)", "Yeti")])
+    state = tui.SessionState(microphones=[("Yeti", "Yeti")])
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
     assert sidebar._microphone_options() == [
         (tui.NO_MICROPHONE_LABEL, tui.NO_MICROPHONE),
-        ("Yeti (device 2, 48000 Hz)", "Yeti"),
+        ("Yeti", "Yeti"),
     ]
 
 
@@ -1279,13 +1295,13 @@ def test_ticking_the_mic_box_blocks_the_microphone(tui) -> None:
     assert muted == [True]
     assert app.state.mic.muted is True
     assert app.state.them.muted is False
-    assert app.entries[-1].text == "mic muted"
+    assert app.entries[-1].text == "Microphone muted"
 
 
 def test_clearing_the_mic_box_lets_the_microphone_through_again(tui) -> None:
     muted: list[bool] = []
     app = tui.VoiceCodexApp(
-        tui.SessionState(mic=tui.Channel("mic", muted=True)),
+        tui.SessionState(mic=tui.Channel("Microphone", muted=True)),
         tui.TuiHooks(on_mute=muted.append),
     )
 
@@ -1293,7 +1309,7 @@ def test_clearing_the_mic_box_lets_the_microphone_through_again(tui) -> None:
 
     assert muted == [False]
     assert app.state.mic.muted is False
-    assert app.entries[-1].text == "mic live"
+    assert app.entries[-1].text == "Microphone live"
 
 
 def test_ticking_the_speaker_box_blocks_listening_to_the_speaker(tui) -> None:
@@ -1356,15 +1372,14 @@ def test_a_muted_channel_reads_as_silent(tui) -> None:
 
 
 def test_the_channel_heading_leaves_the_mute_state_to_the_box(tui) -> None:
-    """One statement of a mute, not two: the box says it, the heading does not."""
-    state = tui.SessionState()
-    state.mic.device = "Yeti"
+    """The heading names the channel; its picker carries the selected device."""
+    state = tui.SessionState(microphone="Yeti")
     state.mic.muted = True
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
     heading = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
 
-    assert heading.split() == [tui.SOUND_OFF, "mic", "Yeti"]
+    assert heading.split() == [tui.SOUND_OFF, "Microphone"]
 
 
 def test_the_mute_box_reads_muted_once_the_channel_is(tui) -> None:

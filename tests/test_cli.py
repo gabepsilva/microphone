@@ -57,13 +57,10 @@ class FakeTUI:
         self.speech = speech
         self.hook_arguments = hooks
         self.hooks = SimpleNamespace(**hooks)
-        self.audio: dict[str, str] = {}
         self.codex_fields: dict[str, object] = {}
         self.notes: list[str] = []
         self.them_streams: list[tuple[str, str]] = []
-
-    def set_audio(self, channel, device):
-        self.audio[channel] = device
+        self.closed_speakers: list[str] = []
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
@@ -72,7 +69,7 @@ class FakeTUI:
         self.notes.append(text)
 
     def close_speaker(self, speaker):
-        self.audio.pop(speaker, None)
+        self.closed_speakers.append(speaker)
 
     def set_them_streams(self, applications):
         self.them_streams = list(applications)
@@ -292,14 +289,13 @@ def wiring(monkeypatch, tmp_path):
 
 
 def test_an_unavailable_saved_microphone_waits_without_opening_capture() -> None:
-    microphone, tui, opened = managed_microphone()
+    microphone, _, opened = managed_microphone()
 
     microphone.select("Yeti")
     microphone.reconcile()
 
     assert opened == []
     assert microphone.desired == "Yeti"
-    assert tui.audio == {}
 
 
 def test_a_saved_microphone_opens_when_it_appears_later() -> None:
@@ -315,15 +311,14 @@ def test_a_saved_microphone_opens_when_it_appears_later() -> None:
 
     assert [index for index, _, _ in opened] == [3]
     assert microphone.current == "Yeti"
-    assert tui.audio["mic"] == "Yeti"
     assert tui.microphones == [
-        ("Yeti (device 3, 48000 Hz)", "Yeti"),
-        ("Webcam (device 7, 16000 Hz)", "Webcam"),
+        ("Yeti", "Yeti"),
+        ("Webcam", "Webcam"),
     ]
 
 
 def test_switching_microphones_retires_the_old_capture_before_opening_the_new() -> None:
-    microphone, tui, opened = managed_microphone(INPUTS)
+    microphone, _, opened = managed_microphone(INPUTS)
     microphone.select("Yeti")
     microphone.reconcile()
     _, first_transcriber, first_listener = opened[0]
@@ -335,7 +330,6 @@ def test_switching_microphones_retires_the_old_capture_before_opening_the_new() 
     assert (first_transcriber.stopped, first_transcriber.closed) == (True, True)
     assert first_listener.closed is True
     assert microphone.current == "Webcam"
-    assert tui.audio["mic"] == "Webcam"
 
 
 def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
@@ -353,7 +347,6 @@ def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
         True,
     )
     assert microphone.current is None
-    assert tui.audio["mic"] == cli.NO_DEVICE
     assert tui.hooks.on_mute is None
 
 
@@ -505,13 +498,12 @@ def test_the_microphone_worker_refreshes_until_it_is_closed() -> None:
 
 def test_a_user_only_session_registers_one_channel(wiring) -> None:
     cli.main()
-    tui, channels, _ = wiring["session"]
+    _, channels, _ = wiring["session"]
 
     assert len(channels) == 1
     transcriber, listener = channels[0]
     assert listener.speaker == "User Voice"
     assert transcriber.listeners == [listener]
-    assert tui.audio == {"mic": "Yeti"}
 
 
 def test_a_session_without_an_input_device_still_reaches_the_interface(wiring) -> None:
@@ -532,14 +524,12 @@ def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
     wiring["them_stream"] = THEM_APPLICATION
 
     cli.main()
-    tui, _, _ = wiring["session"]
     them = wiring["them"]
     them.reconcile()
 
     assert them.listener.speaker == "Them"
     assert them.transcriber.kwargs["tap"].application == THEM_APPLICATION
     assert them.transcriber.listeners == [them.listener]
-    assert tui.audio["them"] == THEM_APPLICATION
 
 
 def test_a_session_with_no_application_opens_nothing(wiring) -> None:
@@ -549,7 +539,6 @@ def test_a_session_with_no_application_opens_nothing(wiring) -> None:
     them.reconcile()
 
     assert them.transcriber is None
-    assert "them" not in wiring["session"][0].audio
 
 
 def test_switching_applications_keeps_the_channel_and_moves_the_tap(wiring) -> None:
@@ -566,7 +555,7 @@ def test_switching_applications_keeps_the_channel_and_moves_the_tap(wiring) -> N
 
     assert them.transcriber is opened
     assert them.tap.application == "Brave"
-    assert wiring["session"][0].audio["them"] == "Brave"
+    assert them.current == "Brave"
 
 
 def test_dropping_the_application_closes_the_channel_it_had(wiring) -> None:
