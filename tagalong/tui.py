@@ -332,6 +332,59 @@ def _kv(rows: list[tuple[RenderableType, RenderableType]]) -> Table:
     return grid
 
 
+def empty_transcript_content() -> RenderableType:
+    """Welcome pane for an empty transcript, Grok-style mark + shortcuts.
+
+    Shown only until the first entry lands; the mark matches the sidebar logo.
+    """
+    # Header: brand mark beside the product line, like Grok's empty screen.
+    title = Text()
+    title.append("TagAlong", style="bold #cdd6e4")
+    title.append("\n")
+    title.append("Mic + meeting audio, with Taga in the room.", style="#6f757e")
+
+    header = Table.grid(padding=(0, 3))
+    header.add_column(no_wrap=True, vertical="middle")
+    header.add_column()
+    header.add_row(
+        Text.assemble(("T", "bold #cdd6e4"), ("»", "bold #6cc06c")),
+        title,
+    )
+
+    callout = Text()
+    callout.append("Ready when you are.\n", style="bold #d7b562")
+    callout.append(
+        "Speak, type below, or pick a meeting stream in the sidebar.",
+        style="#6f757e",
+    )
+
+    shortcuts = Table.grid(padding=(0, 6))
+    shortcuts.add_column(no_wrap=True)
+    shortcuts.add_column(justify="right", no_wrap=True)
+    for label, key in (
+        ("Cycle response policy", "^P"),
+        ("Mute microphone", "^K"),
+        ("Toggle voice reply", "^T"),
+        ("Interrupt Taga", "^X"),
+        ("Toggle sidebar", "^B"),
+        ("Save transcript", "^S"),
+        ("Send message", "↵"),
+    ):
+        shortcuts.add_row(
+            Text(label, style="#cdd6e4"),
+            Text(key, style="#5a6068"),
+        )
+
+    panel = Table.grid(padding=(0, 0, 1, 0))
+    panel.add_column()
+    panel.add_row(header)
+    panel.add_row(Text(""))
+    panel.add_row(callout)
+    panel.add_row(Text(""))
+    panel.add_row(shortcuts)
+    return panel
+
+
 # --------------------------------------------------------------------------
 # Widgets
 # --------------------------------------------------------------------------
@@ -607,8 +660,14 @@ class Transcript(VerticalScroll):
         self.post_message(moved())
 
 
-class Sidebar(Vertical):
-    """Live status column with one operational response-policy picker."""
+class Sidebar(VerticalScroll):
+    """Live status column with one operational response-policy picker.
+
+    Settings have grown past a short terminal height, so the column scrolls
+    rather than clipping the lower panels. A stable gutter keeps the bar in
+    its own right-hand lane so it does not paint over pickers. The whole
+    column can be hidden with ``Ctrl-B`` to give the transcript the width.
+    """
 
     def __init__(self, state: SessionState, hooks: TuiHooks, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -675,7 +734,7 @@ class Sidebar(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(id="panel-clock")
         with Vertical(id="policy-row"):
-            yield Static("AI agent responds to:", id="policy-label")
+            yield Static("Taga agent responds to:", id="policy-label")
             yield self._picker(
                 "policy-select", self._policy_options(), self.state.policy
             )
@@ -1008,9 +1067,12 @@ class Sidebar(Vertical):
         self.sync()
 
     def sync_clock(self) -> None:
-        """Show the application name at the top of the sidebar."""
+        """Show the application mark at the top of the sidebar."""
         self.query_one("#panel-clock", Static).update(
-            Text("TagAlong", style="bold #cdd6e4")
+            Text.assemble(
+                ("T", "bold #cdd6e4"),
+                ("»", "bold #6cc06c"),
+            )
         )
 
     def _audio_head(self) -> list[RenderableType]:
@@ -1125,12 +1187,19 @@ class VoiceCodexApp(App):
         text-align: center;
     }
 
+    #transcript-area { height: 1fr; }
     #transcript {
         height: 1fr;
         padding: 1 1 0 1;
         scrollbar-size-vertical: 1;
         scrollbar-background: #0f1113;
         scrollbar-color: #2f343b;
+    }
+    /* Sibling of the scroll view so entry mount order stays a pure window. */
+    #empty-transcript {
+        height: 1fr;
+        content-align: center middle;
+        color: #6f757e;
     }
     EntryRow { height: auto; margin-bottom: 1; }
     EntryRow > .transcript-entry { height: auto; }
@@ -1200,10 +1269,19 @@ class VoiceCodexApp(App):
 
     #sidebar {
         width: 34;
-        padding: 1;
+        height: 1fr;
+        /* Extra right padding so pickers sit clear of the scrollbar lane. */
+        padding: 1 2 1 1;
         border-left: solid #23272b;
         color: #9aa3ad;
+        overflow-y: auto;
+        /* Reserve a right-hand lane so the bar never covers pickers/labels. */
+        scrollbar-gutter: stable;
+        scrollbar-size-vertical: 1;
+        scrollbar-background: #0f1113;
+        scrollbar-color: #2f343b;
     }
+    #panel-clock { margin-bottom: 1; text-align: center; }
     #sidebar Static { height: auto; }
     /* The countdown alternates between a bar and nothing at all, and is
        repainted without a layout pass ten times a second. Pinning the row it
@@ -1233,7 +1311,6 @@ class VoiceCodexApp(App):
         color: #c96a5c;
     }
     #sidebar Checkbox.-on { color: #c96a5c; }
-    #panel-clock { margin-bottom: 1; }
     #model-row, #reasoning-row, #speech-row { height: auto; margin-bottom: 1; }
     #policy-row { height: auto; margin-bottom: 1; }
     #reasoning-label { color: #6f757e; }
@@ -1282,6 +1359,7 @@ class VoiceCodexApp(App):
         Binding("ctrl+t", "toggle_tts", "tts", priority=True),
         Binding("ctrl+x", "interrupt", "interrupt codex", priority=True),
         Binding("ctrl+s", "save", "save transcript", priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "sidebar", priority=True),
         Binding("escape", "revert_turn_silence", "revert turn silence", show=False),
     ]
 
@@ -1358,7 +1436,12 @@ class VoiceCodexApp(App):
         with Horizontal(id="body"):
             with Vertical(id="left"):
                 yield Static("TRANSCRIPT", id="transcript-label")
-                yield Transcript(id="transcript")
+                with Vertical(id="transcript-area"):
+                    yield Static(
+                        empty_transcript_content(),
+                        id="empty-transcript",
+                    )
+                    yield Transcript(id="transcript")
                 yield Static(id="partial")
                 with Horizontal(id="promptbar"):
                     yield Static(
@@ -1372,6 +1455,7 @@ class VoiceCodexApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#keys", Static).update(self._keys_text())
+        self._sync_empty_transcript()
         self._sync_partial()
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
@@ -1387,6 +1471,7 @@ class VoiceCodexApp(App):
             ("^K", "mute mic"),
             ("^T", "tts"),
             ("^X", "interrupt codex"),
+            ("^B", "sidebar"),
             ("/", "commands"),
         ]
         for index, (key, label) in enumerate(pairs):
@@ -1478,18 +1563,23 @@ class VoiceCodexApp(App):
 
     def add_entry(self, entry: Entry) -> EntryRow:
         entry.stamp = entry.stamp or self._stamp()
+        was_empty = not self.entries
         self.entries.append(entry)
         row = EntryRow(entry)
         if not self._tailing:
             # The view is held back in history. The entry is in the record and
             # will be mounted when the view returns to the live end; mounting
             # it now would grow the content under what is being read.
+            if was_empty:
+                self._sync_empty_transcript()
             return row
         transcript = self.query_one("#transcript", Transcript)
         transcript.mount(row)
         self._window.append(row)
         self._trim_rows()
         transcript.scroll_end(animate=False)
+        if was_empty:
+            self._sync_empty_transcript()
         return row
 
     def clear_transcript(self) -> None:
@@ -1504,6 +1594,14 @@ class VoiceCodexApp(App):
         self._window.clear()
         self._window_start = 0
         self._tailing = True
+        self._sync_empty_transcript()
+
+    def _sync_empty_transcript(self) -> None:
+        """Show the welcome pane only while the transcript has no entries."""
+        empty_session = not self.entries
+        with suppress(NoMatches):
+            self.query_one("#empty-transcript", Static).display = empty_session
+            self.query_one("#transcript", Transcript).display = not empty_session
 
     @property
     def _window_end(self) -> int:
@@ -1826,6 +1924,14 @@ class VoiceCodexApp(App):
         self.flush_stream()
         self.state.codex_state = "idle"
         self.refresh_sidebar()
+
+    def action_toggle_sidebar(self) -> None:
+        """Show or hide the whole settings column."""
+        sidebar = self.query_one("#sidebar", Sidebar)
+        sidebar.display = not sidebar.display
+        if not sidebar.display:
+            # Focus may have been on a sidebar picker; put it back on the prompt.
+            self.query_one("#input", PromptInput).focus()
 
     def action_save(self) -> None:
         if self.hooks.on_save:
