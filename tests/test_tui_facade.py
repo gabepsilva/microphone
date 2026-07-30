@@ -12,9 +12,8 @@ import threading
 
 from textual import events
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
-from textual.widgets import Input
 
-from tagalong.tui import EntryRow
+from tagalong.tui import EntryRow, PromptInput
 
 
 def drive(facade, body):
@@ -454,7 +453,7 @@ def test_a_slash_command_is_routed_to_the_command_hook(tui) -> None:
     facade = tui.VoiceCodexTUI(on_command=commands.append)
 
     async def body(pilot):
-        facade.app.query_one("#input", Input).value = "/save"
+        facade.app.query_one("#input", PromptInput).value = "/save"
         await pilot.press("enter")
         await pilot.pause()
 
@@ -465,10 +464,10 @@ def test_a_slash_command_is_routed_to_the_command_hook(tui) -> None:
 
 def test_blank_input_submits_nothing(tui) -> None:
     typed: list[str] = []
-    facade = tui.VoiceCodexTUI(on_user_text=typed.append)
+    facade = tui.VoiceCodexTUI(on_user_text=lambda message: typed.append(message.text))
 
     async def body(pilot):
-        facade.app.query_one("#input", Input).value = "   "
+        facade.app.query_one("#input", PromptInput).value = "   "
         await pilot.press("enter")
         await pilot.pause()
 
@@ -482,11 +481,11 @@ def test_clear_removes_typed_text_before_it_would_quit(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.app.query_one("#input", Input).value = "half typed"
+        facade.app.query_one("#input", PromptInput).value = "half typed"
         await pilot.press("ctrl+c")
         await pilot.pause()
 
-        assert facade.app.query_one("#input", Input).value == ""
+        assert facade.app.query_one("#input", PromptInput).value == ""
 
     drive(facade, body)
 

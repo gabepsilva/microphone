@@ -7,8 +7,6 @@ import os
 import threading
 from types import SimpleNamespace
 
-from textual.widgets import Input
-
 from tagalong import codex as codex_module
 from tagalong.cli import reset_codex_session
 from tagalong.codex import (
@@ -19,7 +17,7 @@ from tagalong.codex import (
 )
 from tagalong.commands import Command, CommandRouter
 from tagalong.domain import TEXT
-from tagalong.tui import VoiceCodexTUI
+from tagalong.tui import PromptInput, VoiceCodexTUI
 
 
 class FakeDisplay:
@@ -363,7 +361,7 @@ def test_new_command_clears_the_transcript_without_changing_controls() -> None:
             facade._app_thread = threading.get_ident()
             facade.commit(TEXT, "previous session")
             await pilot.pause()
-            facade.app.query_one("#input", Input).value = "/new"
+            facade.app.query_one("#input", PromptInput).value = "/new"
             await pilot.press("enter")
             await pilot.pause()
 

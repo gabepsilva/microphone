@@ -11,10 +11,20 @@ import pytest
 from rich.console import Console
 from textual.widgets import Checkbox, Input, Link, Select, Static
 
+from tagalong.attachments import ClipboardImage
+from tagalong.tui import PromptInput, PromptPorts
+
+
+class _NoImageClipboard:
+    def read_image(self) -> ClipboardImage | None:
+        return None
+
 
 def _rendered(renderable, width: int = 40) -> str:
     """Render a Rich renderable the way the sidebar would draw it."""
-    console = Console(width=width)
+    # Rich reads the real TTY size when one is attached, so width= alone does
+    # not pin Rule lines. An empty environ forces the explicit width.
+    console = Console(width=width, _environ={})
     with console.capture() as capture:
         console.print(renderable)
     return capture.get()
@@ -130,12 +140,12 @@ def test_textual_app_accepts_typed_input_and_records_a_transcript_entry(tui) -> 
     received: list[str] = []
     app = tui.VoiceCodexApp(
         tui.SessionState(),
-        tui.TuiHooks(on_user_text=received.append),
+        tui.TuiHooks(on_user_text=lambda message: received.append(message.text)),
     )
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            input_widget = app.query_one("#input", Input)
+            input_widget = app.query_one("#input", PromptInput)
             input_widget.value = "hello from test"
             await pilot.press("enter")
 
@@ -146,6 +156,149 @@ def test_textual_app_accepts_typed_input_and_records_a_transcript_entry(tui) -> 
     assert [(entry.source, entry.text) for entry in app.entries] == [
         (tui.TEXT, "hello from test")
     ]
+
+
+def test_shift_enter_inserts_a_newline_and_enter_submits_the_whole_message(
+    tui,
+) -> None:
+    """The prompt is multiline: Shift+Enter breaks a line, Enter sends it."""
+    received: list[str] = []
+    app = tui.VoiceCodexApp(
+        tui.SessionState(),
+        tui.TuiHooks(on_user_text=lambda message: received.append(message.text)),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            await pilot.press("a")
+            await pilot.press("shift+enter")
+            await pilot.press("b")
+            assert prompt.value == "a\nb"
+            assert prompt.styles.height.value == 2
+            # Enter must submit, not leave a third line in the field.
+            await pilot.press("enter")
+            assert prompt.value == ""
+
+    asyncio.run(exercise())
+    app._tick()
+
+    assert received == ["a\nb"]
+    assert [(entry.source, entry.text) for entry in app.entries] == [(tui.TEXT, "a\nb")]
+
+
+def test_enter_submits_without_inserting_a_newline(tui) -> None:
+    """Bare Enter is submit only — TextArea must not get a chance to insert \\n."""
+    received: list[str] = []
+    app = tui.VoiceCodexApp(
+        tui.SessionState(),
+        tui.TuiHooks(on_user_text=lambda message: received.append(message.text)),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.value = "one line"
+            prompt.focus()
+            await pilot.press("enter")
+            assert prompt.value == ""
+
+    asyncio.run(exercise())
+
+    assert received == ["one line"]
+
+
+def test_shift_enter_replaces_an_active_selection(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            prompt.value = "hello"
+            prompt.select_all()
+            await pilot.press("shift+enter")
+            # Selection was replaced by a single newline, not appended after it.
+            assert prompt.value == "\n"
+
+    asyncio.run(exercise())
+
+
+def test_count_visual_lines_counts_hard_breaks_and_soft_wrap() -> None:
+    from tagalong.tui import count_visual_lines
+
+    assert count_visual_lines("", 10) == 1
+    assert count_visual_lines("hi", 10) == 1
+    assert count_visual_lines("a\nb", 10) == 2
+    assert count_visual_lines("a\n\nb", 10) == 3
+    # 25 cells at width 10 → 3 rows.
+    assert count_visual_lines("x" * 25, 10) == 3
+    # Wide glyphs still wrap by cell width, not Python len.
+    assert count_visual_lines("中" * 5, 4) == 3
+
+
+def test_prompt_height_tracks_soft_wrap_not_just_hard_newlines(tui) -> None:
+    """A long unwrapped paragraph still grows the field via soft wrap."""
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.value = "word " * 40
+            await pilot.pause()
+            assert prompt.document.line_count == 1
+            assert prompt.visual_line_count() > 1
+            assert prompt.styles.height.value == min(
+                prompt.visual_line_count(), PromptInput.MAX_LINES
+            )
+
+    asyncio.run(exercise())
+
+
+def test_prompt_height_caps_at_max_lines_for_hard_breaks(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.value = "\n".join(f"line {i}" for i in range(12))
+            await pilot.pause()
+            assert prompt.document.line_count == 12
+            assert prompt.visual_line_count() >= PromptInput.MAX_LINES
+            assert prompt.styles.height.value == PromptInput.MAX_LINES
+
+    asyncio.run(exercise())
+
+
+def test_prompt_height_caps_at_max_lines_for_soft_wrap(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.value = "x" * 400
+            await pilot.pause()
+            assert prompt.visual_line_count() >= PromptInput.MAX_LINES
+            assert prompt.styles.height.value == PromptInput.MAX_LINES
+
+    asyncio.run(exercise())
+
+
+def test_insert_line_break_uses_public_apis(tui) -> None:
+    """insert_line_break is the supported path; call it without key events."""
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test():
+            prompt = app.query_one("#input", PromptInput)
+            prompt.value = "ab"
+            prompt.move_cursor((0, 1))
+            prompt.insert_line_break()
+            assert prompt.value == "a\nb"
+            assert prompt.styles.height.value == 2
+
+    asyncio.run(exercise())
 
 
 def test_response_picker_has_a_descriptive_label_above_it(tui) -> None:
@@ -350,8 +503,9 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
 def test_keyboard_shortcut_legend_includes_copy_paste_and_quit(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
 
-    assert app._keys_text().plain.endswith(
-        "^S save transcript  ^Q quit\n^⇧C copy  ^V paste"
+    legend = app._keys_text().plain
+    assert legend.endswith(
+        "^S save transcript  ^Q quit\n^⇧C copy  ^V paste text/image\n↵ send  ⇧↵ newline"
     )
 
 
@@ -364,7 +518,7 @@ def test_ctrl_c_clears_text_before_quitting_the_application(tui) -> None:
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            input_widget = app.query_one("#input", Input)
+            input_widget = app.query_one("#input", PromptInput)
             input_widget.value = "start over"
             await pilot.press("ctrl+c")
 
@@ -381,6 +535,7 @@ def test_ctrl_c_clears_text_before_quitting_the_application(tui) -> None:
 
 def test_ctrl_shift_c_copies_selected_transcript_rows_as_tabular_text(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+    app.prompt_ports = PromptPorts(clipboard=_NoImageClipboard())
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
@@ -398,20 +553,21 @@ def test_ctrl_shift_c_copies_selected_transcript_rows_as_tabular_text(tui) -> No
             assert app.clipboard == "13:40:46\tVoice\tcopy this"
 
             await pilot.press("ctrl+v")
-            assert app.query_one("#input", Input).value == app.clipboard
+            assert app.query_one("#input", PromptInput).value == app.clipboard
 
     asyncio.run(exercise())
 
 
 def test_ctrl_v_pastes_clipboard_text_into_the_input(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+    app.prompt_ports = PromptPorts(clipboard=_NoImageClipboard())
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
             app.copy_to_clipboard("pasted text")
             await pilot.press("ctrl+v")
 
-            assert app.query_one("#input", Input).value == "pasted text"
+            assert app.query_one("#input", PromptInput).value == "pasted text"
 
     asyncio.run(exercise())
 
@@ -1143,11 +1299,11 @@ def test_escape_outside_the_field_does_not_steal_the_key(tui) -> None:
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            app.query_one("#input", Input).value = "half typed"
-            app.query_one("#input", Input).focus()
+            app.query_one("#input", PromptInput).value = "half typed"
+            app.query_one("#input", PromptInput).focus()
             await pilot.press("escape")
             await pilot.pause()
-            seen["text"] = app.query_one("#input", Input).value
+            seen["text"] = app.query_one("#input", PromptInput).value
 
     asyncio.run(exercise())
 
