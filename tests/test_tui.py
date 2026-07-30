@@ -78,6 +78,72 @@ def test_sidebar_links_to_the_github_repository(tui) -> None:
     asyncio.run(exercise())
 
 
+def test_sidebar_scrolls_when_its_content_overflows(tui) -> None:
+    """A short terminal must not clip lower sidebar panels permanently."""
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        # Short enough that the full settings column cannot fit.
+        async with app.run_test(size=(100, 20)):
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            assert isinstance(sidebar, tui.VerticalScroll)
+            assert sidebar.virtual_size.height > sidebar.container_size.height
+            assert sidebar.max_scroll_y > 0
+            # Stable gutter reserves a right-hand lane instead of overlaying.
+            assert sidebar.styles.scrollbar_gutter == "stable"
+            assert sidebar.scrollbar_size_vertical == 1
+
+    asyncio.run(exercise())
+
+
+def test_empty_transcript_shows_a_welcome_until_the_first_entry(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+    welcome = _rendered(tui.empty_transcript_content())
+    assert "TagAlong" in welcome
+    assert "Ready when you are." in welcome
+    assert "T»" in welcome
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 30)):
+            empty = app.query_one("#empty-transcript", Static)
+            transcript = app.query_one("#transcript", tui.Transcript)
+
+            assert empty.display is True
+            assert transcript.display is False
+
+            app.add_entry(tui.Entry(kind="note", text="first"))
+            assert empty.display is False
+            assert transcript.display is True
+
+            app.clear_transcript()
+            assert empty.display is True
+            assert transcript.display is False
+
+    asyncio.run(exercise())
+
+
+def test_sidebar_toggles_with_ctrl_b(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 20)) as pilot:
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+            left = app.query_one("#left")
+            assert sidebar.display is True
+            left_width_with_sidebar = left.size.width
+
+            await pilot.press("ctrl+b")
+            assert sidebar.display is False
+            # Transcript column takes the width the sidebar freed.
+            assert left.size.width > left_width_with_sidebar
+
+            await pilot.press("ctrl+b")
+            assert sidebar.display is True
+            assert left.size.width == left_width_with_sidebar
+
+    asyncio.run(exercise())
+
+
 def test_the_sound_dot_shows_whether_a_channel_hears_anything(tui) -> None:
     assert tui.sound_dot(True).plain == tui.SOUND_ON
     assert tui.sound_dot(False).plain == tui.SOUND_OFF
@@ -307,7 +373,7 @@ def test_response_picker_has_a_descriptive_label_above_it(tui) -> None:
             label = app.query_one("#policy-label", Static)
             picker = app.query_one("#policy-select", Select)
 
-            assert str(label.render()) == "AI agent responds to:"
+            assert str(label.render()) == "Taga agent responds to:"
             assert label.parent is picker.parent
 
     asyncio.run(exercise())
@@ -502,6 +568,7 @@ def test_keyboard_shortcut_legend_includes_copy_paste_and_quit(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
 
     legend = app._keys_text().plain
+    assert "^B sidebar" in legend
     assert legend.endswith(
         "^S save transcript  ^Q quit\n^⇧C copy  ^V paste text/image\n↵ send  ⇧↵ newline"
     )
@@ -570,7 +637,7 @@ def test_ctrl_v_pastes_clipboard_text_into_the_input(tui) -> None:
     asyncio.run(exercise())
 
 
-def test_sidebar_shows_the_app_name_at_the_top(tui) -> None:
+def test_sidebar_shows_the_app_mark_at_the_top(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
     rendered: list[str] = []
 
@@ -583,7 +650,7 @@ def test_sidebar_shows_the_app_name_at_the_top(tui) -> None:
 
     asyncio.run(exercise())
 
-    assert any("TagAlong" in line for line in rendered), rendered
+    assert any("T»" in line for line in rendered), rendered
 
 
 def test_transcript_stamp_uses_local_wall_clock_time(tui) -> None:
