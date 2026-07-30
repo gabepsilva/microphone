@@ -671,7 +671,18 @@ def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
     )
 
 
-def test_a_fork_re_arms_the_warm_up_and_leaves_nothing_pending(conversation) -> None:
+def test_a_fork_re_arms_the_warm_up_and_leaves_nothing_pending(
+    quiet_conversation,
+) -> None:
+    """Driven explicitly: a live worker clears the flag this asserts on.
+
+    ``_worker`` re-arms nothing, but it does consume — it calls
+    ``_apply_pending_settings`` and then ``_warm_up``, which sets
+    ``warmup_pending`` back to False. Against the live fixture this passed only
+    while the main thread got there first, and a loaded runner is where it does
+    not.
+    """
+    conversation = quiet_conversation
     conversation.request_model("gpt-5.6-nova")
     conversation.request_reasoning_effort("high")
 
