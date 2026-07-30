@@ -97,7 +97,7 @@ addopts = [
     "--strict-config",
     "--strict-markers",
     "--tb=short",
-    "--cov-fail-under=88",
+    "--cov-fail-under=95",
 ]
 testpaths = ["tests"]
 filterwarnings = ["error"]
@@ -108,7 +108,7 @@ source = ["."]
 omit = [".venv/*", ".venv-moonshine/*", "tests/*"]
 
 [tool.coverage.report]
-fail_under = 88
+fail_under = 95
 show_missing = true
 skip_empty = true
 
