@@ -551,8 +551,11 @@ def remembering(hook, config, key, encode=lambda value: value):
 
 def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     """Point the interface's controls at the conversation, its speech, and disk."""
-    tui.hooks.on_user_text = lambda text: conversation.ingest(
-        "Text", text, respond=True
+    tui.hooks.on_user_text = lambda message: conversation.ingest(
+        "Text",
+        message.text,
+        respond=True,
+        images=message.images,
     )
     tui.hooks.on_interrupt = conversation.interrupt
     commands = CommandRouter(tui)

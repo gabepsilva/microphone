@@ -19,6 +19,19 @@ AUDIO = "Audio"
 TAGA = "Taga"
 
 
+@dataclass(frozen=True, slots=True)
+class UserTextMessage:
+    """A typed Text turn, optionally carrying pasted image files.
+
+    ``images`` holds absolute filesystem paths for files staged while the user
+    composed the message. Tokens like ``[Image #1]`` in ``text`` are the
+    human-facing handles; the paths are what Codex receives as local inputs.
+    """
+
+    text: str
+    images: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class ResponsePolicy:
     """The completed voice turns that are allowed to trigger a reply.
@@ -556,11 +569,18 @@ class SpeakerGate:
 
 @dataclass(frozen=True)
 class TranscriptEntry:
-    """One transcript item sent to Codex with its capture timestamp."""
+    """One transcript item sent to Codex with its capture timestamp.
+
+    ``images`` holds absolute filesystem paths for files attached to this
+    entry (typed Text only, today). Tokens like ``[Image #1]`` in ``text``
+    are human-facing handles. Paths are attached to the Codex turn as local
+    image inputs and are not serialised into the text prompt.
+    """
 
     speaker: str
     text: str
     timestamp: str
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -588,9 +608,16 @@ class TranscriptRouter:
     max_pending_context: int = MAX_PENDING_CONTEXT
 
     def ingest(
-        self, speaker: str, text: str, timestamp: str, respond: bool
+        self,
+        speaker: str,
+        text: str,
+        timestamp: str,
+        respond: bool,
+        images: tuple[str, ...] = (),
     ) -> CodexRequest | None:
-        self.pending_context.append(TranscriptEntry(speaker, text, timestamp))
+        self.pending_context.append(
+            TranscriptEntry(speaker, text, timestamp, images=tuple(images))
+        )
         if not respond:
             del self.pending_context[: -self.max_pending_context]
             return None
@@ -598,7 +625,13 @@ class TranscriptRouter:
         self.pending_context.clear()
         return request
 
-    def speculate(self, speaker: str, text: str, timestamp: str) -> CodexRequest:
+    def speculate(
+        self,
+        speaker: str,
+        text: str,
+        timestamp: str,
+        images: tuple[str, ...] = (),
+    ) -> CodexRequest:
         """Build a reply request without consuming the context behind it.
 
         A speculative turn is abandoned whenever the speaker turns out not to
@@ -606,7 +639,9 @@ class TranscriptRouter:
         lossless: giving up is simply never calling ``commit``, and the next
         request carries everything this one would have.
         """
-        self.pending_context.append(TranscriptEntry(speaker, text, timestamp))
+        self.pending_context.append(
+            TranscriptEntry(speaker, text, timestamp, images=tuple(images))
+        )
         return CodexRequest(speaker, tuple(self.pending_context))
 
     def commit(self, request: CodexRequest) -> None:

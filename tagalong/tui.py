@@ -28,6 +28,7 @@ from typing import ClassVar, cast
 os.environ.pop("TEXTUAL_ALLOW_SIGNALS", None)
 os.environ.pop("TEXTUAL_DISABLE_KITTY_KEY", None)
 
+from rich.cells import cell_len
 from rich.console import Group, RenderableType
 from rich.rule import Rule
 from rich.table import Table
@@ -40,14 +41,22 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
-from textual.widgets import Checkbox, Input, Link, Select, Static
+from textual.widget import Widget
+from textual.widgets import Checkbox, Input, Link, Select, Static, TextArea
 
+from .attachments import (
+    DEFAULT_IMAGE_CLIPBOARD,
+    AttachmentStore,
+    DraftAttachments,
+    ImageClipboard,
+)
 from .domain import (
     AUDIO,
     RESPONSE_POLICIES,
     TAGA,
     TEXT,
     VOICE,
+    UserTextMessage,
     parse_turn_silence,
 )
 from .speech import (
@@ -57,6 +66,15 @@ from .speech import (
     PROVIDER_LABELS,
     default_voice,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PromptPorts:
+    """Injectable clipboard and store for the prompt (tests override these)."""
+
+    clipboard: ImageClipboard = field(default_factory=lambda: DEFAULT_IMAGE_CLIPBOARD)
+    store: AttachmentStore = field(default_factory=AttachmentStore)
+
 
 # The picker's own name for transcribing nothing. A Select needs a value for
 # every entry and None is not one, so it is spelled rather than left out. The
@@ -173,7 +191,7 @@ class SessionState:
 class TuiHooks:
     """Callbacks the host script supplies. Every one is optional."""
 
-    on_user_text: Callable[[str], None] | None = None
+    on_user_text: Callable[[UserTextMessage], None] | None = None
     on_command: Callable[[str], None] | None = None
     on_policy: Callable[[str], None] | None = None
     on_codex_model: Callable[[str], bool | None] | None = None
@@ -317,6 +335,202 @@ def _kv(rows: list[tuple[RenderableType, RenderableType]]) -> Table:
 # --------------------------------------------------------------------------
 # Widgets
 # --------------------------------------------------------------------------
+
+
+def count_visual_lines(text: str, width: int) -> int:
+    """How many terminal rows ``text`` needs at ``width`` columns.
+
+    Counts hard newlines and soft-wraps each line by display cell width so a
+    long unwrapped paragraph still grows the prompt. Pure and layout-free so
+    tests (and early mount, before TextArea has a wrap width) stay deterministic.
+    """
+    columns = max(1, width)
+    if text == "":
+        return 1
+    rows = 0
+    for line in text.split("\n"):
+        if line == "":
+            rows += 1
+            continue
+        cells = cell_len(line)
+        rows += max(1, (cells + columns - 1) // columns)
+    return rows
+
+
+class PromptInput(TextArea):
+    """Multiline chat prompt: Enter submits, Shift+Enter inserts a newline.
+
+    Textual's :class:`Input` is single-line, so Shift cannot break a line there.
+    This prompt is a compact :class:`TextArea` that keeps the same ``value``
+    surface the rest of the app and tests already use.
+
+    Image paste is owned here: the OS clipboard port, on-disk store, and draft
+    token map live on the widget so it does not reach into the application.
+    """
+
+    # Tall enough for a short paragraph; short enough that the transcript still
+    # owns the screen. Height tracks *visual* rows (hard breaks and soft wrap).
+    MAX_LINES = 8
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        # priority=True so this runs before TextArea's key handler can insert "\n".
+        # Enter is handled only here — not also in _on_key.
+        Binding("enter", "submit", "Submit", show=False, priority=True),
+        # Replaces TextArea's paste so OS clipboard images can become tokens.
+        Binding("ctrl+v", "paste_or_image", "Paste", show=False),
+    ]
+
+    class Submitted(Message):
+        """Posted when Enter submits the prompt (not Shift+Enter)."""
+
+        def __init__(self, prompt: PromptInput, message: UserTextMessage) -> None:
+            self.prompt = prompt
+            self.message = message
+            super().__init__()
+
+        @property
+        def value(self) -> str:
+            return self.message.text
+
+        @property
+        def images(self) -> tuple[str, ...]:
+            return self.message.images
+
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+        disabled: bool = False,
+        ports: PromptPorts | None = None,
+    ) -> None:
+        super().__init__(
+            soft_wrap=True,
+            show_line_numbers=False,
+            compact=True,
+            highlight_cursor_line=False,
+            tab_behavior="focus",
+            name=name,
+            id=id,
+            classes=classes,
+            disabled=disabled,
+        )
+        resolved = ports if ports is not None else PromptPorts()
+        self.clipboard_port: ImageClipboard = resolved.clipboard
+        self.store = resolved.store
+        self.draft = DraftAttachments()
+
+    @property
+    def value(self) -> str:
+        """Text content, named like :class:`Input` so call sites stay uniform."""
+        return self.text
+
+    @value.setter
+    def value(self, value: str) -> None:
+        self.text = value
+        self.fit_height()
+
+    def on_mount(self) -> None:
+        self.fit_height()
+
+    def clear_draft(self) -> None:
+        """Empty the field and drop staged attachment tokens."""
+        self.value = ""
+        self.draft.clear()
+
+    def action_submit(self) -> None:
+        message = UserTextMessage(
+            text=self.text,
+            images=self.draft.resolve(self.text),
+        )
+        self.post_message(self.Submitted(self, message))
+
+    def action_paste_or_image(self) -> None:
+        """Paste an OS clipboard image as ``[Image #N]``, else paste text.
+
+        OS images are tried first: a screenshot on the system clipboard is
+        almost always what Ctrl+V means after a capture tool runs. When no
+        image is present, fall through to Textual's text paste (in-app copy
+        and bracketed terminal paste).
+        """
+        if self.paste_image_from_clipboard():
+            return
+        self.action_paste()
+        self.fit_height()
+
+    def paste_image_from_clipboard(self) -> bool:
+        """Stage a clipboard image and insert its token. Return whether one landed."""
+        if self.read_only:
+            return False
+        image = self.clipboard_port.read_image()
+        if image is None:
+            return False
+        try:
+            path = self.store.save(image)
+        except ValueError:
+            return False
+        token = self.draft.add(path)
+        self.insert(token)
+        self.fit_height()
+        return True
+
+    def insert_line_break(self) -> None:
+        """Insert a newline at the cursor, replacing any active selection.
+
+        Uses only public TextArea APIs so a Textual upgrade cannot break us by
+        renaming a private keyboard helper.
+        """
+        start, end = self.selection
+        if start != end:
+            self.delete(start, end)
+        self.insert("\n")
+        self.fit_height()
+
+    def on_text_area_changed(self, _event: TextArea.Changed) -> None:
+        self.fit_height()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        # Width changes reflow soft wrap; remeasure so height follows.
+        self.fit_height()
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "shift+enter":
+            if self.read_only:
+                return
+            # Bare enter is a priority binding (submit). Shift+enter is not a
+            # TextArea insert by default, so we add the break ourselves.
+            event.stop()
+            event.prevent_default()
+            self.insert_line_break()
+            return
+        await super()._on_key(event)
+
+    def wrap_columns(self) -> int:
+        """Column budget used to estimate soft-wrapped height.
+
+        Prefer TextArea's own wrap width once layout has assigned one. Fall
+        back to the widget or parent width so we still grow before the first
+        full rewrap, and to a sane default when the test harness leaves the
+        field one cell wide.
+        """
+        if self.wrap_width > 1:
+            return self.wrap_width
+        if self.size.width > 1:
+            return self.size.width
+        parent = self.parent
+        if isinstance(parent, Widget) and parent.size.width > 1:
+            return max(1, parent.size.width - 2)
+        return 40
+
+    def visual_line_count(self) -> int:
+        """How many terminal rows the content occupies, including soft wrap."""
+        return count_visual_lines(self.text, self.wrap_columns())
+
+    def fit_height(self) -> None:
+        """Grow with visual rows, capped so the transcript keeps the floor."""
+        lines = max(1, min(self.visual_line_count(), self.MAX_LINES))
+        self.styles.height = lines
 
 
 class EntryRow(Vertical):
@@ -949,17 +1163,25 @@ class VoiceCodexApp(App):
         border-top: solid #23272b;
     }
 
-    #promptbar { height: 1; padding: 0 1; }
+    #promptbar {
+        height: auto;
+        min-height: 1;
+        padding: 0 1;
+        align: left top;
+    }
     #prompt-mark { width: 2; color: #6f757e; }
     #input {
         width: 1fr;
         height: 1;
+        min-height: 1;
+        max-height: 8;
         border: none;
         padding: 0;
         background: #0f1113;
         color: #cdd6e4;
     }
     #input:focus { border: none; background: #0f1113; }
+    #input .text-area--cursor-line { background: #0f1113; }
     #input-hint { width: auto; color: #5a6068; }
     #silence-row { height: auto; }
     #silence-label { width: 13; color: #6f757e; }
@@ -975,7 +1197,7 @@ class VoiceCodexApp(App):
     #silence-unit { width: auto; color: #6f757e; }
 
     #keys {
-        height: 5;
+        height: 6;
         padding: 1 1 0 1;
         color: #6f757e;
         border-top: solid #23272b;
@@ -1131,6 +1353,9 @@ class VoiceCodexApp(App):
         self._window: list[EntryRow] = []
         self._window_start = 0
         self._tailing = True
+        # Injectable for tests; production uses the system clipboard and the
+        # TagAlong attachments cache. The prompt widget holds the live draft.
+        self.prompt_ports = PromptPorts()
 
     # -- layout ------------------------------------------------------------
 
@@ -1145,7 +1370,7 @@ class VoiceCodexApp(App):
                         "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}",
                         id="prompt-mark",
                     )
-                    yield Input(id="input")
+                    yield PromptInput(id="input", ports=self.prompt_ports)
                     yield Static("Text always gets a reply", id="input-hint")
                 yield Static(id="keys")
             yield Sidebar(self.state, self.hooks, id="sidebar")
@@ -1157,7 +1382,7 @@ class VoiceCodexApp(App):
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.set_interval(self.STREAM_FLUSH_INTERVAL_SECONDS, self.flush_stream)
-        self.query_one("#input", Input).focus()
+        self.query_one("#input", PromptInput).focus()
 
     # -- chrome ------------------------------------------------------------
 
@@ -1186,7 +1411,13 @@ class VoiceCodexApp(App):
         keys.append(" copy")
         keys.append("  ")
         keys.append("^V", style="#9aa3ad")
-        keys.append(" paste")
+        keys.append(" paste text/image")
+        keys.append("\n")
+        keys.append("↵", style="#9aa3ad")
+        keys.append(" send")
+        keys.append("  ")
+        keys.append("⇧↵", style="#9aa3ad")
+        keys.append(" newline")
         return keys
 
     def _sync_partial(self) -> None:
@@ -1480,9 +1711,9 @@ class VoiceCodexApp(App):
     # -- actions -----------------------------------------------------------
 
     def action_clear_input_or_quit(self) -> None:
-        input_widget = self.query_one("#input", Input)
-        if input_widget.value:
-            input_widget.value = ""
+        prompt = self.query_one("#input", PromptInput)
+        if prompt.value or prompt.draft:
+            prompt.clear_draft()
             return
         self.action_quit_app()
 
@@ -1507,7 +1738,7 @@ class VoiceCodexApp(App):
         self.state.turn_silence = applied
         field.value = format_seconds(applied)
         self.refresh_sidebar()
-        self.query_one("#input", Input).focus()
+        self.query_one("#input", PromptInput).focus()
 
     def action_revert_turn_silence(self) -> None:
         """Put the field back to the window in force, and leave it."""
@@ -1516,14 +1747,16 @@ class VoiceCodexApp(App):
             raise SkipAction
         field.remove_class("invalid")
         field.value = format_seconds(self.state.turn_silence)
-        self.query_one("#input", Input).focus()
+        self.query_one("#input", PromptInput).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "silence-input":
             self._apply_turn_silence(event.value)
-            return
-        text = event.value.strip()
-        event.input.value = ""
+
+    def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
+        text = event.message.text.strip()
+        images = event.message.images
+        event.prompt.clear_draft()
         if not text:
             return
         if text.startswith("/"):
@@ -1534,7 +1767,7 @@ class VoiceCodexApp(App):
             return
         self.add_entry(Entry(kind="speech", source=TEXT, text=text))
         if self.hooks.on_user_text:
-            self.hooks.on_user_text(text)
+            self.hooks.on_user_text(UserTextMessage(text=text, images=images))
 
     def action_cycle_policy(self) -> None:
         order = list(POLICIES)

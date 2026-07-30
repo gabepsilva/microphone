@@ -21,7 +21,7 @@ import pytest
 
 from tagalong import cli
 from tagalong.catalog import CodexModelOption
-from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator
+from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator, UserTextMessage
 from tagalong.tui import SessionState
 
 MIC = {"name": "Yeti"}
@@ -113,8 +113,8 @@ class FakeConversation:
         self.latency = TurnLatencyEstimator()
         self.prefired = []
 
-    def ingest(self, speaker, text, respond):
-        self.ingested.append((speaker, text, respond))
+    def ingest(self, speaker, text, respond, images=()):
+        self.ingested.append((speaker, text, respond, images))
 
     def prefire(self, speaker, text):
         self.prefired.append((speaker, text))
@@ -514,9 +514,9 @@ def test_a_session_without_an_input_device_still_reaches_the_interface(wiring) -
 
     assert channels == []
     assert tui.session_state.microphone is None
-    tui.hooks.on_user_text("typed while the microphone is absent")
+    tui.hooks.on_user_text(UserTextMessage("typed while the microphone is absent"))
     assert conversation.ingested == [
-        ("Text", "typed while the microphone is absent", True)
+        ("Text", "typed while the microphone is absent", True, ())
     ]
 
 
@@ -653,9 +653,9 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
     cli.main()
     tui, _, conversation = wiring["session"]
 
-    tui.hooks.on_user_text("what time is it?")
+    tui.hooks.on_user_text(UserTextMessage("what time is it?"))
 
-    assert conversation.ingested == [("Text", "what time is it?", True)]
+    assert conversation.ingested == [("Text", "what time is it?", True, ())]
 
 
 def test_a_session_without_speech_reports_that_it_cannot_be_switched_on(
