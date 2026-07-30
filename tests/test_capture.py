@@ -827,3 +827,71 @@ def test_a_microphone_that_cannot_open_restores_the_previous_stream(
     assert previous.events == ["stop", "start"]
     assert rejected.events == ["close"]
     assert transcriber._should_listen is True
+
+
+def test_releasing_a_microphone_stops_and_forgets_its_portaudio_stream(
+    monkeypatch,
+) -> None:
+    """An abandoned stream is what made microphone switches crash later."""
+    from tagalong.capture import release_microphone_input
+
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    stream = FakeInputStream()
+    transcriber._sd_stream = stream
+
+    release_microphone_input(transcriber)
+
+    assert stream.events == ["stop", "close"]
+    assert transcriber._sd_stream is None
+
+
+def test_releasing_a_microphone_without_a_stream_is_a_no_op(monkeypatch) -> None:
+    from tagalong.capture import release_microphone_input
+
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    transcriber._sd_stream = None
+
+    release_microphone_input(transcriber)
+
+    assert transcriber._sd_stream is None
+
+
+def test_switching_without_a_prior_stream_opens_the_new_one(monkeypatch) -> None:
+    """A channel that never opened still has to land on the requested device."""
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    replacement = FakeInputStream()
+    transcriber._device = 1
+    transcriber._sd_stream = None
+    transcriber._should_listen = False
+
+    def open_replacement():
+        transcriber._sd_stream = replacement
+        replacement.start()
+
+    transcriber._start_listening = open_replacement
+
+    transcriber.switch_device(2)
+
+    assert transcriber._device == 2
+    assert transcriber._sd_stream is replacement
+    assert replacement.events == ["start"]
+    assert transcriber._should_listen is True
+
+
+def test_a_failed_switch_without_a_prior_stream_stays_closed(monkeypatch) -> None:
+    transcriber = metered_mic(monkeypatch, RecordingReporter())
+    transcriber._device = 1
+    transcriber._sd_stream = None
+    transcriber._should_listen = False
+
+    def reject_replacement():
+        raise RuntimeError("device busy")
+
+    transcriber._start_listening = reject_replacement
+
+    with pytest.raises(RuntimeError, match="device busy"):
+        transcriber.switch_device(2)
+
+    assert transcriber._device == 1
+    assert transcriber._sd_stream is None
+    assert transcriber._should_listen is True

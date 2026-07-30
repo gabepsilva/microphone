@@ -41,6 +41,7 @@ from .capture import (
     CaptureSettings,
     SoundActivityReporter,
     metered_mic_transcriber,
+    release_microphone_input,
 )
 from .catalog import probe_codex_models
 from .choosers import NO_AUDIO_STREAM, input_devices
@@ -245,8 +246,15 @@ def open_microphone_channel(parts, activity, presence, device_index):
 
 
 def close_microphone_channel(parts, transcriber, listener):
-    """Retire one microphone without leaving its listener registered."""
+    """Retire one microphone without leaving its listener registered.
+
+    Capture is stopped first, then the PortAudio stream is released before the
+    model is closed. Leaving the stream alive is what turns a microphone
+    switch into a delayed crash: the callback keeps firing into a freed
+    Moonshine model until the process dies.
+    """
     transcriber.stop()
+    release_microphone_input(transcriber)
     listener.close()
     transcriber.close()
     parts.submitter.remove_listener(listener)
@@ -343,7 +351,13 @@ class MicrophoneChannel:
             self.wake.clear()
 
     def reconcile(self):
-        """Make the open capture channel agree with the newest available choice."""
+        """Make the open capture channel agree with the newest available choice.
+
+        Moving between two live devices retargets the existing capture — only
+        the PortAudio stream is reopened — so Moonshine stays loaded and the
+        old callback is torn down cleanly. Building from scratch (or retiring
+        entirely) is reserved for going to or from no microphone at all.
+        """
         with self.lock:
             wanted = self.desired
             if wanted == self.current:
@@ -354,8 +368,27 @@ class MicrophoneChannel:
             selected = self.devices.get(wanted)
             if selected is None:
                 return
-            self._retire()
-            self._open(*selected)
+            index, device = selected
+            if self.transcriber is not None:
+                self._retarget(index, device)
+                return
+            self._open(index, device)
+
+    def _retarget(self, device_index, device):
+        """Point the live capture at another input without reloading the model."""
+        transcriber = self.transcriber
+        if transcriber is None:
+            return
+        try:
+            transcriber.switch_device(device_index)
+        except Exception as error:
+            message = f"could not listen to {device['name']}: {error}"
+            if message != self._open_error:
+                self.tui.note(message)
+                self._open_error = message
+            return
+        self._open_error = None
+        self.current = device["name"]
 
     def _open(self, device_index, device):
         transcriber = None
