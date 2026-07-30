@@ -591,7 +591,7 @@ class PromptInput(TextArea):
 
 
 class CommandPalette(Static):
-    """Slash-command menu that floats above the prompt.
+    """Slash-command menu that drops down from the prompt over the key hints.
 
     Selection and visibility live here. Filtering is pure
     (:func:`tagalong.commands.match_commands`); the host supplies the catalog
@@ -1330,14 +1330,15 @@ class VoiceCodexApp(App):
         border-top: solid #23272b;
     }
 
-    /* Sits above the prompt; collapses when closed so the transcript keeps
-       its floor. Open/closed is driven by Widget.display, not a CSS class. */
+    /* Drops down from the prompt over the shortcut strip. Closed state is
+       Widget.display=False so the keys row keeps its usual floor. */
     #command-palette {
         height: auto;
         max-height: 10;
         padding: 0 1;
         background: #141719;
         border-top: solid #2f343b;
+        border-bottom: solid #2f343b;
         color: #9aa3ad;
     }
 
@@ -1564,7 +1565,6 @@ class VoiceCodexApp(App):
                     )
                     yield Transcript(id="transcript")
                 yield Static(id="partial")
-                yield CommandPalette(id="command-palette")
                 with Horizontal(id="promptbar"):
                     yield Static(
                         "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}",
@@ -1572,6 +1572,8 @@ class VoiceCodexApp(App):
                     )
                     yield PromptInput(id="input", ports=self.prompt_ports)
                     yield Static("Text always gets a reply", id="input-hint")
+                # Expands downward over the shortcut strip while open.
+                yield CommandPalette(id="command-palette")
                 yield Static(id="keys")
             yield Sidebar(self.state, self.hooks, id="sidebar")
 
@@ -1942,6 +1944,15 @@ class VoiceCodexApp(App):
             return palette.is_open and prompt.has_focus
         return False
 
+    def _set_keys_visible(self, visible: bool) -> None:
+        """Show or hide the shortcut strip under the prompt.
+
+        The palette occupies that space while open so the menu expands down
+        over the key hints rather than shoving the transcript up.
+        """
+        with suppress(NoMatches):
+            self.query_one("#keys", Static).display = visible
+
     def _sync_command_palette(self, text: str) -> None:
         """Open, filter, or close the palette from the current prompt text."""
         try:
@@ -1951,12 +1962,16 @@ class VoiceCodexApp(App):
         query = command_query(text)
         catalog = self._command_catalog()
         if query is None or not catalog:
+            was_open = palette.is_open
             palette.close()
+            if was_open:
+                self._set_keys_visible(True)
             return
         prefer = None
         if palette.is_open and (selected := palette.selected()) is not None:
             prefer = selected.name
         palette.show(match_commands(catalog, query), prefer=prefer)
+        self._set_keys_visible(False)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "input":
@@ -1990,6 +2005,7 @@ class VoiceCodexApp(App):
             palette = self.query_one("#command-palette", CommandPalette)
             if palette.is_open:
                 palette.close()
+                self._set_keys_visible(True)
                 return
         self.action_revert_turn_silence()
 
@@ -2040,6 +2056,7 @@ class VoiceCodexApp(App):
             if palette.is_open:
                 selected = palette.selected()
                 palette.close()
+                self._set_keys_visible(True)
                 if selected is not None:
                     text = f"/{selected.name}"
         if not text:
