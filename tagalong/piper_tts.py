@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Speak Codex responses through Piper, locally, one sentence at a time.
+"""Speak Taga's responses through Piper, locally, one sentence at a time.
 
 Nothing here prefetches. Piper synthesizes a sentence about thirty times
 faster than the sentence takes to say, so the queue is never the thing the

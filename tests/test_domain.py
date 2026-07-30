@@ -37,10 +37,10 @@ class FakeClock:
 @pytest.mark.parametrize(
     ("requested", "label", "speakers"),
     [
-        ("them", "Them", frozenset({"Them"})),
-        ("both", "User Voice and Them", frozenset({"User Voice", "Them"})),
-        ("user", "User Voice", frozenset({"User Voice"})),
-        ("quiet", "Codex will be quiet for voice", frozenset()),
+        ("audio", "Audio", frozenset({"Audio"})),
+        ("both", "Voice and Audio", frozenset({"Voice", "Audio"})),
+        ("voice", "Voice", frozenset({"Voice"})),
+        ("quiet", "Taga will be quiet for voice", frozenset()),
     ],
 )
 def test_response_policy_mapping(requested, label, speakers) -> None:
@@ -239,37 +239,37 @@ def test_a_quiet_channel_is_not_talking_whatever_the_suppressors_say() -> None:
 
 
 def test_speaker_gate_answers_only_the_selected_speakers() -> None:
-    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
 
-    assert gate.should_respond("Them")
-    assert not gate.should_respond("User Voice")
+    assert gate.should_respond("Audio")
+    assert not gate.should_respond("Voice")
 
     gate.set_policy("both")
 
-    assert gate.should_respond("Them")
-    assert gate.should_respond("User Voice")
+    assert gate.should_respond("Audio")
+    assert gate.should_respond("Voice")
 
 
 def test_speaker_gate_never_answers_a_speaker_this_session_lacks() -> None:
-    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice"})
+    gate = SpeakerGate({"Voice", "Audio"}, {"Voice"})
 
-    assert gate.active == frozenset({"User Voice"})
-    assert not gate.should_respond("Them")
+    assert gate.active == frozenset({"Voice"})
+    assert not gate.should_respond("Audio")
 
-    gate.set_policy("them")
+    gate.set_policy("audio")
 
     assert gate.active == frozenset()
-    assert not gate.should_respond("Them")
-    assert not gate.should_respond("User Voice")
+    assert not gate.should_respond("Audio")
+    assert not gate.should_respond("Voice")
 
 
 def test_speaker_gate_quiet_policy_answers_nobody() -> None:
-    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Voice", "Audio"}, {"Voice", "Audio"})
 
     gate.set_policy("quiet")
 
-    assert not gate.should_respond("User Voice")
-    assert not gate.should_respond("Them")
+    assert not gate.should_respond("Voice")
+    assert not gate.should_respond("Audio")
 
 
 COMMON_SEVEN = "alpha bravo charlie delta echo foxtrot golf"
@@ -467,18 +467,18 @@ def test_transcript_router_keeps_context_until_a_reply_is_requested() -> None:
     router = TranscriptRouter()
 
     assert (
-        router.ingest("Them", "Could you help?", "2026-07-26T12:00:00-04:00", False)
+        router.ingest("Audio", "Could you help?", "2026-07-26T12:00:00-04:00", False)
         is None
     )
-    request = router.ingest("User Voice", "Yes", "2026-07-26T12:00:03-04:00", True)
+    request = router.ingest("Voice", "Yes", "2026-07-26T12:00:03-04:00", True)
 
     assert request is not None
-    assert request.reply_to == "User Voice"
+    assert request.reply_to == "Voice"
     assert [
         (entry.speaker, entry.text, entry.timestamp) for entry in request.entries
     ] == [
-        ("Them", "Could you help?", "2026-07-26T12:00:00-04:00"),
-        ("User Voice", "Yes", "2026-07-26T12:00:03-04:00"),
+        ("Audio", "Could you help?", "2026-07-26T12:00:00-04:00"),
+        ("Voice", "Yes", "2026-07-26T12:00:03-04:00"),
     ]
     assert router.pending_context == []
 
@@ -497,7 +497,7 @@ def test_nothing_is_counting_down_before_a_turn_starts() -> None:
 def test_a_started_turn_counts_down_the_full_window() -> None:
     countdown, _ = silence_clock(3.0)
 
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     assert countdown.remaining() == 3.0
 
@@ -506,14 +506,14 @@ def test_a_turn_held_open_counts_down_the_grace_it_was_given() -> None:
     """An extension runs on a grace, and the countdown has to show that one."""
     countdown, _ = silence_clock(3.0)
 
-    countdown.started("User Voice", 0.5)
+    countdown.started("Voice", 0.5)
 
     assert countdown.remaining() == 0.5
 
 
 def test_the_countdown_shrinks_as_the_silence_runs() -> None:
     countdown, clock = silence_clock(3.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     clock.advance(1.2)
 
@@ -522,9 +522,9 @@ def test_the_countdown_shrinks_as_the_silence_runs() -> None:
 
 def test_a_cleared_turn_stops_counting_down() -> None:
     countdown, _ = silence_clock()
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
-    countdown.cleared("User Voice")
+    countdown.cleared("Voice")
 
     assert countdown.remaining() is None
 
@@ -532,17 +532,17 @@ def test_a_cleared_turn_stops_counting_down() -> None:
 def test_clearing_a_speaker_that_never_started_is_harmless() -> None:
     countdown, _ = silence_clock()
 
-    countdown.cleared("Them")
+    countdown.cleared("Audio")
 
     assert countdown.remaining() is None
 
 
 def test_restarting_a_turn_resets_its_window() -> None:
     countdown, clock = silence_clock(3.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
     clock.advance(2.5)
 
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     assert countdown.remaining() == 3.0
 
@@ -550,20 +550,20 @@ def test_restarting_a_turn_resets_its_window() -> None:
 def test_the_soonest_speaker_is_the_one_being_waited_on() -> None:
     """A later timer is not what the session is about to act on."""
     countdown, clock = silence_clock(3.0)
-    countdown.started("Them")
+    countdown.started("Audio")
     clock.advance(2.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     assert countdown.remaining() == pytest.approx(1.0)
 
 
 def test_clearing_the_soonest_speaker_falls_back_to_the_other() -> None:
     countdown, clock = silence_clock(3.0)
-    countdown.started("Them")
+    countdown.started("Audio")
     clock.advance(2.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
-    countdown.cleared("Them")
+    countdown.cleared("Audio")
 
     assert countdown.remaining() == pytest.approx(3.0)
 
@@ -571,7 +571,7 @@ def test_clearing_the_soonest_speaker_falls_back_to_the_other() -> None:
 def test_a_turn_that_already_fired_stops_being_shown() -> None:
     """A countdown wedged at zero would be worse than one that disappears."""
     countdown, clock = silence_clock(3.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     clock.advance(3.0)
 
@@ -580,7 +580,7 @@ def test_a_turn_that_already_fired_stops_being_shown() -> None:
 
 def test_an_overdue_turn_is_dropped_rather_than_going_negative() -> None:
     countdown, clock = silence_clock(3.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     clock.advance(30.0)
 
@@ -590,9 +590,9 @@ def test_an_overdue_turn_is_dropped_rather_than_going_negative() -> None:
 
 def test_a_speaker_still_waiting_survives_another_one_expiring() -> None:
     countdown, clock = silence_clock(3.0)
-    countdown.started("Them")
+    countdown.started("Audio")
     clock.advance(2.0)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     clock.advance(1.5)
 
@@ -630,12 +630,12 @@ def test_the_countdown_adopts_a_window_changed_between_turns() -> None:
     silence = TurnSilence(3.0)
     clock = FakeClock()
     countdown = TurnSilenceClock(silence, clock=clock)
-    countdown.started("User Voice")
+    countdown.started("Voice")
 
     silence.set(1.0)
 
     assert countdown.remaining() == 3.0
-    countdown.started("User Voice")
+    countdown.started("Voice")
     assert countdown.remaining() == 1.0
 
 
@@ -751,7 +751,7 @@ def test_unanswered_context_stops_growing_at_its_bound() -> None:
 
     for index in range(20):
         assert (
-            router.ingest("Them", f"line {index}", "2026-07-26T12:00:00-04:00", False)
+            router.ingest("Audio", f"line {index}", "2026-07-26T12:00:00-04:00", False)
             is None
         )
 
@@ -763,8 +763,8 @@ def test_the_bound_keeps_the_most_recent_turns() -> None:
     router = TranscriptRouter(max_pending_context=2)
 
     for index in range(5):
-        router.ingest("Them", f"line {index}", "2026-07-26T12:00:00-04:00", False)
-    request = router.ingest("User Voice", "Yes", "2026-07-26T12:00:03-04:00", True)
+        router.ingest("Audio", f"line {index}", "2026-07-26T12:00:00-04:00", False)
+    request = router.ingest("Voice", "Yes", "2026-07-26T12:00:03-04:00", True)
 
     assert request is not None
     assert [entry.text for entry in request.entries] == ["line 3", "line 4", "Yes"]
@@ -773,9 +773,9 @@ def test_the_bound_keeps_the_most_recent_turns() -> None:
 def test_context_within_the_bound_is_carried_whole() -> None:
     router = TranscriptRouter(max_pending_context=10)
 
-    router.ingest("Them", "first", "2026-07-26T12:00:00-04:00", False)
-    router.ingest("Them", "second", "2026-07-26T12:00:01-04:00", False)
-    request = router.ingest("User Voice", "third", "2026-07-26T12:00:02-04:00", True)
+    router.ingest("Audio", "first", "2026-07-26T12:00:00-04:00", False)
+    router.ingest("Audio", "second", "2026-07-26T12:00:01-04:00", False)
+    request = router.ingest("Voice", "third", "2026-07-26T12:00:02-04:00", True)
 
     assert request is not None
     assert [entry.text for entry in request.entries] == ["first", "second", "third"]
@@ -930,9 +930,9 @@ def test_the_delay_tracks_the_estimator_as_it_learns() -> None:
 def test_speculating_leaves_the_context_it_carried_pending() -> None:
     """Abandoning a guess must cost nothing, so nothing is consumed to make it."""
     router = TranscriptRouter()
-    router.ingest("Them", "context", "T1", False)
+    router.ingest("Audio", "context", "T1", False)
 
-    request = router.speculate("User Voice", "a question", "T2")
+    request = router.speculate("Voice", "a question", "T2")
 
     assert [entry.text for entry in request.entries] == ["context", "a question"]
     assert [entry.text for entry in router.pending_context] == [
@@ -943,9 +943,9 @@ def test_speculating_leaves_the_context_it_carried_pending() -> None:
 
 def test_an_abandoned_speculation_is_carried_by_the_next_request() -> None:
     router = TranscriptRouter()
-    router.speculate("User Voice", "half a sentence", "T1")
+    router.speculate("Voice", "half a sentence", "T1")
 
-    request = router.ingest("User Voice", "the whole sentence", "T2", True)
+    request = router.ingest("Voice", "the whole sentence", "T2", True)
 
     assert request is not None
     assert [entry.text for entry in request.entries] == [
@@ -957,8 +957,8 @@ def test_an_abandoned_speculation_is_carried_by_the_next_request() -> None:
 def test_committing_consumes_only_what_the_request_carried() -> None:
     """Context arriving mid-flight belongs to the next reply, not this one."""
     router = TranscriptRouter()
-    request = router.speculate("User Voice", "a question", "T1")
-    router.ingest("Them", "arrived while answering", "T2", False)
+    request = router.speculate("Voice", "a question", "T1")
+    router.ingest("Audio", "arrived while answering", "T2", False)
 
     router.commit(request)
 
@@ -970,9 +970,9 @@ def test_committing_consumes_only_what_the_request_carried() -> None:
 def test_committing_survives_the_context_bound_trimming_the_front() -> None:
     """The boundary is found by identity, so a moved prefix cannot mislead it."""
     router = TranscriptRouter(max_pending_context=2)
-    request = router.speculate("User Voice", "a question", "T1")
-    router.ingest("Them", "later", "T2", False)
-    router.ingest("Them", "latest", "T3", False)
+    request = router.speculate("Voice", "a question", "T1")
+    router.ingest("Audio", "later", "T2", False)
+    router.ingest("Audio", "latest", "T3", False)
 
     router.commit(request)
 
@@ -981,9 +981,9 @@ def test_committing_survives_the_context_bound_trimming_the_front() -> None:
 
 def test_committing_twice_does_not_consume_a_later_turn() -> None:
     router = TranscriptRouter()
-    request = router.speculate("User Voice", "a question", "T1")
+    request = router.speculate("Voice", "a question", "T1")
     router.commit(request)
-    router.ingest("Them", "afterwards", "T2", False)
+    router.ingest("Audio", "afterwards", "T2", False)
 
     router.commit(request)
 
@@ -993,8 +993,8 @@ def test_committing_twice_does_not_consume_a_later_turn() -> None:
 def test_identical_text_does_not_confuse_the_commit_boundary() -> None:
     """Entries compare equal by value; only the one actually sent may be dropped."""
     router = TranscriptRouter()
-    request = router.speculate("Them", "yes", "T1")
-    router.ingest("Them", "yes", "T1", False)
+    request = router.speculate("Audio", "yes", "T1")
+    router.ingest("Audio", "yes", "T1", False)
 
     router.commit(request)
 
@@ -1004,8 +1004,8 @@ def test_identical_text_does_not_confuse_the_commit_boundary() -> None:
 def test_committing_a_request_that_carried_nothing_consumes_nothing() -> None:
     """A reply built from no entries has no prefix to drop."""
     router = TranscriptRouter()
-    router.ingest("Them", "context", "T1", False)
+    router.ingest("Audio", "context", "T1", False)
 
-    router.commit(CodexRequest("Them", ()))
+    router.commit(CodexRequest("Audio", ()))
 
     assert [entry.text for entry in router.pending_context] == ["context"]

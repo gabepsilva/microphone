@@ -76,7 +76,7 @@ def choose_from_menu(title, options, subject, first_number=1, note=None):
     The range in the prompt, the range in the retry message, and the range the
     answer is checked against are all the length of the menu, so a chooser
     cannot offer an entry it then refuses. ``first_number`` exists because the
-    Them menu counts a "None" entry from zero.
+    Audio menu counts a "None" entry from zero.
     """
     print_menu(title, [description for description, _ in options], first_number, note)
     last = first_number + len(options) - 1
@@ -174,7 +174,7 @@ def select_tts_output(outputs, requested):
 
 
 def choose_tts_output(requested=None):
-    """Name the sink Codex speaks through, or nothing to use the system default.
+    """Name the sink Taga speaks through, or nothing to use the system default.
 
     This one never prompts. Where the assistant's voice comes out stopped being
     a question the session has to settle once application streams replaced the
@@ -187,37 +187,37 @@ def choose_tts_output(requested=None):
     return select_tts_output(audio_outputs(), requested)
 
 
-NO_THEM_STREAM = "none"
+NO_AUDIO_STREAM = "none"
 
 
-def select_them_stream(requested):
+def select_audio_stream(requested):
     """Resolve a requested application without prompting.
 
     A named application is taken at its word rather than checked against what
     is playing. It has to be: an application only appears in the graph once it
     opens audio, so a saved session that starts before the meeting does would
     otherwise refuse the very name it saved a moment ago. An application that
-    never appears simply never gets linked, and the Them channel stays quiet.
+    never appears simply never gets linked, and the Audio channel stays quiet.
     """
-    if requested.lower() == NO_THEM_STREAM:
+    if requested.lower() == NO_AUDIO_STREAM:
         return None
     return requested
 
 
-def choose_them_stream(requested=None):
-    """Choose the application whose audio is transcribed as Them."""
+def choose_audio_stream(requested=None):
+    """Choose the application whose audio is transcribed as Audio."""
     if requested is not None:
-        return select_them_stream(requested)
+        return select_audio_stream(requested)
 
     offered = offered_applications(graph())
     note = None
     if not offered:
         note = (
             "      No application is playing audio yet. Start the meeting and\n"
-            "      run again, or pass --them-stream with the application name."
+            "      run again, or pass --audio-stream with the application name."
         )
     return choose_from_menu(
-        "\nApplication to transcribe as Them:",
+        "\nApplication to transcribe as Audio:",
         [("None", None), *offered],
         "an application",
         first_number=0,
@@ -225,8 +225,8 @@ def choose_them_stream(requested=None):
     )
 
 
-def choose_codex_after(requested=None):
-    """Return the response policy whose speakers trigger a Codex reply."""
+def choose_taga_after(requested=None):
+    """Return the response policy whose speakers trigger a Taga reply."""
     if requested is not None:
         return resolve_response_policy(requested)
 
@@ -250,11 +250,11 @@ TTS_ANSWERS = {
 
 
 def choose_tts(requested=None):
-    """Choose whether Codex responses are also spoken."""
+    """Choose whether Taga's responses are also spoken."""
     if requested is not None:
         return requested == "on"
 
-    print("\nSpeak Codex responses with Edge TTS?")
+    print("\nSpeak Taga's responses with Edge TTS?")
     print("   1) No")
     print("   2) Yes")
     print()

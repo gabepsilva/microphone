@@ -37,8 +37,8 @@ def test_a_committed_turn_becomes_a_transcript_entry(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.update(tui.USER_VOICE, "half a sen")
-        facade.commit(tui.USER_VOICE, "half a sentence")
+        facade.update(tui.VOICE, "half a sen")
+        facade.commit(tui.VOICE, "half a sentence")
         await pilot.pause()
 
     drive(facade, body)
@@ -64,7 +64,7 @@ def test_a_codex_turn_streams_into_one_row_and_closes(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.codex_message_open(tui.THEM)
+        facade.codex_message_open(tui.AUDIO)
         await pilot.pause()
         facade.codex_delta("Hello ")
         facade.codex_delta("there.")
@@ -75,7 +75,7 @@ def test_a_codex_turn_streams_into_one_row_and_closes(tui) -> None:
     drive(facade, body)
 
     assert entry_texts(facade) == ["Hello there."]
-    assert facade.app.entries[0].source == tui.CODEX
+    assert facade.app.entries[0].source == tui.TAGA
     assert facade.app.entries[0].streaming is False
     assert facade.app._streaming is None
     assert facade.state.codex_state == "idle"
@@ -97,7 +97,7 @@ def test_an_interrupted_turn_reads_as_cut_off(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.codex_message_open(tui.THEM)
+        facade.codex_message_open(tui.AUDIO)
         await pilot.pause()
         facade.codex_delta("Half a th")
         await pilot.pause()
@@ -129,7 +129,7 @@ def test_thinking_is_a_codex_row_that_closes_with_what_it_cost(tui) -> None:
 
     entry = facade.app.entries[0]
 
-    assert (entry.kind, entry.source) == ("reasoning", tui.CODEX)
+    assert (entry.kind, entry.source) == ("reasoning", tui.TAGA)
     assert entry.stamp != ""
     assert entry.text == "Weighing the riddle."
     assert entry.streaming is False
@@ -287,18 +287,18 @@ def test_a_discovered_catalog_adopts_the_models_efforts(tui) -> None:
 def test_the_applications_on_offer_are_installed_from_the_refresher(tui) -> None:
     facade = tui.VoiceCodexTUI(tui.SessionState())
 
-    facade.set_them_streams([("Brave (playing)", "Brave")])
+    facade.set_audio_streams([("Brave (playing)", "Brave")])
 
-    assert facade.state.them_streams == [("Brave (playing)", "Brave")]
+    assert facade.state.audio_streams == [("Brave (playing)", "Brave")]
 
 
 def test_the_application_being_listened_to_survives_leaving_the_graph(tui) -> None:
     """An application that stops playing must not read as a changed choice."""
-    facade = tui.VoiceCodexTUI(tui.SessionState(them_stream="Brave"))
+    facade = tui.VoiceCodexTUI(tui.SessionState(audio_stream="Brave"))
 
-    facade.set_them_streams([])
+    facade.set_audio_streams([])
 
-    assert facade.state.them_stream == "Brave"
+    assert facade.state.audio_stream == "Brave"
 
 
 def test_a_catalog_keeps_an_effort_the_model_still_supports(tui) -> None:
@@ -343,12 +343,12 @@ def test_the_facade_reports_when_the_app_is_ready(tui) -> None:
 def test_finishing_a_turn_clears_only_that_speakers_partial(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
-    facade.update(tui.THEM, "mid sentence")
-    facade.finish_turn(tui.USER_VOICE)
+    facade.update(tui.AUDIO, "mid sentence")
+    facade.finish_turn(tui.VOICE)
 
     assert facade.state.partial_text == "mid sentence"
 
-    facade.close_speaker(tui.THEM)
+    facade.close_speaker(tui.AUDIO)
 
     assert facade.state.partial_text == ""
 
@@ -418,7 +418,7 @@ def test_interrupting_marks_the_streaming_row_and_calls_back(tui) -> None:
     facade = tui.VoiceCodexTUI(on_interrupt=lambda: interrupts.append(True))
 
     async def body(pilot):
-        facade.codex_message_open(tui.THEM)
+        facade.codex_message_open(tui.AUDIO)
         await pilot.pause()
         facade.codex_delta("Talking when")
         await pilot.pause()
@@ -437,7 +437,7 @@ def test_saving_hands_over_the_entries_and_notes_the_count(tui) -> None:
     facade = tui.VoiceCodexTUI(on_save=saved.append)
 
     async def body(pilot):
-        facade.commit(tui.USER_VOICE, "one")
+        facade.commit(tui.VOICE, "one")
         await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
@@ -502,14 +502,14 @@ def test_a_command_entry_renders_its_output_and_exit_code(tui) -> None:
 
 
 def test_a_streaming_entry_shows_a_cursor(tui) -> None:
-    entry = tui.Entry(kind="speech", source=tui.CODEX, text="typing", streaming=True)
+    entry = tui.Entry(kind="speech", source=tui.TAGA, text="typing", streaming=True)
 
     assert "▌" in tui.render_entry_body(entry).plain
 
 
 def test_a_thinking_entry_hides_what_it_is_thinking(tui) -> None:
     entry = tui.Entry(
-        kind="reasoning", source=tui.CODEX, text="half a thought", streaming=True
+        kind="reasoning", source=tui.TAGA, text="half a thought", streaming=True
     )
 
     body = tui.render_entry_body(entry).plain
@@ -520,7 +520,7 @@ def test_a_thinking_entry_hides_what_it_is_thinking(tui) -> None:
 
 def test_a_finished_thinking_entry_shows_its_cost_and_then_its_content(tui) -> None:
     entry = tui.Entry(
-        kind="reasoning", source=tui.CODEX, text="the whole thought", seconds=1.4
+        kind="reasoning", source=tui.TAGA, text="the whole thought", seconds=1.4
     )
 
     assert tui.render_entry_body(entry).plain == "thinking · 1.4s\nthe whole thought"
@@ -534,10 +534,10 @@ def test_thinking_never_wears_the_same_style_as_the_answer(tui) -> None:
     body style, a summary becomes indistinguishable from an answer.
     """
     thinking = tui.render_entry_body(
-        tui.Entry(kind="reasoning", source=tui.CODEX, text="a thought", seconds=1.4)
+        tui.Entry(kind="reasoning", source=tui.TAGA, text="a thought", seconds=1.4)
     )
     answer = tui.render_entry_body(
-        tui.Entry(kind="speech", source=tui.CODEX, text="an answer")
+        tui.Entry(kind="speech", source=tui.TAGA, text="an answer")
     )
 
     styles = [str(thinking.style)] + [str(span.style) for span in thinking.spans]
@@ -552,7 +552,7 @@ def test_thinking_never_wears_the_same_style_as_the_answer(tui) -> None:
 
 def test_thinking_that_was_never_timed_says_only_that_it_happened(tui) -> None:
     """A section closed without a duration still renders rather than raising."""
-    entry = tui.Entry(kind="reasoning", source=tui.CODEX, text="a thought")
+    entry = tui.Entry(kind="reasoning", source=tui.TAGA, text="a thought")
 
     assert tui.render_entry_body(entry).plain == "thinking\na thought"
 
@@ -567,7 +567,7 @@ def test_the_transcript_shows_committed_entries(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
     async def body(pilot):
-        facade.commit(tui.USER_VOICE, "visible text")
+        facade.commit(tui.VOICE, "visible text")
         await pilot.pause()
         rows = facade.app.query(EntryRow).results()
 
@@ -690,7 +690,7 @@ def test_the_streaming_row_is_never_unmounted_under_it(tui) -> None:
     facade.app.MAX_MOUNTED_ROWS = 2
 
     async def body(pilot):
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         streaming = facade.app._streaming
         for index in range(8):
             facade.note(f"line {index}")
@@ -704,7 +704,7 @@ def test_the_streaming_row_is_never_unmounted_under_it(tui) -> None:
     drive(facade, body)
 
     codex_entries = [
-        entry.text for entry in facade.app.entries if entry.source == tui.CODEX
+        entry.text for entry in facade.app.entries if entry.source == tui.TAGA
     ]
     assert codex_entries == ["answer"]
 
@@ -937,7 +937,7 @@ def test_a_stream_scrolled_away_from_keeps_the_row_it_is_writing_to(tui) -> None
             facade.note(f"line {index}")
         await pilot.pause()
         await scroll_back(pilot, facade)
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         facade.codex_delta("an answer written out of view")
         await pilot.pause()
         for _ in range(12):
@@ -1086,7 +1086,7 @@ def test_a_stream_at_the_far_end_survives_scrolling_back_past_it(tui) -> None:
         for index in range(60):
             facade.note(f"line {index}")
         await pilot.pause()
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         facade.codex_delta("still open")
         await pilot.pause()
         streaming = facade.app._streaming
@@ -1113,7 +1113,7 @@ def test_streamed_deltas_do_not_repaint_once_per_token(tui) -> None:
     repaints: list[int] = []
 
     async def body(pilot):
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         row = facade.app._streaming
         original = row.sync
         row.sync = lambda: (repaints.append(1), original())[1]
@@ -1132,12 +1132,12 @@ def test_the_finished_answer_is_drawn_in_full_however_it_was_coalesced(tui) -> N
     drawn: list[str] = []
 
     async def body(pilot):
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         for word in ("one ", "two ", "three"):
             facade.codex_delta(word)
         facade.end_codex()
         await pilot.pause()
-        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.CODEX)
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
         drawn.append(next(iter(row.query(".entry-body"))).content.plain)
 
     drive(facade, body)
@@ -1153,11 +1153,11 @@ def test_an_interrupted_answer_shows_the_text_that_arrived_before_the_cut(tui) -
     drawn: list[str] = []
 
     async def body(pilot):
-        facade.codex_message_open(tui.USER_VOICE)
+        facade.codex_message_open(tui.VOICE)
         facade.codex_delta("half a th")
         facade.app.action_interrupt()
         await pilot.pause()
-        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.CODEX)
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
         drawn.append(next(iter(row.query(".entry-body"))).content.plain)
 
     drive(facade, body)

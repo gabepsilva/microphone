@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wire the always-listening User/Them/Codex conversation together.
+"""Wire the always-listening Voice/Text/Audio/Taga conversation together.
 
 This module is the composition root and nothing else. The runtime parts it
 assembles are independent of one another — none of them imports any of the
@@ -9,7 +9,7 @@ others:
                    the second by way of the PipeWire tap in ``streams``
   * ``listener`` — transcription events into completed turns
   * ``codex``    — the Codex thread and its streamed turns
-  * ``speech``   — which synthesizer speaks Codex responses, and the two
+  * ``speech``   — which synthesizer speaks Taga's responses, and the two
                    engines behind it in ``tts`` and ``piper_tts``
 
 ``startup`` resolves what the session will be before any of that is built,
@@ -43,7 +43,7 @@ from .capture import (
     metered_mic_transcriber,
 )
 from .catalog import probe_codex_models
-from .choosers import NO_THEM_STREAM, input_devices
+from .choosers import NO_AUDIO_STREAM, input_devices
 from .codex import CodexConversation, CodexSettings
 from .commands import CommandRouter
 from .config import StartupConfigFile, save_startup_config
@@ -131,22 +131,22 @@ def sound_taps(tui):
     end exists yet, because one can be chosen at any point in the session and
     a reporter costs a few numbers until it is.
     """
-    return SoundActivityReporter(tui, "mic"), SoundActivityReporter(tui, "them")
+    return SoundActivityReporter(tui, "mic"), SoundActivityReporter(tui, "audio")
 
 
-BASE_SPEAKERS = frozenset({"User Voice"})
+BASE_SPEAKERS = frozenset({"Voice"})
 
 
-def them_stream_setting(application):
-    """Record a chosen application the way ``--them-stream`` reads it back."""
-    return NO_THEM_STREAM if application is None else application
+def audio_stream_setting(application):
+    """Record a chosen application the way ``--audio-stream`` reads it back."""
+    return NO_AUDIO_STREAM if application is None else application
 
 
 def speaker_gate(selection):
     """Build the response policy, limited to the speakers this session has.
 
     It starts with the microphone alone. Selecting "both" before a far end
-    exists must not make Them replies possible, and the gate is told when one
+    exists must not make Audio replies possible, and the gate is told when one
     arrives rather than inferring it.
     """
     return SpeakerGate(selection.policy.speakers, BASE_SPEAKERS)
@@ -189,16 +189,16 @@ def muting(transcriber, listener):
     return set_muted
 
 
-def open_them_channel(parts, activity, tap):
+def open_audio_channel(parts, activity, tap):
     """Build the far end's listener and transcriber around one tap."""
     listener = parts.submitter.channel(
         parts.confidence,
         parts.turn_silence,
-        "Them",
+        "Audio",
         parts.display,
         countdown=parts.countdown,
         # No suppressors: the tap carries the links this session made and
-        # nothing else, and Codex's own playback is never one of them. It is
+        # nothing else, and Taga's own playback is never one of them. It is
         # not that its voice is filtered off this channel — it never reaches it.
         presence=SpeakerPresence(activity),
     )
@@ -232,7 +232,7 @@ def open_microphone_channel(parts, activity, presence, device_index):
         listener = parts.submitter.channel(
             parts.confidence,
             parts.turn_silence,
-            "User Voice",
+            "Voice",
             parts.display,
             countdown=parts.countdown,
             presence=presence,
@@ -252,7 +252,7 @@ def close_microphone_channel(parts, transcriber, listener):
     parts.submitter.remove_listener(listener)
 
 
-def close_them_channel(parts, transcriber, listener):
+def close_audio_channel(parts, transcriber, listener):
     """Retire the far end's channel in the order the session's shutdown uses.
 
     Nothing may reach a listener after it has flushed, and the listener is
@@ -397,7 +397,7 @@ class MicrophoneChannel:
         self.reconcile()
 
 
-class ThemChannel:
+class AudioChannel:
     """Transcribe a far end's application, from the moment one is chosen.
 
     This costs a second Moonshine model — seconds to load, and it stays
@@ -439,7 +439,7 @@ class ThemChannel:
         if self.worker is not None:
             return
         self.worker = threading.Thread(
-            target=self._serve, name="ThemChannelSwitch", daemon=True
+            target=self._serve, name="AudioChannelSwitch", daemon=True
         )
         self.worker.start()
 
@@ -488,8 +488,8 @@ class ThemChannel:
             self.desired = None
             return
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
-        self.tui.hooks.on_them_mute = muting(transcriber, listener)
-        self.gate.set_available(BASE_SPEAKERS | {"Them"})
+        self.tui.hooks.on_audio_mute = muting(transcriber, listener)
+        self.gate.set_available(BASE_SPEAKERS | {"Audio"})
         self.current = application
 
     def _retire(self):
@@ -497,7 +497,7 @@ class ThemChannel:
         transcriber, listener = self.transcriber, self.listener
         self.tap = self.transcriber = self.listener = None
         self.current = None
-        self.tui.hooks.on_them_mute = None
+        self.tui.hooks.on_audio_mute = None
         self.gate.set_available(BASE_SPEAKERS)
         self.close_channel(transcriber, listener)
 
@@ -512,7 +512,7 @@ class ThemChannel:
         self.reconcile()
 
 
-def microphone_presence(mic_activity, them_activity, tts):
+def microphone_presence(mic_activity, audio_activity, tts):
     """Decide when the microphone is hearing the person sitting in front of it.
 
     Everything the speakers play reaches an open microphone, so on a laptop the
@@ -525,7 +525,7 @@ def microphone_presence(mic_activity, them_activity, tts):
 
     On a headset neither ever fires, and the suppressors cost nothing.
     """
-    suppressors = [lambda: them_activity.hearing_sound]
+    suppressors = [lambda: audio_activity.hearing_sound]
     if tts is not None:
         suppressors.append(tts.is_speaking)
     return SpeakerPresence(mic_activity, suppressors)
@@ -552,7 +552,7 @@ def remembering(hook, config, key, encode=lambda value: value):
 def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     """Point the interface's controls at the conversation, its speech, and disk."""
     tui.hooks.on_user_text = lambda text: conversation.ingest(
-        "User Text", text, respond=True
+        "Text", text, respond=True
     )
     tui.hooks.on_interrupt = conversation.interrupt
     commands = CommandRouter(tui)
@@ -576,7 +576,7 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
 
 
 def reset_codex_session(command, conversation, tui):
-    """Start a fresh Codex conversation and clear its visible transcript."""
+    """Start a fresh Taga conversation and clear its visible transcript."""
     if command.arguments:
         tui.note("usage: /new")
         return
@@ -612,7 +612,7 @@ def main():
     codex_models = probe_codex_models()
     validate_codex_reasoning(parser, args, codex_models)
     selection = resolve_startup_selection(args)
-    them_stream = selection.them_stream
+    audio_stream = selection.audio_stream
 
     settings = startup_settings(selection, args)
     if args.save_config is not None:
@@ -643,7 +643,7 @@ def main():
         build_session_state(args, selection, codex_models),
         countdown=countdown,
         speech=tts,
-        on_policy=remembering(gate.set_policy, config, "codex_after"),
+        on_policy=remembering(gate.set_policy, config, "taga_after"),
     )
     transcript_display = tui
     conversation = CodexConversation(
@@ -660,7 +660,7 @@ def main():
 
     attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
     # The plan reads the conversation's own measured time-to-first-word, so
-    # the moment a turn is guessed at tracks what Codex is actually doing.
+    # the moment a turn is guessed at tracks what Taga is actually doing.
     submitter = TranscriptSubmitter(
         conversation,
         gate,
@@ -673,7 +673,7 @@ def main():
     # Built before the listeners because each one reads the other's tap: the
     # microphone has to know when the far end is playing to tell its voice
     # from the person in the room.
-    mic_activity, them_activity = sound_taps(tui)
+    mic_activity, audio_activity = sound_taps(tui)
 
     tui.set_codex(thread=conversation.thread.id)
 
@@ -697,7 +697,7 @@ def main():
             open_microphone_channel,
             parts,
             mic_activity,
-            microphone_presence(mic_activity, them_activity, tts),
+            microphone_presence(mic_activity, audio_activity, tts),
         ),
         partial(close_microphone_channel, parts),
         devices=initial_devices,
@@ -710,26 +710,26 @@ def main():
     microphone.reconcile()
     microphone.start()
 
-    them = ThemChannel(
+    them = AudioChannel(
         tui,
         gate,
-        partial(open_them_channel, parts, them_activity),
-        partial(close_them_channel, parts),
+        partial(open_audio_channel, parts, audio_activity),
+        partial(close_audio_channel, parts),
     )
     them.start()
     applications = ApplicationRefresher(tui)
     applications.start()
     tui.hooks.on_quit = applications.stop
-    tui.hooks.on_them_stream = remembering(
-        them.select, config, "them_stream", encode=them_stream_setting
+    tui.hooks.on_audio_stream = remembering(
+        them.select, config, "audio_stream", encode=audio_stream_setting
     )
-    them.select(them_stream)
+    them.select(audio_stream)
     run_session(
         tui,
         [],
         conversation,
         microphone=microphone,
-        them=them,
+        audio=them,
     )
     applications.stop()
 

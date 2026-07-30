@@ -18,17 +18,17 @@ import pytest
 from tagalong.catalog import CodexModelOption, populate_codex_model_catalog
 from tagalong.choosers import (
     audio_outputs,
-    choose_codex_after,
+    choose_audio_stream,
     choose_microphone,
-    choose_them_stream,
+    choose_taga_after,
     choose_tts,
     choose_tts_output,
     find_audio_output,
     input_devices,
     prompt_number,
     prompt_until,
+    select_audio_stream,
     select_microphone,
-    select_them_stream,
     select_tts_output,
 )
 from tagalong.domain import RESPONSE_POLICIES
@@ -295,13 +295,13 @@ def test_an_unknown_output_matches_nothing() -> None:
 
 
 @pytest.mark.parametrize("requested", ["none", "NONE", "None"])
-def test_no_them_application_is_accepted_in_any_case(requested) -> None:
-    assert select_them_stream(requested) is None
+def test_no_audio_application_is_accepted_in_any_case(requested) -> None:
+    assert select_audio_stream(requested) is None
 
 
 def test_a_named_application_is_taken_without_checking_the_graph() -> None:
     """An application that is not playing yet still has to be selectable."""
-    assert select_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
+    assert select_audio_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
 
 
 STREAMS = [
@@ -339,7 +339,7 @@ def test_a_stream_is_labelled_by_application_title_and_whether_it_plays(
     ("answer", "expected"),
     [("0", None), ("1", "Chromium"), ("2", "ZOOM VoiceEngine")],
 )
-def test_choosing_a_them_application_maps_each_menu_entry(
+def test_choosing_an_audio_application_maps_each_menu_entry(
     monkeypatch, answer, expected
 ) -> None:
     monkeypatch.setattr("tagalong.choosers.graph", list)
@@ -349,7 +349,7 @@ def test_choosing_a_them_application_maps_each_menu_entry(
     )
     answer_with(monkeypatch, [answer])
 
-    assert choose_them_stream() == expected
+    assert choose_audio_stream() == expected
 
 
 def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
@@ -359,7 +359,7 @@ def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
     monkeypatch.setattr("tagalong.choosers.offered_applications", lambda objects: [])
     answer_with(monkeypatch, ["0"])
 
-    assert choose_them_stream() is None
+    assert choose_audio_stream() is None
     assert "No application is playing audio yet" in capsys.readouterr().out
 
 
@@ -394,14 +394,14 @@ def test_a_requested_speech_output_is_resolved_against_the_sinks(monkeypatch) ->
 @pytest.mark.parametrize(
     ("requested", "label"),
     [
-        ("them", "Them"),
-        ("both", "User Voice and Them"),
-        ("user", "User Voice"),
-        ("quiet", "Codex will be quiet for voice"),
+        ("audio", "Audio"),
+        ("both", "Voice and Audio"),
+        ("voice", "Voice"),
+        ("quiet", "Taga will be quiet for voice"),
     ],
 )
 def test_a_requested_response_policy_needs_no_prompt(requested, label) -> None:
-    assert choose_codex_after(requested).label == label
+    assert choose_taga_after(requested).label == label
 
 
 def test_choosing_a_response_policy_accepts_its_menu_number(
@@ -409,12 +409,12 @@ def test_choosing_a_response_policy_accepts_its_menu_number(
 ) -> None:
     answer_with(monkeypatch, ["9", "2"])
 
-    policy = choose_codex_after()
+    policy = choose_taga_after()
 
     assert (policy.name, policy.label, policy.speakers) == (
         "both",
-        "User Voice and Them",
-        frozenset({"User Voice", "Them"}),
+        "Voice and Audio",
+        frozenset({"Voice", "Audio"}),
     )
     assert "Please enter a number from 1 to 4." in capsys.readouterr().out
 
@@ -505,14 +505,14 @@ def test_a_requested_microphone_skips_the_menu(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
-def test_a_requested_them_application_skips_the_menu(monkeypatch, capsys) -> None:
+def test_a_requested_audio_application_skips_the_menu(monkeypatch, capsys) -> None:
     def unreachable():
         raise AssertionError("the graph was read for a question nobody asked")
 
     monkeypatch.setattr("tagalong.choosers.graph", unreachable)
     refuse_input(monkeypatch)
 
-    assert choose_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
+    assert choose_audio_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
     assert capsys.readouterr().out == ""
 
 
@@ -529,7 +529,7 @@ def test_the_startup_menu_offers_every_defined_policy_in_order(
 ) -> None:
     answer_with(monkeypatch, ["1"])
 
-    choose_codex_after()
+    choose_taga_after()
 
     menu = capsys.readouterr().out
     for number, policy in enumerate(RESPONSE_POLICIES.values(), start=1):
@@ -543,5 +543,5 @@ def test_every_policy_is_reachable_by_name_and_by_menu_number(name) -> None:
 
     # Both spellings a user can supply resolve to the same policy, so the menu
     # numbering cannot drift away from the mapping it is generated from.
-    assert choose_codex_after(name) is policy
-    assert choose_codex_after(number) is policy
+    assert choose_taga_after(name) is policy
+    assert choose_taga_after(number) is policy

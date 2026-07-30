@@ -4,7 +4,7 @@
 hook left unassigned or a channel never registered raises nothing and fails no
 other test. So every collaborator is faked at ``cli``'s own import boundary
 and the assertions are about the connections: which hooks are bound, which
-channels reach the session, and what is left out when Them or TTS is off.
+channels reach the session, and what is left out when Audio or TTS is off.
 
 Nothing here fakes ``main`` itself.
 """
@@ -59,7 +59,7 @@ class FakeTUI:
         self.hooks = SimpleNamespace(**hooks)
         self.codex_fields: dict[str, object] = {}
         self.notes: list[str] = []
-        self.them_streams: list[tuple[str, str]] = []
+        self.audio_streams: list[tuple[str, str]] = []
         self.closed_speakers: list[str] = []
 
     def set_codex(self, **fields):
@@ -71,8 +71,8 @@ class FakeTUI:
     def close_speaker(self, speaker):
         self.closed_speakers.append(speaker)
 
-    def set_them_streams(self, applications):
-        self.them_streams = list(applications)
+    def set_audio_streams(self, applications):
+        self.audio_streams = list(applications)
 
     def set_microphones(self, microphones):
         self.microphones = list(microphones)
@@ -203,12 +203,12 @@ def wiring(monkeypatch, tmp_path):
             device=device,
             tts_enabled=built["tts_enabled"],
             tts_provider="piper",
-            them_stream=built["them_stream"],
+            audio_stream=built["audio_stream"],
             tts_output=built["tts_output"],
-            policy=RESPONSE_POLICIES["them"],
+            policy=RESPONSE_POLICIES["audio"],
         )
 
-    def run_session(tui, channels, conversation, microphone=None, them=None):
+    def run_session(tui, channels, conversation, microphone=None, audio=None):
         microphone_channels = (
             [(microphone.transcriber, microphone.listener)]
             if microphone is not None and microphone.transcriber is not None
@@ -216,7 +216,7 @@ def wiring(monkeypatch, tmp_path):
         )
         built["session"] = (tui, [*channels, *microphone_channels], conversation)
         built["microphone"] = microphone
-        built["them"] = them
+        built["audio"] = audio
 
     # The real lock is a file in the user's runtime directory, so leaving it
     # unfaked makes every ``main`` test fail whenever a session happens to be
@@ -270,7 +270,7 @@ def wiring(monkeypatch, tmp_path):
     # The far end is built on a worker thread when one is chosen. Tests drive
     # that choice themselves, through the same reconcile the worker calls, so
     # what they assert on is the real wiring rather than a race with it.
-    monkeypatch.setattr(cli.ThemChannel, "start", lambda self: None)
+    monkeypatch.setattr(cli.AudioChannel, "start", lambda self: None)
     monkeypatch.setattr(cli.MicrophoneChannel, "start", lambda self: None)
     monkeypatch.setattr(cli.ApplicationRefresher, "start", lambda self: None)
     monkeypatch.setattr(
@@ -282,7 +282,7 @@ def wiring(monkeypatch, tmp_path):
     built.update(
         input_device=MIC,
         tts_enabled=False,
-        them_stream=None,
+        audio_stream=None,
         tts_output=None,
     )
     return built
@@ -502,7 +502,7 @@ def test_a_user_only_session_registers_one_channel(wiring) -> None:
 
     assert len(channels) == 1
     transcriber, listener = channels[0]
-    assert listener.speaker == "User Voice"
+    assert listener.speaker == "Voice"
     assert transcriber.listeners == [listener]
 
 
@@ -516,18 +516,18 @@ def test_a_session_without_an_input_device_still_reaches_the_interface(wiring) -
     assert tui.session_state.microphone is None
     tui.hooks.on_user_text("typed while the microphone is absent")
     assert conversation.ingested == [
-        ("User Text", "typed while the microphone is absent", True)
+        ("Text", "typed while the microphone is absent", True)
     ]
 
 
 def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
 
-    assert them.listener.speaker == "Them"
+    assert them.listener.speaker == "Audio"
     assert them.transcriber.kwargs["tap"].application == THEM_APPLICATION
     assert them.transcriber.listeners == [them.listener]
 
@@ -535,7 +535,7 @@ def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
 def test_a_session_with_no_application_opens_nothing(wiring) -> None:
     """The model this would load is the whole reason it is not built up front."""
     cli.main()
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
 
     assert them.transcriber is None
@@ -543,10 +543,10 @@ def test_a_session_with_no_application_opens_nothing(wiring) -> None:
 
 def test_switching_applications_keeps_the_channel_and_moves_the_tap(wiring) -> None:
     """Rebuilding would reload a speech model to answer a change of name."""
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
     opened = them.transcriber
 
@@ -559,10 +559,10 @@ def test_switching_applications_keeps_the_channel_and_moves_the_tap(wiring) -> N
 
 
 def test_dropping_the_application_closes_the_channel_it_had(wiring) -> None:
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
     opened = them.transcriber
 
@@ -571,34 +571,34 @@ def test_dropping_the_application_closes_the_channel_it_had(wiring) -> None:
 
     assert (opened.stopped, opened.closed) == (True, True)
     assert them.transcriber is None
-    assert wiring["session"][0].hooks.on_them_mute is None
+    assert wiring["session"][0].hooks.on_audio_mute is None
 
 
-def test_the_speaker_mute_box_stops_the_them_listener(wiring) -> None:
+def test_the_speaker_mute_box_stops_the_audio_listener(wiring) -> None:
     """The sidebar's speaker checkbox has to reach the channel it names."""
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
     tui, channels, _ = wiring["session"]
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
 
-    tui.hooks.on_them_mute(True)
+    tui.hooks.on_audio_mute(True)
 
     assert them.listener.muted is True
     assert channels[0][1].muted is False
 
 
-def test_the_speaker_mute_box_stops_the_them_capture(wiring) -> None:
+def test_the_speaker_mute_box_stops_the_audio_capture(wiring) -> None:
     """Muting has to reach the transcriber, or it only discards finished work."""
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
     tui, channels, _ = wiring["session"]
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
 
-    tui.hooks.on_them_mute(True)
+    tui.hooks.on_audio_mute(True)
 
     assert them.transcriber.muted is True
     assert channels[0][0].muted is False
@@ -631,7 +631,7 @@ def test_a_session_without_a_speaker_channel_binds_no_speaker_mute(wiring) -> No
     cli.main()
     tui, _, _ = wiring["session"]
 
-    assert getattr(tui.hooks, "on_them_mute", None) is None
+    assert getattr(tui.hooks, "on_audio_mute", None) is None
 
 
 def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
@@ -655,7 +655,7 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
 
     tui.hooks.on_user_text("what time is it?")
 
-    assert conversation.ingested == [("User Text", "what time is it?", True)]
+    assert conversation.ingested == [("Text", "what time is it?", True)]
 
 
 def test_a_session_without_speech_reports_that_it_cannot_be_switched_on(
@@ -690,14 +690,14 @@ def test_the_codex_thread_is_shown_in_the_sidebar(wiring) -> None:
 
 def test_the_startup_selection_is_saved_when_asked(wiring, tmp_path) -> None:
     saved = tmp_path / "saved.yaml"
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
     cli.sys.argv.extend(["--save-config", str(saved)])
 
     cli.main()
 
     written = saved.read_text(encoding="utf-8")
     assert 'microphone: "Yeti"' in written
-    assert 'them_stream: "ZOOM VoiceEngine"' in written
+    assert 'audio_stream: "ZOOM VoiceEngine"' in written
 
 
 def test_a_silent_session_builds_no_speech() -> None:
@@ -752,7 +752,7 @@ def test_one_turn_silence_is_shared_by_every_part_that_needs_it(wiring) -> None:
     """Four copies of the window would be four chances to update three."""
     cli.main()
     tui, channels, _ = wiring["session"]
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     windows = {id(listener.turn_silence) for _, listener in channels}
     windows.add(id(tui.countdown.window))
@@ -761,11 +761,11 @@ def test_one_turn_silence_is_shared_by_every_part_that_needs_it(wiring) -> None:
 
 
 def test_editing_the_window_reaches_the_listeners(wiring) -> None:
-    wiring["them_stream"] = THEM_APPLICATION
+    wiring["audio_stream"] = THEM_APPLICATION
 
     cli.main()
     tui, channels, _ = wiring["session"]
-    them = wiring["them"]
+    them = wiring["audio"]
     them.reconcile()
 
     assert tui.hooks.on_turn_silence(1.25) == 1.25
@@ -805,9 +805,9 @@ def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
     cli.main()
     tui, _, _ = wiring["session"]
 
-    tui.hooks.on_policy("user")
+    tui.hooks.on_policy("voice")
 
-    assert saved_config(tmp_path)["codex_after"] == "user"
+    assert saved_config(tmp_path)["taga_after"] == "voice"
 
 
 def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
@@ -816,14 +816,14 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     cli.main()
     tui, _, _ = wiring["session"]
 
-    tui.hooks.on_policy("them")
+    tui.hooks.on_policy("audio")
     tui.hooks.on_codex_model("gpt-5.6-sol")
     tui.hooks.on_codex_effort("high")
     tui.hooks.on_turn_silence(1.25)
     tui.hooks.on_tts(False)
 
     saved = saved_config(tmp_path)
-    assert saved["codex_after"] == "them"
+    assert saved["taga_after"] == "audio"
     assert saved["codex_model"] == "gpt-5.6-sol"
     assert saved["codex_reasoning"] == "high"
     assert saved["turn_silence"] == 1.25
@@ -836,7 +836,7 @@ def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
     tui, _, _ = wiring["session"]
     # Something else has to be saved first, or the file is never written at
     # all and "it did not record the refusal" would pass for the wrong reason.
-    tui.hooks.on_policy("user")
+    tui.hooks.on_policy("voice")
 
     assert tui.hooks.on_tts(True) is False
 
@@ -1042,25 +1042,25 @@ def test_a_save_config_failure_is_reported_via_parser_error(monkeypatch) -> None
 
 class FakeGate:
     def __init__(self):
-        self.available = frozenset({"User Voice"})
+        self.available = frozenset({"Voice"})
 
     def set_available(self, available):
         self.available = frozenset(available)
 
 
-def them_channel(open_channel=None, close_channel=None):
+def audio_channel(open_channel=None, close_channel=None):
     """A far-end channel over fakes, with its worker thread left unstarted."""
-    tui = FakeTUI(SimpleNamespace(), on_them_mute=None)
+    tui = FakeTUI(SimpleNamespace(), on_audio_mute=None)
     opened: list[object] = []
     closed: list[object] = []
 
     def open_default(tap):
         transcriber = FakeTranscriber(tap=tap)
-        listener = SimpleNamespace(speaker="Them", set_muted=lambda muted: None)
+        listener = SimpleNamespace(speaker="Audio", set_muted=lambda muted: None)
         opened.append((transcriber, listener))
         return transcriber, listener
 
-    channel = cli.ThemChannel(
+    channel = cli.AudioChannel(
         tui,
         FakeGate(),
         open_channel or open_default,
@@ -1070,29 +1070,29 @@ def them_channel(open_channel=None, close_channel=None):
 
 
 def test_choosing_an_application_makes_them_answerable() -> None:
-    """A policy naming Them cannot fire until a far end actually exists."""
-    channel, _, _, _ = them_channel()
+    """A policy naming Audio cannot fire until a far end actually exists."""
+    channel, _, _, _ = audio_channel()
 
     channel.select("Brave")
     channel.reconcile()
 
-    assert channel.gate.available == frozenset({"User Voice", "Them"})
+    assert channel.gate.available == frozenset({"Voice", "Audio"})
 
 
 def test_dropping_the_application_makes_them_unanswerable_again() -> None:
-    channel, _, _, _ = them_channel()
+    channel, _, _, _ = audio_channel()
     channel.select("Brave")
     channel.reconcile()
 
     channel.select(None)
     channel.reconcile()
 
-    assert channel.gate.available == frozenset({"User Voice"})
+    assert channel.gate.available == frozenset({"Voice"})
 
 
 def test_the_newest_choice_wins_rather_than_each_one_building() -> None:
     """Moving through the picker produces a choice per keystroke."""
-    channel, _, opened, _ = them_channel()
+    channel, _, opened, _ = audio_channel()
 
     channel.select("Brave")
     channel.select("Chromium")
@@ -1104,7 +1104,7 @@ def test_the_newest_choice_wins_rather_than_each_one_building() -> None:
 
 
 def test_asking_again_for_what_is_already_open_changes_nothing() -> None:
-    channel, _, opened, closed = them_channel()
+    channel, _, opened, closed = audio_channel()
     channel.select("Brave")
     channel.reconcile()
 
@@ -1120,7 +1120,7 @@ def test_a_far_end_that_cannot_be_opened_leaves_the_session_running() -> None:
     def refuse(_tap):
         raise RuntimeError("no pw-record")
 
-    channel, tui, _, _ = them_channel(open_channel=refuse)
+    channel, tui, _, _ = audio_channel(open_channel=refuse)
 
     channel.select("Brave")
     channel.reconcile()
@@ -1138,7 +1138,7 @@ def test_a_failed_far_end_is_not_retried_on_every_later_choice() -> None:
         attempts.append(tap.application)
         raise RuntimeError("no")
 
-    channel, _, _, _ = them_channel(open_channel=refuse)
+    channel, _, _, _ = audio_channel(open_channel=refuse)
     channel.select("Brave")
     channel.reconcile()
 
@@ -1148,7 +1148,7 @@ def test_a_failed_far_end_is_not_retried_on_every_later_choice() -> None:
 
 
 def test_the_worker_serves_choices_until_the_session_closes() -> None:
-    channel, _tui, opened, closed = them_channel()
+    channel, _tui, opened, closed = audio_channel()
     channel.start()
     channel.select("Brave")
     deadline = time.monotonic() + 10
@@ -1163,7 +1163,7 @@ def test_the_worker_serves_choices_until_the_session_closes() -> None:
 
 
 def test_closing_a_channel_that_was_never_opened_is_quiet() -> None:
-    channel, _, opened, closed = them_channel()
+    channel, _, opened, closed = audio_channel()
 
     channel.close()
 
@@ -1171,7 +1171,7 @@ def test_closing_a_channel_that_was_never_opened_is_quiet() -> None:
 
 
 def test_starting_the_channel_twice_serves_it_once() -> None:
-    channel, _, _, _ = them_channel()
+    channel, _, _, _ = audio_channel()
     channel.start()
     worker = channel.worker
     try:
@@ -1189,4 +1189,4 @@ def test_starting_the_channel_twice_serves_it_once() -> None:
 def test_a_chosen_application_is_saved_the_way_the_parser_reads_it_back(
     application, recorded
 ) -> None:
-    assert cli.them_stream_setting(application) == recorded
+    assert cli.audio_stream_setting(application) == recorded

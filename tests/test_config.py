@@ -15,9 +15,9 @@ def test_startup_config_round_trip(tmp_path) -> None:
         "microphone": "USB microphone",
         "tts": "on",
         "tts_provider": "piper",
-        "them_stream": "ZOOM VoiceEngine",
+        "audio_stream": "ZOOM VoiceEngine",
         "tts_output": None,
-        "codex_after": "both",
+        "taga_after": "both",
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
@@ -99,9 +99,9 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
         "microphone": "Blue Yeti",
         "tts": "on",
         "tts_provider": "edge",
-        "them_stream": "none",
+        "audio_stream": "none",
         "tts_output": None,
-        "codex_after": "both",
+        "taga_after": "both",
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
@@ -132,11 +132,11 @@ def test_parsing_continues_past_an_unset_value(tmp_path) -> None:
 def test_parsing_continues_past_comments_between_settings(tmp_path) -> None:
     path = tmp_path / "tagalong.yaml"
     path.write_text(
-        "microphone: Yeti\n\n# which turns get a reply\ncodex_after: both\n",
+        "microphone: Yeti\n\n# which turns get a reply\ntaga_after: both\n",
         encoding="utf-8",
     )
 
-    assert load_startup_config(path) == {"microphone": "Yeti", "codex_after": "both"}
+    assert load_startup_config(path) == {"microphone": "Yeti", "taga_after": "both"}
 
 
 def test_an_unreadable_config_names_the_file_it_could_not_read(tmp_path) -> None:

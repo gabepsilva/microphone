@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hold every background thread to the shutdown contract the app relies on.
 
-Four classes here own a worker thread — TTS synthesis, the Them capture
+Four classes here own a worker thread — TTS synthesis, the Audio capture
 reader, the transcript flush timer, and the Codex request loop. Each follows
 the same unwritten rule: the thread is a daemon, and every join that waits on
 it passes a timeout. Nothing enforced that. It survived because all four sat

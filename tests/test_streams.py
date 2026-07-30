@@ -162,7 +162,7 @@ def test_this_process_owns_its_own_stream() -> None:
 
 
 def test_a_stream_started_by_this_process_is_its_own() -> None:
-    """Codex speaks through a child player, and the graph names the child."""
+    """Taga speaks through a child player, and the graph names the child."""
     parents = {55: 9, 9: os.getpid()}
 
     assert spawned_here(55, parent=parents.get, tagged=lambda _pid: False) is True
@@ -640,7 +640,7 @@ class FakeDisplay:
     def __init__(self):
         self.offered = []
 
-    def set_them_streams(self, applications):
+    def set_audio_streams(self, applications):
         self.offered.append(list(applications))
 
 

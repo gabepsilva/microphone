@@ -77,14 +77,14 @@ def test_sound_activity_reporter_names_the_channel_it_speaks_for() -> None:
 def test_codex_context_entries_include_timestamps() -> None:
     router = TranscriptRouter()
     request = router.ingest(
-        "User Voice", "What time is it?", "2026-07-26T12:30:00-04:00", True
+        "Voice", "What time is it?", "2026-07-26T12:30:00-04:00", True
     )
 
     assert request is not None
     assert CodexConversation.context_entries(request) == [
         {
             "timestamp": "2026-07-26T12:30:00-04:00",
-            "source": "User Voice",
+            "source": "Voice",
             "text": "What time is it?",
         }
     ]

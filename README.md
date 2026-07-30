@@ -4,6 +4,13 @@ TagAlong is a Linux desktop assistant that continuously transcribes a
 microphone and an optional PipeWire/PulseAudio output, then presents the
 conversation to Codex through its Textual interface.
 
+The assistant you talk to is called **Taga**. Address it by name and it answers;
+it is the fourth participant in a transcript whose other three sources are
+`Voice` (you, speaking), `Text` (you, typing), and `Audio` (the far end of a
+meeting). "Codex" appears throughout this document and the code only where it
+means the model and SDK underneath Taga — the model to use, its reasoning
+effort, its service tier.
+
 ## Reproducible setup
 
 The project requires CPython 3.12 and [uv](https://docs.astral.sh/uv/). The
@@ -35,7 +42,7 @@ runtime integrations, not Python packages.
 
 ## Speech
 
-Codex answers out loud through one of two engines, chosen with `--tts-provider`
+Taga answers out loud through one of two engines, chosen with `--tts-provider`
 or from the sidebar while the session runs:
 
 - `piper` (default) synthesizes on this machine. It reaches the first word in
@@ -63,28 +70,28 @@ uv run tagalong
 `tagalong.py` launcher still works and does the same thing; it is there for
 running from a checkout without installing.
 
-The command loads `tagalong.yaml` when it exists, initializes User Voice
-transcription, and also transcribes Them when `them_stream` names an
+The command loads `tagalong.yaml` when it exists, initializes Voice
+transcription, and also transcribes Audio when `audio_stream` names an
 application. If the file or an input device is absent, the typed/Codex session
 still starts. The microphone picker under the mic meter refreshes as devices
 are connected, so an input can be selected later without restarting.
 
 ## Hearing the far end
 
-Them is captured from one application's own PipeWire playback stream rather
-than from a speaker's monitor. `--them-stream` names the application — the name
+Audio is captured from one application's own PipeWire playback stream rather
+than from a speaker's monitor. `--audio-stream` names the application — the name
 the desktop shows for it, such as `Chromium` or `ZOOM VoiceEngine` — and the
 session links that application's audio into a capture node of its own while it
 goes on playing to the real speakers, unrouted and unchanged. Nothing has to be
 pointed at a virtual device.
 
-Codex's own speech is a different stream and is never linked, so it cannot be
+Taga's own speech is a different stream and is never linked, so it cannot be
 transcribed back as the far end. That is a property of the wiring rather than a
 filter that can miss.
 
 An application only appears in the audio graph once it starts playing, so the
 startup menu lists what is making sound right now. A name given with
-`--them-stream` or saved in `tagalong.yaml` is taken as written and picked up
+`--audio-stream` or saved in `tagalong.yaml` is taken as written and picked up
 whenever that application appears — including after it restarts, and including
 every stream it opens, which is what makes a browser with several tabs work.
 
