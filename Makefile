@@ -58,7 +58,14 @@ security-static: semgrep
 	mkdir -p reports
 	uv run bandit --recursive --configfile pyproject.toml --format json --output reports/bandit.json --exit-zero $(PYTHON_SOURCES)
 	uv run bandit --recursive --configfile pyproject.toml --severity-level medium --confidence-level medium $(PYTHON_SOURCES)
-	uv run pip-audit --strict
+	# Audit the locked dependency set rather than the environment. Since the
+	# project became installable, `uv sync` puts it in the venv as an editable
+	# install, and an environment audit fails on it either way: --strict treats
+	# a distribution missing from PyPI as an error, and --skip-editable turns
+	# that into a skip, which --strict also refuses. --no-emit-project leaves
+	# it out at the source. What gets audited is then exactly what CI installs.
+	uv export --all-groups --no-emit-project --no-hashes --quiet -o reports/requirements.txt
+	uv run pip-audit --strict -r reports/requirements.txt
 
 secrets:
 	gitleaks detect --source . --log-opts="--all"
