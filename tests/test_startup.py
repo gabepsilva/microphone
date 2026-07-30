@@ -15,10 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex import catalog, startup
-from voice_codex.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
-from voice_codex.listener import TranscriptSubmitter, tts_switch
-from voice_codex.startup import (
+from tagalong import catalog, startup
+from tagalong.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
+from tagalong.listener import TranscriptSubmitter, tts_switch
+from tagalong.startup import (
     StartupSelection,
     build_session_state,
     parse_startup_args,
@@ -31,7 +31,7 @@ from voice_codex.startup import (
 
 
 def write_config(tmp_path, body):
-    path = tmp_path / "voice.yaml"
+    path = tmp_path / "tagalong.yaml"
     path.write_text(body, encoding="utf-8")
     return str(path)
 
@@ -118,7 +118,7 @@ def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
 
 
 def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> None:
-    unreadable = tmp_path / "voice.yaml"
+    unreadable = tmp_path / "tagalong.yaml"
     unreadable.mkdir()
 
     with pytest.raises(SystemExit, match="2"):
@@ -352,7 +352,7 @@ def test_startup_keeps_running_without_a_microphone(monkeypatch, tmp_path) -> No
     # Fake the adapter where both the old startup chooser and the new direct
     # resolver reach it, so the regression fails on behavior rather than on a
     # refactor-specific missing attribute.
-    monkeypatch.setattr("voice_codex.choosers.input_devices", list)
+    monkeypatch.setattr("tagalong.choosers.input_devices", list)
     if hasattr(startup, "input_devices"):
         monkeypatch.setattr(startup, "input_devices", list)
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
@@ -865,8 +865,8 @@ def test_the_codex_sdk_is_not_imported_just_to_start_the_interface() -> None:
     """
     probe = (
         "import sys;"
-        "import voice_codex.cli;"
-        "import voice_codex.tui;"
+        "import tagalong.cli;"
+        "import tagalong.tui;"
         "print('openai_codex' in sys.modules)"
     )
     result = subprocess.run(
@@ -882,7 +882,7 @@ def test_the_codex_sdk_is_not_imported_just_to_start_the_interface() -> None:
 
 def test_building_a_conversation_loads_the_sdk_it_dispatches_on() -> None:
     """Deferring the import must not leave the dispatch names unbound."""
-    from voice_codex import codex as codex_module
+    from tagalong import codex as codex_module
 
     codex_module.load_codex_sdk()
 

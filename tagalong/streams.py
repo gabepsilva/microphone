@@ -269,7 +269,7 @@ def require_pipewire():
         if shutil.which(tool) is None:
             raise RuntimeError(
                 f"{tool} is required to transcribe an application's audio. "
-                "Voice Codex captures PipeWire playback streams directly."
+                "TagAlong captures PipeWire playback streams directly."
             )
 
 
@@ -293,7 +293,7 @@ class StreamTap:
     session waits for someone to choose.
     """
 
-    NODE_PREFIX = "voice_codex_tap_"
+    NODE_PREFIX = "tagalong_tap_"
     POLL_SECONDS = 1.0
 
     # pw-record's own default is 100ms, which is added to everything this

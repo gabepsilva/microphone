@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-from voice_codex.playback import (
+from tagalong.playback import (
     AudioPlayer,
     describe_tool_failure,
     play_command,

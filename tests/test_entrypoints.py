@@ -17,16 +17,16 @@ def test_cli_import_does_not_load_the_microphone_adapter(monkeypatch) -> None:
         return original_getattr(name)
 
     monkeypatch.setattr(moonshine_voice, "__getattr__", prohibit_microphone_adapter)
-    sys.modules.pop("voice_codex.cli", None)
+    sys.modules.pop("tagalong.cli", None)
 
-    importlib.import_module("voice_codex.cli")
+    importlib.import_module("tagalong.cli")
 
 
 def test_entrypoint_launches_the_configured_application(monkeypatch) -> None:
     called: list[bool] = []
-    monkeypatch.setattr("voice_codex.cli.main", lambda: called.append(True))
+    monkeypatch.setattr("tagalong.cli.main", lambda: called.append(True))
 
-    entrypoint = Path(__file__).resolve().parents[1] / "voice_codex.py"
+    entrypoint = Path(__file__).resolve().parents[1] / "tagalong.py"
     runpy.run_path(str(entrypoint), run_name="__main__")
 
     assert called == [True]

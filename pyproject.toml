@@ -1,7 +1,7 @@
 [project]
-name = "voice-codex"
+name = "tagalong"
 version = "0.1.0"
-description = "Always-listening User/Them/Codex conversation assistant"
+description = "An always-on local assistant that hears both sides of your meeting and answers in your ear."
 readme = "features.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -111,16 +111,16 @@ skip_empty = true
 # choosers.py at the same time produced 1,116 mutants and 146 survivors, so it
 # remains the next module-sized change rather than being hidden in this one.
 #
-# Widening also needs `also_copy = ["voice_codex/"]`: mutmut runs the suite
+# Widening also needs `also_copy = ["tagalong/"]`: mutmut runs the suite
 # against a copy of source_paths alone, and a selected test that imports an
 # unlisted sibling makes collection fail rather than the gate.
 source_paths = [
-    "voice_codex/domain.py",
-    "voice_codex/config.py",
-    "voice_codex/codex.py",
-    "voice_codex/catalog.py",
+    "tagalong/domain.py",
+    "tagalong/config.py",
+    "tagalong/codex.py",
+    "tagalong/catalog.py",
 ]
-also_copy = ["voice_codex/", "voice_codex.py", "voice.example.yaml"]
+also_copy = ["tagalong/", "tagalong.py", "tagalong.example.yaml"]
 pytest_add_cli_args_test_selection = [
     "tests/test_domain.py",
     "tests/test_config.py",

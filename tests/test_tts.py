@@ -19,8 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.playback import describe_tool_failure, player_environment
-from voice_codex.tts import EdgeSentenceTTS, trim_command
+from tagalong.playback import describe_tool_failure, player_environment
+from tagalong.tts import EdgeSentenceTTS, trim_command
 
 WAIT_SECONDS = 10
 

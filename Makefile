@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := ci
 
 SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
-PYTHON_SOURCES := voice_codex.py voice_codex
+PYTHON_SOURCES := tagalong.py tagalong
 
 # Lines this change touches must be tested even where the file's own floor is
 # still low. Overridable so a stacked branch can compare against its base.

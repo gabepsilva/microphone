@@ -38,7 +38,7 @@ DEFAULT_MODEL_HOME = (
             "XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")
         )
     )
-    / "voice-codex/piper"
+    / "tagalong/piper"
 )
 
 # -45 dBFS, the same floor the Edge engine's ffmpeg filter uses, expressed

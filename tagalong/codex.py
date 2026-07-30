@@ -122,7 +122,7 @@ say so instead of inventing context. Your visible responses are presented as
 Codex in a User Voice/User Text/Them/Codex transcript.
 
 Every transcript entry has a ``timestamp`` in local ISO 8601 time, generated
-when Voice Codex submits the entry. Use it for conversational timing context.
+when TagAlong submits the entry. Use it for conversational timing context.
 
 The thread may open with a one-line warm-up exchange that has no transcript
 entries. It exists to make the first real reply fast and is not part of the

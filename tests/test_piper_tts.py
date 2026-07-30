@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import numpy
 import pytest
 
-from voice_codex.piper_tts import (
+from tagalong.piper_tts import (
     SILENCE_THRESHOLD,
     PiperSentenceTTS,
     ensure_model,
@@ -200,7 +200,7 @@ def start_engine(monkeypatch, playback, voice, **kwargs):
         SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: voice)),
     )
     monkeypatch.setattr(
-        "voice_codex.piper_tts.ensure_model", lambda _voice, _home: Path("model.onnx")
+        "tagalong.piper_tts.ensure_model", lambda _voice, _home: Path("model.onnx")
     )
     return PiperSentenceTTS("en_US-lessac-medium", **kwargs)
 
@@ -488,7 +488,7 @@ def test_a_model_that_fails_to_load_is_reported_once(
         SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: None)),
     )
     monkeypatch.setattr(
-        "voice_codex.piper_tts.ensure_model",
+        "tagalong.piper_tts.ensure_model",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("no model")),
     )
     engine = PiperSentenceTTS("en_US-lessac-medium")

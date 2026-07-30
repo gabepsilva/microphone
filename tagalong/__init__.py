@@ -1,4 +1,4 @@
-"""Voice Codex application package.
+"""TagAlong application package.
 
 The public domain helpers live here rather than in the command-line entry
 points so they can be used and tested without loading audio hardware or the

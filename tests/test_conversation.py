@@ -28,7 +28,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
 )
 
-from voice_codex.codex import (
+from tagalong.codex import (
     REASONING_SUMMARY,
     WARMUP_PROMPT,
     CodexConversation,
@@ -284,7 +284,7 @@ def test_every_summary_part_after_the_first_opens_a_paragraph() -> None:
 
 
 def test_reasoning_is_never_spoken() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
 
@@ -433,7 +433,7 @@ def test_an_unrecognised_payload_is_ignored() -> None:
 
 
 def test_speech_is_flushed_at_every_command_boundary() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     chunker = SentenceChunker(spoken.append)
@@ -452,7 +452,7 @@ def test_speech_is_flushed_at_every_command_boundary() -> None:
 
 
 def test_speech_is_flushed_when_the_turn_ends() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     render(
@@ -525,7 +525,7 @@ class RecordedConversation(CodexConversation):
 def conversation(monkeypatch):
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     display = FakeDisplay()
     built = RecordedConversation(
         codex,
@@ -543,7 +543,7 @@ def test_the_thread_is_started_from_the_chosen_settings(quiet_conversation) -> N
     """Every argument here changes what the model is or what it may do."""
     from openai_codex import ApprovalMode, Sandbox
 
-    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
 
     assert quiet_conversation.fake_codex.start_kwargs == {
         "model": "gpt-5.6-luna",
@@ -583,7 +583,7 @@ def test_a_silent_session_still_builds_a_conversation(monkeypatch) -> None:
     """The speech pipeline is optional; nothing else may depend on it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
 
@@ -651,7 +651,7 @@ def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
     """A fork that drops an argument silently changes what Codex may do."""
     from openai_codex import ApprovalMode, Sandbox
 
-    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
 
     conversation.request_model("gpt-5.6-nova")
 
@@ -816,7 +816,7 @@ def test_interrupting_stops_the_active_turn_and_its_speech(monkeypatch) -> None:
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     tts = SimpleNamespace(
         interrupted=0,
@@ -972,7 +972,7 @@ def test_closing_survives_a_turn_that_refuses_to_be_interrupted(monkeypatch) -> 
     """A wedged turn must not take the shutdown down with it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -1010,7 +1010,7 @@ def test_closing_does_not_wait_out_a_wedged_worker(monkeypatch) -> None:
     """Shutdown is bounded: a worker that never returns cannot hang the exit."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     released = threading.Event()
     monkeypatch.setattr(
         CodexConversation, "_worker", lambda self: released.wait(WAIT_SECONDS)
@@ -1088,7 +1088,7 @@ def test_the_thread_it_opened_is_announced(monkeypatch, capsys) -> None:
     """The one line printed before the interface exists, for a failed start."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
 
     conversation = CodexConversation(
@@ -1120,7 +1120,7 @@ def test_a_failed_fork_puts_the_displayed_settings_back(conversation) -> None:
 def test_a_fork_keeps_the_service_tier_the_session_pays_for(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -1221,7 +1221,7 @@ def test_closing_stops_the_turn_the_speech_and_the_client(monkeypatch) -> None:
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     closed_speech = []
     tts = SimpleNamespace(
@@ -1263,7 +1263,7 @@ def test_a_turn_that_ends_on_a_command_speaks_its_text_exactly_once() -> None:
     message the command boundary closed. Speaking it twice, or not at all, are
     both audible.
     """
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     display = render(
@@ -1296,7 +1296,7 @@ def quiet_conversation(monkeypatch):
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
     built = RecordedConversation(
@@ -1430,7 +1430,7 @@ def test_a_settled_request_supersedes_an_outstanding_guess(
 def test_prefiring_is_refused_when_the_session_turned_it_off(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
     conversation = CodexConversation(
@@ -1624,7 +1624,7 @@ def test_a_cancelled_guess_stops_the_speech_it_had_already_started(
     """The half-spoken reply must stop with the turn that was producing it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     interrupted: list[int] = []
     tts = SimpleNamespace(
@@ -1668,7 +1668,7 @@ def test_a_started_turn_is_attached_to_the_speculation_that_owns_it(
 def test_a_turn_speaks_through_the_session_speech(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     spoken: list[str] = []
     turns: list[int] = []

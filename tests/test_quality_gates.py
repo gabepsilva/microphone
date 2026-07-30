@@ -98,7 +98,7 @@ def test_import_does_not_load_the_adapter(monkeypatch):
         raise AssertionError("must not load")
 
     monkeypatch.setattr(module, "__getattr__", prohibit)
-    importlib.import_module("voice_codex.cli")
+    importlib.import_module("tagalong.cli")
 """
 
 
@@ -156,9 +156,9 @@ def _write_coverage(path: Path, files: dict[str, float]) -> None:
 def test_coverage_gate_rejects_a_file_below_its_floor(tmp_path, monkeypatch) -> None:
     gate = _load_gate("coverage_gate")
     report = tmp_path / "coverage.json"
-    _write_coverage(report, {"voice_codex/domain.py": 70.0})
+    _write_coverage(report, {"tagalong/domain.py": 70.0})
     monkeypatch.setattr(gate, "COVERAGE_PATH", report)
-    monkeypatch.setattr(gate, "FLOORS", {"voice_codex/domain.py": 81.0})
+    monkeypatch.setattr(gate, "FLOORS", {"tagalong/domain.py": 81.0})
 
     assert gate.main() == 1
 
@@ -167,7 +167,7 @@ def test_coverage_gate_rejects_an_untested_new_module(tmp_path, monkeypatch) -> 
     """A new file must not inherit the monolith's low recorded floor."""
     gate = _load_gate("coverage_gate")
     report = tmp_path / "coverage.json"
-    _write_coverage(report, {"voice_codex/brand_new.py": 5.0})
+    _write_coverage(report, {"tagalong/brand_new.py": 5.0})
     monkeypatch.setattr(gate, "COVERAGE_PATH", report)
     monkeypatch.setattr(gate, "FLOORS", {})
 
@@ -180,9 +180,9 @@ def test_coverage_gate_rejects_a_floor_for_a_file_that_vanished(
     """A floor pointing at nothing is the silent no-op this suite exists for."""
     gate = _load_gate("coverage_gate")
     report = tmp_path / "coverage.json"
-    _write_coverage(report, {"voice_codex/domain.py": 90.0})
+    _write_coverage(report, {"tagalong/domain.py": 90.0})
     monkeypatch.setattr(gate, "COVERAGE_PATH", report)
-    monkeypatch.setattr(gate, "FLOORS", {"voice_codex/deleted.py": 50.0})
+    monkeypatch.setattr(gate, "FLOORS", {"tagalong/deleted.py": 50.0})
 
     assert gate.main() == 1
 
@@ -221,11 +221,11 @@ def test_mutation_gate_rejects_a_run_that_mutated_nothing(
 
 def _regression_repository(tmp_path: Path, uv_body: str) -> tuple[Path, dict[str, str]]:
     repo = tmp_path / "repo"
-    source = repo / "voice_codex" / "behavior.py"
+    source = repo / "tagalong" / "behavior.py"
     source.parent.mkdir(parents=True)
     source.write_text('STATE = "broken"\n', encoding="utf-8")
-    (repo / "voice_codex.py").write_text(
-        "from voice_codex.behavior import STATE\n", encoding="utf-8"
+    (repo / "tagalong.py").write_text(
+        "from tagalong.behavior import STATE\n", encoding="utf-8"
     )
     subprocess.run(["git", "init", "-q", repo], check=True)
     subprocess.run(
@@ -257,7 +257,7 @@ def test_regression_verification_observes_fail_then_pass_and_restores_the_fix(
 ) -> None:
     repo, env = _regression_repository(
         tmp_path,
-        "grep -q '\"fixed\"' voice_codex/behavior.py",
+        "grep -q '\"fixed\"' tagalong/behavior.py",
     )
 
     result = subprocess.run(
@@ -272,7 +272,7 @@ def test_regression_verification_observes_fail_then_pass_and_restores_the_fix(
     assert result.returncode == 0, result.stderr
     assert "good: the test failed without the fix" in result.stdout
     assert "regression verified" in result.stdout
-    assert (repo / "voice_codex" / "behavior.py").read_text(
+    assert (repo / "tagalong" / "behavior.py").read_text(
         encoding="utf-8"
     ) == 'STATE = "fixed"\n'
     assert (
@@ -302,7 +302,7 @@ def test_regression_verification_rejects_a_test_that_passes_without_the_fix(
 
     assert result.returncode == 1
     assert "test passed without the fix" in result.stdout
-    assert (repo / "voice_codex" / "behavior.py").read_text(
+    assert (repo / "tagalong" / "behavior.py").read_text(
         encoding="utf-8"
     ) == 'STATE = "fixed"\n'
 
@@ -501,7 +501,7 @@ def test_worker_gate_fails_when_it_scans_a_package_that_is_not_there(
 ) -> None:
     """Scanning nothing must not be reported as a clean run."""
     gate = _load_gate("worker_gate")
-    monkeypatch.setattr(gate, "PACKAGE", tmp_path / "voice_codex")
+    monkeypatch.setattr(gate, "PACKAGE", tmp_path / "tagalong")
     monkeypatch.chdir(tmp_path)
 
     assert gate.main() == 1
@@ -511,7 +511,7 @@ def test_worker_gate_reports_a_planted_violation_through_main(
     tmp_path, monkeypatch
 ) -> None:
     gate = _load_gate("worker_gate")
-    package = tmp_path / "voice_codex"
+    package = tmp_path / "tagalong"
     package.mkdir()
     (package / "capture.py").write_text(NON_DAEMON_THREAD, encoding="utf-8")
     monkeypatch.setattr(gate, "PACKAGE", package)
@@ -525,7 +525,7 @@ def test_worker_gate_passes_on_this_repository() -> None:
     gate = _load_gate("worker_gate")
     monkeypatch_free_failures = [
         failure
-        for path in sorted((ROOT / "voice_codex").rglob("*.py"))
+        for path in sorted((ROOT / "tagalong").rglob("*.py"))
         for failure in gate.check_source(path.read_text(encoding="utf-8"), path)
     ]
 
@@ -567,7 +567,7 @@ def _fake_repo(tmp_path: Path, base_files: dict[str, str]) -> Path:
     return repo
 
 
-BASE_COVERAGE_GATE = 'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n'
+BASE_COVERAGE_GATE = 'FLOORS = {"tagalong/domain.py": 81.0}\nNEW_FILE_FLOOR = 60.0\n'
 BASE_MUTATION_GATE = "MUTATION_SCORE_FLOOR = 42.0\n"
 BASE_CONTEXT_BUDGET = (
     'BUDGETS = {"AGENTS.md": 400}\n'
@@ -578,7 +578,7 @@ BASE_PYPROJECT = """
 fail_under = 46
 
 [tool.mutmut]
-source_paths = ["voice_codex/domain.py"]
+source_paths = ["tagalong/domain.py"]
 """
 BASE_SEMGREP = "rules:\n  - id: python-subprocess-shell-true\n"
 BASE_MAKEFILE = "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 90\n"
@@ -599,12 +599,12 @@ BASE_FILES = {
         (
             "lowered per-file coverage floor",
             "tools/coverage_gate.py",
-            'FLOORS = {"voice_codex/domain.py": 40.0}\nNEW_FILE_FLOOR = 60.0\n',
+            'FLOORS = {"tagalong/domain.py": 40.0}\nNEW_FILE_FLOOR = 60.0\n',
         ),
         (
             "lowered new-file floor",
             "tools/coverage_gate.py",
-            'FLOORS = {"voice_codex/domain.py": 81.0}\nNEW_FILE_FLOOR = 10.0\n',
+            'FLOORS = {"tagalong/domain.py": 81.0}\nNEW_FILE_FLOOR = 10.0\n',
         ),
         (
             "lowered mutation floor",
@@ -615,7 +615,7 @@ BASE_FILES = {
             "lowered global coverage threshold",
             "pyproject.toml",
             "\n[tool.coverage.report]\nfail_under = 5\n\n[tool.mutmut]\n"
-            'source_paths = ["voice_codex/domain.py"]\n',
+            'source_paths = ["tagalong/domain.py"]\n',
         ),
         (
             "narrowed mutmut scope",
@@ -685,7 +685,7 @@ def test_ratchet_allows_a_raised_floor(tmp_path, monkeypatch) -> None:
     gate = _load_gate("ratchet_gate")
     repo = _fake_repo(tmp_path, BASE_FILES)
     (repo / "tools/coverage_gate.py").write_text(
-        'FLOORS = {"voice_codex/domain.py": 95.0}\nNEW_FILE_FLOOR = 80.0\n',
+        'FLOORS = {"tagalong/domain.py": 95.0}\nNEW_FILE_FLOOR = 80.0\n',
         encoding="utf-8",
     )
     (repo / "Makefile").write_text(
@@ -776,7 +776,7 @@ def test_semgrep_scans_test_code() -> None:
 def test_semgrep_forbids_faking_the_unit_under_test() -> None:
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
     assert "python-test-fakes-the-unit-under-test" in rules
-    assert "voice_codex" in rules
+    assert "tagalong" in rules
     assert "domain" in rules
 
 

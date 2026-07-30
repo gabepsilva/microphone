@@ -49,12 +49,12 @@ DEFAULT_CODEX_FAST = True
 
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "voice.yaml",
+    "tagalong.yaml",
 )
 
 
 def build_parser():
-    """Build the command-line parser for the Voice Codex entry point."""
+    """Build the command-line parser for the TagAlong entry point."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -166,7 +166,7 @@ def build_parser():
 def _apply_startup_config(parser, args):
     """Fill options the command line left unset from the startup config file.
 
-    ``--config`` always names a file, defaulting to ``voice.yaml`` beside the
+    ``--config`` always names a file, defaulting to ``tagalong.yaml`` beside the
     package. A missing file is an empty configuration layer so a first run can
     start from built-in defaults; every other read failure remains fatal.
     """

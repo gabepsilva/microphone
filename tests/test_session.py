@@ -12,7 +12,7 @@ import signal
 
 import pytest
 
-from voice_codex.session import (
+from tagalong.session import (
     SESSION_MARKER,
     is_running,
     orphans,

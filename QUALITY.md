@@ -1,6 +1,6 @@
-# Voice Codex quality system
+# TagAlong quality system
 
-Voice Codex is developed primarily with AI assistance. A generated change is
+TagAlong is developed primarily with AI assistance. A generated change is
 not accepted merely because it looks plausible: it must pass repeatable checks
 and carry direct behavior evidence.
 
@@ -106,11 +106,11 @@ connections rather than re-testing the parts.
 
 That gap was the Edge TTS pipeline's error and cancellation branches, and it
 is closed: each one now has a network fake and waits on an event the fake
-player sets, so `voice_codex/tts.py` measures 97% and does so identically
+player sets, so `tagalong/tts.py` measures 97% and does so identically
 across repeated runs. It used to flap by a point between runs, which is why
 its floor sat at 80 until the races were fixed rather than floored around.
 
-The lowest floor in the package is now `voice_codex/capture.py` at 86%, and
+The lowest floor in the package is now `tagalong/capture.py` at 86%, and
 what it leaves uncovered is the microphone adapter itself — the subclass that
 opens a PortAudio stream. That one is a decision rather than a gap: it is the
 hardware boundary, and no fake can assert the thing that makes it real.
@@ -133,7 +133,7 @@ tool can check: every new subprocess invocation needs a test or a direct review
 of where its arguments came from.
 
 `pip-audit` and Gitleaks are merge gates whose inputs move on their own; see
-the scheduled audit below. Local `voice.yaml`, transcripts, and recordings are
+the scheduled audit below. Local `tagalong.yaml`, transcripts, and recordings are
 never committed.
 
 ## CI and merge policy

@@ -76,7 +76,7 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not fake voice_codex.domain in tests. It is pure logic with no audio,
+      Do not fake tagalong.domain in tests. It is pure logic with no audio,
       process, or network boundary, so replacing it makes the test assert on
       the fake instead of on behavior. Fake adapters, never the subject.
     metadata:
@@ -95,4 +95,4 @@ rules:
           - pattern: patch.object($TARGET, ...)
       - metavariable-regex:
           metavariable: $TARGET
-          regex: ^(["\']voice_codex\.domain[.\\'"]|voice_codex\.domain\b|domain\.[A-Za-z_]+$)
+          regex: ^(["\']tagalong\.domain[.\\'"]|tagalong\.domain\b|domain\.[A-Za-z_]+$)

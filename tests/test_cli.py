@@ -19,10 +19,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex import cli
-from voice_codex.catalog import CodexModelOption
-from voice_codex.domain import RESPONSE_POLICIES, TurnLatencyEstimator
-from voice_codex.tui import SessionState
+from tagalong import cli
+from tagalong.catalog import CodexModelOption
+from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator
+from tagalong.tui import SessionState
 
 MIC = {"name": "Yeti"}
 THEM_APPLICATION = "ZOOM VoiceEngine"
@@ -192,7 +192,7 @@ def managed_microphone(devices=(), discover=None, open_error=None):
 @pytest.fixture
 def wiring(monkeypatch, tmp_path):
     """Fake every adapter ``main`` reaches for and record what it built."""
-    config = tmp_path / "voice.yaml"
+    config = tmp_path / "tagalong.yaml"
     config.write_text("", encoding="utf-8")
     built: dict[str, object] = {}
 
@@ -276,8 +276,8 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli, "get_model_for_language", lambda **kwargs: ("model-path", "arch")
     )
-    monkeypatch.setattr("voice_codex.tui.VoiceCodexTUI", FakeTUI)
-    monkeypatch.setattr(cli.sys, "argv", ["voice_codex.py", "--config", str(config)])
+    monkeypatch.setattr("tagalong.tui.VoiceCodexTUI", FakeTUI)
+    monkeypatch.setattr(cli.sys, "argv", ["tagalong.py", "--config", str(config)])
 
     built.update(
         input_device=MIC,
@@ -794,9 +794,9 @@ def test_a_silent_session_gives_the_sidebar_no_speech_to_poll(wiring) -> None:
 
 def saved_config(tmp_path):
     """Read back what the session wrote to the file it started from."""
-    from voice_codex.config import load_startup_config
+    from tagalong.config import load_startup_config
 
-    return load_startup_config(tmp_path / "voice.yaml")
+    return load_startup_config(tmp_path / "tagalong.yaml")
 
 
 def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
@@ -854,14 +854,14 @@ def test_a_clamped_window_is_saved_as_the_value_in_force(wiring, tmp_path) -> No
 
 def test_a_session_reopens_with_what_the_last_one_left(wiring, tmp_path) -> None:
     """The whole point: the file a session writes is the file it next reads."""
-    from voice_codex.startup import parse_startup_args
+    from tagalong.startup import parse_startup_args
 
     cli.main()
     tui, _, _ = wiring["session"]
     tui.hooks.on_turn_silence(1.25)
     tui.hooks.on_codex_effort("high")
 
-    _, args = parse_startup_args(["--config", str(tmp_path / "voice.yaml")])
+    _, args = parse_startup_args(["--config", str(tmp_path / "tagalong.yaml")])
 
     assert args.turn_silence == 1.25
     assert args.codex_reasoning == "high"
@@ -978,7 +978,7 @@ def test_release_lock_is_a_noop_when_no_lock_is_held(monkeypatch) -> None:
 
 def test_the_lock_file_is_named_for_the_user_who_owns_it() -> None:
     """A shared fallback directory must not hand one user another's lock."""
-    assert cli.LOCK_PATH.name == f"voice-codex-{os.getuid()}.lock"
+    assert cli.LOCK_PATH.name == f"tagalong-{os.getuid()}.lock"
 
 
 @pytest.mark.usefixtures("wiring")
@@ -990,7 +990,7 @@ def test_asking_for_help_does_not_wait_on_the_single_instance_lock(monkeypatch) 
     """
 
     def already_running(*_args, **_kwargs):
-        raise RuntimeError("Another voice_codex session is already running.")
+        raise RuntimeError("Another tagalong session is already running.")
 
     monkeypatch.setattr(cli, "acquire_single_instance_lock", already_running)
     cli.sys.argv.append("--help")

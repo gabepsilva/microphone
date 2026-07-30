@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from voice_codex.domain import (
+from tagalong.domain import (
     CodexRequest,
     EchoMatcher,
     EchoMemory,

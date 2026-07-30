@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from voice_codex.commands import Command, CommandRouter
+from tagalong.commands import Command, CommandRouter
 
 
 class Display:

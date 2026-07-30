@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.streams import (
+from tagalong.streams import (
     ApplicationRefresher,
     ApplicationStream,
     StreamTap,
@@ -366,11 +366,11 @@ def test_a_port_whose_channel_is_unnamed_sorts_after_the_named_ones() -> None:
 
 def test_a_node_is_found_by_its_exact_name() -> None:
     objects = [
-        node(1, **{"node.name": "voice_codex_tap_9"}),
-        node(2, **{"node.name": "voice_codex_tap_90"}),
+        node(1, **{"node.name": "tagalong_tap_9"}),
+        node(2, **{"node.name": "tagalong_tap_90"}),
     ]
 
-    assert nodes_named(objects, "voice_codex_tap_9") == [1]
+    assert nodes_named(objects, "tagalong_tap_9") == [1]
 
 
 def test_the_links_already_feeding_a_node_are_reported_as_pairs() -> None:
@@ -415,7 +415,7 @@ def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:
 def test_the_capture_node_is_named_for_this_process() -> None:
     tap = StreamTap("Chromium")
 
-    assert tap.node_name == f"voice_codex_tap_{os.getpid()}"
+    assert tap.node_name == f"tagalong_tap_{os.getpid()}"
     assert f"node.name = {tap.node_name}" in " ".join(tap.command(16000))
 
 

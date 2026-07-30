@@ -15,7 +15,7 @@ virtual-mic-*.wav
 virtual-out-*.mp3
 virtual-out-*.wav
 transcription/
-voice.yaml
+tagalong.yaml
 
 # Claude Code scratch worktrees — a second copy of the package, not source.
 # Skills are source: they link to the canonical copies under .agents/skills/.

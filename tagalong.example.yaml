@@ -1,4 +1,4 @@
-# Copy this file to voice.yaml to override or make the built-in defaults explicit.
+# Copy this file to tagalong.yaml to override or make the built-in defaults explicit.
 # Command-line options override these values.
 # Null automatically uses the first available microphone. If it is unavailable,
 # the session still starts and the sidebar can select one later.

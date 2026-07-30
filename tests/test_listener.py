@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
-from voice_codex.listener import ConversationListener, TranscriptSubmitter
+from tagalong.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
+from tagalong.listener import ConversationListener, TranscriptSubmitter
 
 
 class RecordingDisplay:

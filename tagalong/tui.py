@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Textual TUI shell for voice-codex.
+"""Textual TUI shell for tagalong.
 
 This module owns no audio, transcription, or Codex logic. It renders state and
 forwards user intent. Everything it displays arrives through
 :class:`VoiceCodexTUI`, a thread-safe facade, and everything the user does
 leaves through :class:`TuiHooks` callbacks. The runtime uses that facade as its
-display boundary when started with ``voice_codex.py``. The entry point calls
-``voice_codex.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds it
+display boundary when started with ``tagalong.py``. The entry point calls
+``tagalong.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds it
 to that contract.
 """
 

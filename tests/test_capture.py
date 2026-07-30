@@ -17,7 +17,7 @@ import types
 import numpy as np
 import pytest
 
-from voice_codex.capture import (
+from tagalong.capture import (
     ApplicationStreamTranscriber,
     CaptureSettings,
     MuteGate,
@@ -164,7 +164,7 @@ class RecordedCapture(ApplicationStreamTranscriber):
 def capture(monkeypatch):
     """Build a stream transcriber with the recorder, tap, and Moonshine faked."""
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("voice_codex.capture.Transcriber", FakeTranscriber)
+    monkeypatch.setattr("tagalong.capture.Transcriber", FakeTranscriber)
     monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
     def build(reads=(), exit_code=None, **kwargs):

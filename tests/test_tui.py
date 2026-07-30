@@ -484,7 +484,7 @@ def test_tui_disables_native_interrupts_before_textual_import() -> None:
             sys.executable,
             "-c",
             (
-                "import os; from voice_codex import tui; "
+                "import os; from tagalong import tui; "
                 "from textual import constants; "
                 "print(os.environ.get('TEXTUAL_ALLOW_SIGNALS')); "
                 "print(os.environ.get('TEXTUAL_DISABLE_KITTY_KEY')); "
@@ -517,7 +517,7 @@ def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:
 
 
 def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
-    from voice_codex.domain import RESPONSE_POLICIES
+    from tagalong.domain import RESPONSE_POLICIES
 
     # The picker's labels are the domain's, so a policy added there appears
     # here without a second list to remember to update.
@@ -528,7 +528,7 @@ def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
 
 
 def test_the_speech_picker_offers_every_provider_and_silence(tui) -> None:
-    from voice_codex.speech import NO_VOICE, NO_VOICE_LABEL, PROVIDER_LABELS
+    from tagalong.speech import NO_VOICE, NO_VOICE_LABEL, PROVIDER_LABELS
 
     # The picker's labels are the speech boundary's, so a provider added there
     # appears here without a second list to remember to update. Silence is
@@ -688,7 +688,7 @@ def test_a_refused_application_leaves_the_picker_where_it_was(tui) -> None:
 
 
 def test_the_speech_picker_shows_silence_while_the_voice_is_off(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     shown: list[str] = []
     state = tui.SessionState(tts_provider="piper", tts_enabled=True)
@@ -710,7 +710,7 @@ def test_the_speech_picker_shows_silence_while_the_voice_is_off(tui) -> None:
 
 
 def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     toggled: list[bool] = []
     state = tui.SessionState(tts_provider="piper")
@@ -732,7 +732,7 @@ def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
 
 
 def test_choosing_an_engine_again_gives_the_session_its_voice_back(tui) -> None:
-    from voice_codex.speech import default_voice
+    from tagalong.speech import default_voice
 
     toggled: list[bool] = []
     switched: list[str] = []
@@ -760,7 +760,7 @@ def test_choosing_an_engine_again_gives_the_session_its_voice_back(tui) -> None:
 
 
 def test_a_silent_session_cannot_be_given_a_voice_by_the_picker(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     shown: list[str] = []
     # Started with --tts off: there is no engine to switch or unmute, and both
@@ -788,7 +788,7 @@ def test_a_silent_session_cannot_be_given_a_voice_by_the_picker(tui) -> None:
 
 
 def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:
-    from voice_codex.speech import DEFAULT_PROVIDER, default_voice
+    from tagalong.speech import DEFAULT_PROVIDER, default_voice
 
     state = tui.SessionState()
 
@@ -797,7 +797,7 @@ def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:
 
 
 def test_choosing_a_speech_provider_switches_the_engine_and_its_voice(tui) -> None:
-    from voice_codex.speech import default_voice
+    from tagalong.speech import default_voice
 
     switched: list[str] = []
     state = tui.SessionState(tts_provider="piper")

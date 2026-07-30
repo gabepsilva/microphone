@@ -14,7 +14,7 @@ from textual import events
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Input
 
-from voice_codex.tui import EntryRow
+from tagalong.tui import EntryRow
 
 
 def drive(facade, body):
@@ -601,7 +601,7 @@ HOST_ONLY_METHODS = frozenset(
 
 
 def protocol_methods():
-    from voice_codex import presentation
+    from tagalong import presentation
 
     names: set[str] = set()
     for protocol in (

@@ -42,7 +42,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-PACKAGE = Path("voice_codex")
+PACKAGE = Path("tagalong")
 
 THREAD_FACTORIES = {"Thread", "Timer"}
 

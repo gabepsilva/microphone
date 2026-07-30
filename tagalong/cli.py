@@ -73,7 +73,7 @@ from .streams import ApplicationRefresher, StreamTap
 # other user's session, or refusing to open at all because they own it.
 LOCK_PATH = (
     Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
-    / f"voice-codex-{os.getuid()}.lock"
+    / f"tagalong-{os.getuid()}.lock"
 )
 _INSTANCE_LOCK = None
 _LOCK_RELEASE_REGISTERED = False
@@ -102,7 +102,7 @@ def acquire_single_instance_lock(lock_path: Path = LOCK_PATH):
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as error:
         lock_file.close()
-        raise RuntimeError("Another voice_codex session is already running.") from error
+        raise RuntimeError("Another tagalong session is already running.") from error
     _INSTANCE_LOCK = lock_file
     if not _LOCK_RELEASE_REGISTERED:
         atexit.register(_release_single_instance_lock)

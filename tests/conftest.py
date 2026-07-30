@@ -1,4 +1,4 @@
-"""Shared fixtures for the Voice Codex package.
+"""Shared fixtures for the TagAlong package.
 
 Every other test module imports the one module it exercises directly, so the
 import at the top of a test file names its subject. The interface is the
@@ -19,6 +19,6 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(scope="session")
 def tui():
-    from voice_codex import tui as tui_module
+    from tagalong import tui as tui_module
 
     return tui_module
