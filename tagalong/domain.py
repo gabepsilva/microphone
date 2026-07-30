@@ -10,8 +10,11 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+
+from markdown_it import MarkdownIt
 
 VOICE = "Voice"
 TEXT = "Text"
@@ -76,6 +79,144 @@ _POLICY_ALIASES = {
 def resolve_response_policy(value: str) -> ResponsePolicy:
     """Resolve a CLI answer or persisted policy name into a policy."""
     return RESPONSE_POLICIES[_POLICY_ALIASES[value]]
+
+
+# --------------------------------------------------------------------------
+# Markdown → speakable prose
+#
+# Taga writes markdown for the transcript; the same stream is sentence-chunked
+# for TTS. Markup spoken aloud is worse than dropping it. This is the cheap
+# half of dual-channel replies — display keeps the source, speech gets a
+# CommonMark walk with a speech-specific render policy.
+#
+# A stack of regex substitutions is the wrong tool: it false-positives on
+# code (``__init__``, ``*ptr``, ``3 * 4``) and still leaks unclosed markers.
+# Applied to finished chunks from the sentence chunker, not raw deltas.
+# --------------------------------------------------------------------------
+
+# One parser for the process. CommonMark only — no linkify (would invent
+# URLs from bare hostnames and then we'd have to strip them again).
+_SPEECH_MD = MarkdownIt("commonmark")
+# Block types with nothing worth hearing, or whose text is source code.
+_SPEECH_SKIP_BLOCKS = frozenset({"fence", "code_block", "hr", "html_block"})
+# CommonMark leaves unclosed ``**`` as literal text; residual markers are
+# still audible garbage. Single ``*`` is left alone so ``3 * 4`` survives.
+_ORPHAN_BOLD_MARKERS = re.compile(r"\*\*")
+# Not in CommonMark; models still emit it. One cheap pass after the parse.
+_STRIKE_MARKERS = re.compile(r"~~(.+?)~~")
+# Bare URLs (and autolink labels that equal the href) are not words. Spoken
+# letter-by-letter they destroy a sentence; drop them after the walk. Trailing
+# sentence punctuation is not part of the URL and must stay.
+_BARE_URL = re.compile(r"https?://[^\s<>\]]+")
+_URL_TRAIL_PUNCT = ".,;:!?"
+_SPEECH_WHITESPACE = re.compile(r"\s+")
+# Dropping a URL can leave "word ." — tidy for the ear and for tests.
+_SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,;:!?])")
+# Emphasis markers that must survive speech (dunder-style names). Asterisk
+# markers are pure stress and are dropped.
+_KEEP_EMPHASIS_MARKUP = frozenset({"_", "__"})
+_BREAK_KINDS = frozenset({"softbreak", "hardbreak"})
+_EMPHASIS_KINDS = frozenset({"strong_open", "em_open", "strong_close", "em_close"})
+
+
+def _drop_bare_urls(text: str) -> str:
+    """Remove URL spellings while keeping any sentence punctuation after them."""
+
+    def replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        body = url.rstrip(_URL_TRAIL_PUNCT)
+        # Only the trailing punctuation (if any) remains for the sentence.
+        return url[len(body) :]
+
+    return _BARE_URL.sub(replace, text)
+
+
+def _speech_inline_piece(token) -> str:
+    """One inline token as speech text (empty means skip)."""
+    kind = token.type
+    if kind in {"text", "code_inline"}:
+        # Code keeps identifiers and paths literal, including underscores.
+        return token.content
+    if kind in _BREAK_KINDS:
+        return " "
+    if kind == "image":
+        # Alt text only; CommonMark puts it in children when present.
+        if token.children:
+            return _render_speech_inlines(token.children)
+        return token.content or ""
+    if kind in _EMPHASIS_KINDS:
+        # Asterisk emphasis is pure stress — drop the markers. Underscore
+        # emphasis is how dunder names parse when the model forgets backticks
+        # (``__init__`` → strong "init"); keep the underscores so the ear
+        # still hears a dunder, not a bare word.
+        if token.markup in _KEEP_EMPHASIS_MARKUP:
+            return token.markup
+        return ""
+    # link_open / link_close / html_inline and anything unknown: labels are
+    # sibling text tokens; destinations and tags are not spoken. Recurse only
+    # when the token actually nests inlines.
+    if token.children:
+        return _render_speech_inlines(token.children)
+    return ""
+
+
+def _render_speech_inlines(tokens) -> str:
+    """Render inline tokens for the ear, not the screen."""
+    return "".join(_speech_inline_piece(token) for token in tokens)
+
+
+def markdown_to_speech(text: str) -> str:
+    """Reduce markdown source to plain prose a TTS engine can speak.
+
+    Policy (deliberate, not accidental):
+    - Fenced / indented code blocks are dropped (source aloud is noise).
+    - Inline code keeps its content (paths, identifiers).
+    - Links keep the label; destinations and bare autolinks are dropped.
+    - Images keep the alt text only.
+    - Asterisk bold/italic markers drop; underscore markers around emphasis
+      are kept so dunder names survive a missing code span.
+    - Headings, lists, and quotes contribute their text only.
+    - Residual unclosed ``**`` markers are stripped after the parse.
+
+    Returns an empty string when nothing speakable remains.
+    """
+    if not text:
+        return ""
+
+    pieces: list[str] = []
+    for token in _SPEECH_MD.parse(text):
+        if token.type in _SPEECH_SKIP_BLOCKS:
+            continue
+        if token.type != "inline":
+            continue
+        if not token.children:
+            continue
+        piece = _render_speech_inlines(token.children)
+        if piece:
+            pieces.append(piece)
+
+    spoken = " ".join(pieces)
+    spoken = _STRIKE_MARKERS.sub(r"\1", spoken)
+    spoken = _ORPHAN_BOLD_MARKERS.sub("", spoken)
+    spoken = _drop_bare_urls(spoken)
+    spoken = _SPEECH_WHITESPACE.sub(" ", spoken)
+    spoken = _SPACE_BEFORE_PUNCT.sub(r"\1", spoken)
+    return spoken.strip()
+
+
+def speech_sink(speak: Callable[[str], None]) -> Callable[[str], None]:
+    """Wrap a ``speak`` callback so it only receives cleaned markdown chunks.
+
+    Empty results (code-only fences, pure markup) are not forwarded, so the
+    engine never queues silence as a sentence.
+    """
+
+    def emit(text: str) -> None:
+        cleaned = markdown_to_speech(text)
+        if cleaned:
+            speak(cleaned)
+
+    return emit
 
 
 class SentenceChunker:

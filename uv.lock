@@ -1090,6 +1090,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "edge-tts" },
+    { name = "markdown-it-py" },
     { name = "moonshine-voice" },
     { name = "numpy" },
     { name = "openai-codex" },
@@ -1116,6 +1117,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "edge-tts", specifier = "==7.2.8" },
+    { name = "markdown-it-py", specifier = "==4.2.0" },
     { name = "moonshine-voice", specifier = "==0.0.73" },
     { name = "numpy", specifier = "==2.5.1" },
     { name = "openai-codex", specifier = "==0.144.4" },

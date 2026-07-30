@@ -24,6 +24,7 @@ from .domain import (
     SentenceChunker,
     TranscriptRouter,
     TurnLatencyEstimator,
+    speech_sink,
 )
 from .presentation import CodexPresentation
 
@@ -755,11 +756,14 @@ class CodexConversation:
         return True
 
     def _stream_turn(self, turn, reply_to):
-        if self.tts is not None:
-            self.tts.begin_turn()
-        sentence_chunker = (
-            SentenceChunker(self.tts.speak) if self.tts is not None else None
-        )
+        # Transcript keeps markdown source; only completed speech chunks are
+        # cleaned so half-open fences mid-delta never reflow the buffer.
+        tts = self.tts
+        if tts is not None:
+            tts.begin_turn()
+            sentence_chunker = SentenceChunker(speech_sink(tts.speak))
+        else:
+            sentence_chunker = None
         started = time.monotonic()
         renderer = CodexTurnRenderer(
             self.transcript_display

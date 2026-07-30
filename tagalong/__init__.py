@@ -15,7 +15,9 @@ from .domain import (
     ResponsePolicy,
     SentenceChunker,
     TranscriptRouter,
+    markdown_to_speech,
     resolve_response_policy,
+    speech_sink,
 )
 
 __all__ = [
@@ -28,5 +30,7 @@ __all__ = [
     "ResponsePolicy",
     "SentenceChunker",
     "TranscriptRouter",
+    "markdown_to_speech",
     "resolve_response_policy",
+    "speech_sink",
 ]
