@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import threading
 
+from rich.text import Text
 from textual import events
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
+from textual.widgets import Markdown, Static
 
 from tagalong.tui import EntryRow, PromptInput
 
@@ -30,6 +32,16 @@ def drive(facade, body):
 
 def entry_texts(facade):
     return [entry.text for entry in facade.app.entries]
+
+
+async def wait_markdown(row: EntryRow, pilot, text: str) -> Markdown:
+    """Wait until the row hosts Textual Markdown whose source matches ``text``."""
+    for _ in range(20):
+        for widget in row.query(Markdown):
+            if widget.source == text:
+                return widget
+        await pilot.pause()
+    raise AssertionError(f"markdown body with source {text!r} did not mount")
 
 
 def test_a_committed_turn_becomes_a_transcript_entry(tui) -> None:
@@ -106,7 +118,7 @@ def test_an_interrupted_turn_reads_as_cut_off(tui) -> None:
     drive(facade, body)
 
     assert facade.app.entries[0].interrupted is True
-    assert "cut off" in tui.render_entry_body(facade.app.entries[0]).plain
+    assert facade.app.entries[0].text == "Half a th"
 
 
 def test_thinking_is_a_codex_row_that_closes_with_what_it_cost(tui) -> None:
@@ -504,6 +516,195 @@ def test_a_streaming_entry_shows_a_cursor(tui) -> None:
     entry = tui.Entry(kind="speech", source=tui.TAGA, text="typing", streaming=True)
 
     assert "▌" in tui.render_entry_body(entry).plain
+    assert tui.uses_markdown_body(entry) is False
+
+
+def test_only_finished_taga_answers_use_markdown_bodies(tui) -> None:
+    """The host widget switch is the product rule; assert it directly."""
+    finished = tui.Entry(kind="speech", source=tui.TAGA, text="**done**")
+    streaming = tui.Entry(
+        kind="speech", source=tui.TAGA, text="**live**", streaming=True
+    )
+    empty = tui.Entry(kind="speech", source=tui.TAGA, text="")
+    voice = tui.Entry(kind="speech", source=tui.VOICE, text="**noise**")
+
+    assert tui.uses_markdown_body(finished) is True
+    assert tui.uses_markdown_body(streaming) is False
+    assert tui.uses_markdown_body(empty) is False
+    assert tui.uses_markdown_body(voice) is False
+    # Static path keeps markers literal; markdown parsing is the widget's job.
+    assert tui.render_entry_body(streaming).plain == "**live** ▌"
+    assert tui.render_entry_body(voice).plain == "**noise**"
+
+
+def test_a_streaming_taga_answer_stays_plain_until_the_turn_closes(tui) -> None:
+    """Live tokens stay on Static; the closed turn swaps in Markdown."""
+    facade = tui.VoiceCodexTUI()
+    kinds: list[str] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        facade.codex_delta("Hello **bold**")
+        await pilot.pause()
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
+        streaming_body = next(iter(row.query(".entry-body")))
+        kinds.append(type(streaming_body).__name__)
+        assert isinstance(streaming_body, Static)
+        assert streaming_body.content.plain == "Hello **bold** ▌"
+        facade.end_codex()
+        md = await wait_markdown(row, pilot, "Hello **bold**")
+        kinds.append(type(md).__name__)
+
+    drive(facade, body)
+
+    assert kinds == ["Static", "Markdown"]
+
+
+def test_a_finished_taga_row_hosts_clickable_markdown(tui) -> None:
+    """Production path: mounted Markdown opens hrefs through the app."""
+    facade = tui.VoiceCodexTUI()
+    opened: list[str] = []
+    source: list[str] = []
+
+    async def body(pilot):
+        text = "see [docs](https://example.com/x)"
+        facade.codex_message_open(tui.VOICE)
+        facade.codex_delta(text)
+        facade.end_codex()
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
+        md = await wait_markdown(row, pilot, text)
+        source.append(md.source)
+        pilot.app.open_url = lambda url, **_kw: opened.append(url)
+        md.post_message(Markdown.LinkClicked(md, "https://example.com/x"))
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert source == ["see [docs](https://example.com/x)"]
+    assert opened == ["https://example.com/x"]
+
+
+def test_a_finished_taga_markdown_row_updates_in_place(tui) -> None:
+    """A second sync rewrites Markdown source rather than remounting the widget."""
+    facade = tui.VoiceCodexTUI()
+    result: list[object] = []
+
+    async def body(pilot):
+        first = "first [a](https://a.test)"
+        second = "second [b](https://b.test)"
+        row = facade.app.add_entry(
+            tui.Entry(kind="speech", source=tui.TAGA, text=first)
+        )
+        md = await wait_markdown(row, pilot, first)
+        first_id = id(md)
+        row.entry.text = second
+        row.sync()
+        md = await wait_markdown(row, pilot, second)
+        result.extend([md.source, id(md) == first_id])
+
+    drive(facade, body)
+
+    assert result == ["second [b](https://b.test)", True]
+
+
+def test_an_interrupted_taga_row_keeps_answer_text_and_cut_off_chrome(tui) -> None:
+    """Cut-off is sibling UI chrome, not rewritten into the model answer."""
+    facade = tui.VoiceCodexTUI()
+    answer_source = ""
+    cutoff_plain = ""
+    stored_text = ""
+
+    async def body(pilot):
+        nonlocal answer_source, cutoff_plain, stored_text
+        text = "Half **a** thought"
+        facade.codex_message_open(tui.VOICE)
+        facade.codex_delta(text)
+        facade.app.action_interrupt()
+        await pilot.pause()
+        row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
+        md = await wait_markdown(row, pilot, text)
+        cutoff = row.query_one(".entry-cutoff", Static)
+        answer_source = md.source
+        cutoff_plain = cutoff.content.plain
+        stored_text = row.entry.text
+
+    drive(facade, body)
+
+    assert answer_source == "Half **a** thought"
+    assert "cut off" in cutoff_plain
+    assert "⊥" in cutoff_plain
+    assert stored_text == "Half **a** thought"
+
+
+def test_static_rows_carry_cut_off_when_they_are_not_markdown(tui) -> None:
+    """Voice has no Markdown host, so interrupt chrome lives in the Static body."""
+    cut = tui.render_entry_body(
+        tui.Entry(kind="speech", source=tui.VOICE, text="mid", interrupted=True)
+    )
+
+    assert isinstance(cut, Text)
+    assert "mid" in cut.plain
+    assert "cut off" in cut.plain
+
+
+def test_cut_off_chrome_can_be_refreshed_and_removed(tui) -> None:
+    """Interrupt chrome is synced as its own widget, not only at compose time."""
+    facade = tui.VoiceCodexTUI()
+    had_cutoff: list[bool] = []
+
+    async def body(pilot):
+        row = facade.app.add_entry(
+            tui.Entry(
+                kind="speech",
+                source=tui.TAGA,
+                text="answer",
+                interrupted=True,
+            )
+        )
+        await wait_markdown(row, pilot, "answer")
+        assert row.query(".entry-cutoff")
+        # A second sync while still interrupted refreshes the existing chrome.
+        row.sync()
+        await pilot.pause()
+        had_cutoff.append(bool(list(row.query(".entry-cutoff"))))
+        row.entry.interrupted = False
+        row.sync()
+        await pilot.pause()
+        had_cutoff.append(bool(list(row.query(".entry-cutoff"))))
+
+    drive(facade, body)
+
+    assert had_cutoff == [True, False]
+
+
+def test_emptying_a_markdown_answer_swaps_back_to_static(tui) -> None:
+    """Losing the text that justified Markdown remounts a Static host cleanly."""
+    facade = tui.VoiceCodexTUI()
+    host_types: list[str] = []
+
+    async def body(pilot):
+        row = facade.app.add_entry(
+            tui.Entry(
+                kind="speech",
+                source=tui.TAGA,
+                text="temporary",
+                interrupted=True,
+            )
+        )
+        await wait_markdown(row, pilot, "temporary")
+        host_types.append(type(next(iter(row.query(".entry-body")))).__name__)
+        row.entry.text = ""
+        row.sync()
+        await pilot.pause()
+        body = next(iter(row.query(".entry-body")))
+        host_types.append(type(body).__name__)
+        assert isinstance(body, Static)
+        # Cut-off remains; body swap must mount before it, not drop it.
+        assert list(row.query(".entry-cutoff"))
+
+    drive(facade, body)
+
+    assert host_types == ["Markdown", "Static"]
 
 
 def test_a_thinking_entry_hides_what_it_is_thinking(tui) -> None:
@@ -535,13 +736,13 @@ def test_thinking_never_wears_the_same_style_as_the_answer(tui) -> None:
     thinking = tui.render_entry_body(
         tui.Entry(kind="reasoning", source=tui.TAGA, text="a thought", seconds=1.4)
     )
-    answer = tui.render_entry_body(
-        tui.Entry(kind="speech", source=tui.TAGA, text="an answer")
-    )
+    answer = tui.Entry(kind="speech", source=tui.TAGA, text="an answer")
 
     styles = [str(thinking.style)] + [str(span.style) for span in thinking.spans]
 
-    assert str(answer.style) == tui.BODY_STYLE
+    # Finished answers leave Static entirely; reasoning stays italic Text.
+    assert tui.uses_markdown_body(answer) is True
+    assert isinstance(thinking, Text)
     assert all(style != tui.BODY_STYLE for style in styles)
     # The prose itself is italic; only the duration label is allowed to be a
     # bare dim colour.
@@ -1135,14 +1336,14 @@ def test_the_finished_answer_is_drawn_in_full_however_it_was_coalesced(tui) -> N
         for word in ("one ", "two ", "three"):
             facade.codex_delta(word)
         facade.end_codex()
-        await pilot.pause()
         row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
-        drawn.append(next(iter(row.query(".entry-body"))).content.plain)
+        md = await wait_markdown(row, pilot, "one two three")
+        drawn.append(md.source)
 
     drive(facade, body)
 
     assert entry_texts(facade) == ["one two three"]
-    assert "one two three" in drawn[0]
+    assert drawn == ["one two three"]
     assert facade.app._dirty == []
 
 
@@ -1157,12 +1358,14 @@ def test_an_interrupted_answer_shows_the_text_that_arrived_before_the_cut(tui) -
         facade.app.action_interrupt()
         await pilot.pause()
         row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
-        drawn.append(next(iter(row.query(".entry-body"))).content.plain)
+        md = await wait_markdown(row, pilot, "half a th")
+        cutoff = row.query_one(".entry-cutoff", Static)
+        drawn.extend([md.source, cutoff.content.plain])
 
     drive(facade, body)
 
-    assert "half a th" in drawn[0]
-    assert "cut off" in drawn[0]
+    assert drawn[0] == "half a th"
+    assert "cut off" in drawn[1]
     assert facade.app.entries[0].interrupted is True
 
 
