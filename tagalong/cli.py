@@ -591,11 +591,9 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
         images=message.images,
     )
     tui.hooks.on_interrupt = conversation.interrupt
-    commands = CommandRouter(tui)
-    commands.register(
-        "new", lambda command: reset_codex_session(command, conversation, tui)
-    )
+    commands = build_command_router(tui, conversation)
     tui.hooks.on_command = commands.handle
+    tui.hooks.list_commands = commands.specs
     tui.hooks.on_codex_model = remembering(
         conversation.request_model, config, "codex_model"
     )
@@ -609,6 +607,54 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
         provider_switch(tts), config, "tts_provider"
     )
     tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
+
+
+def build_command_router(tui, conversation) -> CommandRouter:
+    """Register the session's typed slash commands and their palette copy."""
+    commands = CommandRouter(tui)
+    commands.register(
+        "new",
+        lambda command: reset_codex_session(command, conversation, tui),
+        description="Start a fresh session and clear the transcript",
+        aliases=("clear",),
+    )
+    commands.register(
+        "help",
+        lambda command: show_command_help(command, commands, tui),
+        description="List available slash commands",
+        aliases=("?",),
+    )
+    return commands
+
+
+def show_command_help(command, commands: CommandRouter, tui) -> None:
+    """Print the command catalog, or detail for one name when given."""
+    if command.arguments:
+        token = command.arguments[0].removeprefix("/")
+        name = commands.resolve(token)
+        for spec in commands.specs():
+            if spec.name == name:
+                alias_text = (
+                    f" (aliases: {', '.join('/' + alias for alias in spec.aliases)})"
+                    if spec.aliases
+                    else ""
+                )
+                tui.note(
+                    f"/{spec.name}{alias_text} — {spec.description or 'no description'}"
+                )
+                return
+        tui.note(f"unknown command: /{token}")
+        return
+    lines = ["commands:"]
+    for spec in commands.specs():
+        alias_text = (
+            f" ({', '.join('/' + alias for alias in spec.aliases)})"
+            if spec.aliases
+            else ""
+        )
+        detail = f" — {spec.description}" if spec.description else ""
+        lines.append(f"  /{spec.name}{alias_text}{detail}")
+    tui.note("\n".join(lines))
 
 
 def reset_codex_session(command, conversation, tui):

@@ -16,7 +16,7 @@ import os
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -50,6 +50,7 @@ from .attachments import (
     DraftAttachments,
     ImageClipboard,
 )
+from .commands import CommandSpec, command_query, match_commands
 from .domain import (
     AUDIO,
     RESPONSE_POLICIES,
@@ -193,6 +194,9 @@ class TuiHooks:
 
     on_user_text: Callable[[UserTextMessage], None] | None = None
     on_command: Callable[[str], None] | None = None
+    # Catalog for the live slash-command palette. Pure discovery — running a
+    # command still goes through ``on_command`` with the chosen ``/name``.
+    list_commands: Callable[[], Sequence[CommandSpec]] | None = None
     on_policy: Callable[[str], None] | None = None
     on_codex_model: Callable[[str], bool | None] | None = None
     on_codex_effort: Callable[[str], bool | None] | None = None
@@ -584,6 +588,105 @@ class PromptInput(TextArea):
         """Grow with visual rows, capped so the transcript keeps the floor."""
         lines = max(1, min(self.visual_line_count(), self.MAX_LINES))
         self.styles.height = lines
+
+
+class CommandPalette(Static):
+    """Slash-command menu that floats above the prompt.
+
+    Selection and visibility live here. Filtering is pure
+    (:func:`tagalong.commands.match_commands`); the host supplies the catalog
+    through :attr:`TuiHooks.list_commands`. Choosing a row always becomes a
+    ``/name`` string submitted through the same path as a typed command.
+    """
+
+    MAX_VISIBLE = 8
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._items: tuple[CommandSpec, ...] = ()
+        self._index = 0
+        self._open = False
+        self.display = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def items(self) -> tuple[CommandSpec, ...]:
+        return self._items
+
+    @property
+    def index(self) -> int:
+        return self._index
+
+    def close(self) -> None:
+        """Hide the menu and drop selection state."""
+        self._open = False
+        self._items = ()
+        self._index = 0
+        self.display = False
+        self.update("")
+
+    def show(
+        self,
+        items: Sequence[CommandSpec],
+        *,
+        prefer: str | None = None,
+    ) -> None:
+        """Open with ``items``, keeping ``prefer`` selected when still present."""
+        self._items = tuple(items)
+        self._index = 0
+        if prefer:
+            for offset, spec in enumerate(self._items):
+                if spec.name == prefer:
+                    self._index = offset
+                    break
+        self._open = True
+        self.display = True
+        self._paint()
+
+    def move(self, delta: int) -> None:
+        """Move the highlight by ``delta`` rows, wrapping at both ends."""
+        if not self._items:
+            return
+        self._index = (self._index + delta) % len(self._items)
+        self._paint()
+
+    def selected(self) -> CommandSpec | None:
+        """The highlighted command, or ``None`` when the list is empty."""
+        if not self._items:
+            return None
+        return self._items[self._index]
+
+    def _window(self) -> tuple[int, int]:
+        count = len(self._items)
+        if count <= self.MAX_VISIBLE:
+            return 0, count
+        half = self.MAX_VISIBLE // 2
+        start = max(0, min(self._index - half, count - self.MAX_VISIBLE))
+        return start, start + self.MAX_VISIBLE
+
+    def _paint(self) -> None:
+        if not self._items:
+            self.update(Text("  no matching commands", style="#6f757e"))
+            return
+        start, end = self._window()
+        name_width = max(len(spec.name) for spec in self._items[start:end])
+        lines = Text()
+        for offset, spec in enumerate(self._items[start:end]):
+            absolute = start + offset
+            selected = absolute == self._index
+            marker = "▸" if selected else " "
+            style = "#cdd6e4" if selected else "#9aa3ad"
+            name_style = "bold #6ba7ff" if selected else "#7f9bd1"
+            lines.append(f"{marker} /", style=style)
+            lines.append(f"{spec.name:<{name_width}}", style=name_style)
+            if spec.description:
+                lines.append(f"  {spec.description}", style="#6f757e")
+            if absolute < end - 1:
+                lines.append("\n")
+        self.update(lines)
 
 
 class EntryRow(Vertical):
@@ -1227,6 +1330,17 @@ class VoiceCodexApp(App):
         border-top: solid #23272b;
     }
 
+    /* Sits above the prompt; collapses when closed so the transcript keeps
+       its floor. Open/closed is driven by Widget.display, not a CSS class. */
+    #command-palette {
+        height: auto;
+        max-height: 10;
+        padding: 0 1;
+        background: #141719;
+        border-top: solid #2f343b;
+        color: #9aa3ad;
+    }
+
     #promptbar {
         height: auto;
         min-height: 1;
@@ -1360,7 +1474,14 @@ class VoiceCodexApp(App):
         Binding("ctrl+x", "interrupt", "interrupt codex", priority=True),
         Binding("ctrl+s", "save", "save transcript", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "sidebar", priority=True),
-        Binding("escape", "revert_turn_silence", "revert turn silence", show=False),
+        Binding("escape", "dismiss_overlay", "dismiss", show=False),
+        # Palette navigation steals these only while the menu is open and the
+        # prompt has focus; otherwise SkipAction lets TextArea / focus work.
+        Binding("up", "palette_move(-1)", "palette up", show=False, priority=True),
+        Binding("down", "palette_move(1)", "palette down", show=False, priority=True),
+        Binding(
+            "tab", "palette_complete", "complete command", show=False, priority=True
+        ),
     ]
 
     # The countdown redraws ten times a second. A 20-cell bar over a 3s window
@@ -1443,6 +1564,7 @@ class VoiceCodexApp(App):
                     )
                     yield Transcript(id="transcript")
                 yield Static(id="partial")
+                yield CommandPalette(id="command-palette")
                 with Horizontal(id="promptbar"):
                     yield Static(
                         "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}",
@@ -1801,8 +1923,75 @@ class VoiceCodexApp(App):
         prompt = self.query_one("#input", PromptInput)
         if prompt.value or prompt.draft:
             prompt.clear_draft()
+            self._sync_command_palette("")
             return
         self.action_quit_app()
+
+    # -- slash-command palette ---------------------------------------------
+
+    def _command_catalog(self) -> tuple[CommandSpec, ...]:
+        if self.hooks.list_commands is None:
+            return ()
+        return tuple(self.hooks.list_commands())
+
+    def _palette_active(self) -> bool:
+        """True when palette keys should steal navigation from the prompt."""
+        with suppress(NoMatches):
+            palette = self.query_one("#command-palette", CommandPalette)
+            prompt = self.query_one("#input", PromptInput)
+            return palette.is_open and prompt.has_focus
+        return False
+
+    def _sync_command_palette(self, text: str) -> None:
+        """Open, filter, or close the palette from the current prompt text."""
+        try:
+            palette = self.query_one("#command-palette", CommandPalette)
+        except NoMatches:
+            return
+        query = command_query(text)
+        catalog = self._command_catalog()
+        if query is None or not catalog:
+            palette.close()
+            return
+        prefer = None
+        if palette.is_open and (selected := palette.selected()) is not None:
+            prefer = selected.name
+        palette.show(match_commands(catalog, query), prefer=prefer)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "input":
+            return
+        self._sync_command_palette(event.text_area.text)
+
+    def action_palette_move(self, delta: int) -> None:
+        if not self._palette_active():
+            raise SkipAction
+        self.query_one("#command-palette", CommandPalette).move(delta)
+
+    def action_palette_complete(self) -> None:
+        """Tab-complete the highlighted command name into the prompt."""
+        if not self._palette_active():
+            raise SkipAction
+        palette = self.query_one("#command-palette", CommandPalette)
+        spec = palette.selected()
+        if spec is None:
+            raise SkipAction
+        prompt = self.query_one("#input", PromptInput)
+        completed = f"/{spec.name}"
+        prompt.value = completed
+        # Land the cursor after the name so the typist can add arguments.
+        line = completed
+        prompt.cursor_location = (0, len(line))
+        self._sync_command_palette(completed)
+
+    def action_dismiss_overlay(self) -> None:
+        """Escape: close the command palette, else revert the silence field."""
+        with suppress(NoMatches):
+            palette = self.query_one("#command-palette", CommandPalette)
+            if palette.is_open:
+                palette.close()
+                return
+        self.action_revert_turn_silence()
 
     def _apply_turn_silence(self, text: str) -> None:
         """Adopt a typed window, or mark the field as holding a bad value.
@@ -1844,6 +2033,15 @@ class VoiceCodexApp(App):
         text = event.message.text.strip()
         images = event.message.images
         event.prompt.clear_draft()
+        # Prefer the highlighted palette row when the menu is open so Enter on
+        # ``/ne`` runs ``/new`` rather than an unknown partial.
+        with suppress(NoMatches):
+            palette = self.query_one("#command-palette", CommandPalette)
+            if palette.is_open:
+                selected = palette.selected()
+                palette.close()
+                if selected is not None:
+                    text = f"/{selected.name}"
         if not text:
             return
         if text.startswith("/"):
