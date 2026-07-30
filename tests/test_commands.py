@@ -10,6 +10,7 @@ from tagalong.commands import (
     CommandSpec,
     command_query,
     match_commands,
+    preferred_index,
 )
 
 
@@ -167,14 +168,35 @@ def test_match_commands_uses_subsequence_when_letters_are_scattered() -> None:
     assert [spec.name for spec in match_commands(specs, "hp")] == ["help"]
 
 
-def test_subsequence_treats_an_empty_query_as_a_match() -> None:
+def test_subsequence_rejects_letters_that_never_appear() -> None:
     from tagalong.commands import _is_subsequence
 
     assert _is_subsequence("", "help") is True
     assert _is_subsequence("hz", "help") is False
 
 
-def test_router_match_and_specs_mirror_registration() -> None:
+def test_preferred_index_keeps_or_resets_the_highlight() -> None:
+    specs = (
+        CommandSpec("new", "Fresh"),
+        CommandSpec("help", "List"),
+    )
+
+    assert preferred_index(specs, None) == 0
+    assert preferred_index(specs, "help") == 1
+    assert preferred_index(specs, "missing") == 0
+
+
+def test_command_spec_formats_help_lines() -> None:
+    bare = CommandSpec("status", "")
+    full = CommandSpec("new", "Fresh session", aliases=("clear",))
+
+    assert bare.listing_line() == "  /status"
+    assert bare.detail_line() == "/status — no description"
+    assert full.listing_line() == "  /new (/clear) — Fresh session"
+    assert full.detail_line() == "/new (aliases: /clear) — Fresh session"
+
+
+def test_router_match_lookup_and_specs_mirror_registration() -> None:
     commands = CommandRouter(Display())
     commands.register(
         "new",
@@ -189,3 +211,7 @@ def test_router_match_and_specs_mirror_registration() -> None:
     assert commands.resolve("clear") == "new"
     assert commands.resolve("help") == "help"
     assert commands.resolve("missing") == "missing"
+    found = commands.lookup("clear")
+    assert found is not None
+    assert found.name == "new"
+    assert commands.lookup("missing") is None

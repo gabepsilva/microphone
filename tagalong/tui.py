@@ -50,7 +50,12 @@ from .attachments import (
     DraftAttachments,
     ImageClipboard,
 )
-from .commands import CommandSpec, command_query, match_commands
+from .commands import (
+    CommandSpec,
+    command_query,
+    match_commands,
+    preferred_index,
+)
 from .domain import (
     AUDIO,
     RESPONSE_POLICIES,
@@ -590,13 +595,54 @@ class PromptInput(TextArea):
         self.styles.height = lines
 
 
+def palette_window(count: int, index: int, *, max_visible: int) -> tuple[int, int]:
+    """Return ``[start, end)`` so ``index`` stays visible in a capped list."""
+    if count <= max_visible:
+        return 0, count
+    half = max_visible // 2
+    start = max(0, min(index - half, count - max_visible))
+    return start, start + max_visible
+
+
+def render_command_palette(
+    items: Sequence[CommandSpec],
+    index: int,
+    *,
+    max_visible: int = 8,
+) -> Text:
+    """Render palette rows without touching widget state (pure, testable)."""
+    if not items:
+        return Text("  no matching commands", style="#6f757e")
+    start, end = palette_window(len(items), index, max_visible=max_visible)
+    visible = items[start:end]
+    name_width = max(len(spec.name) for spec in visible)
+    lines = Text()
+    for offset, spec in enumerate(visible):
+        absolute = start + offset
+        selected = absolute == index
+        marker = "▸" if selected else " "
+        style = "#cdd6e4" if selected else "#9aa3ad"
+        name_style = "bold #6ba7ff" if selected else "#7f9bd1"
+        lines.append(f"{marker} /", style=style)
+        lines.append(f"{spec.name:<{name_width}}", style=name_style)
+        if spec.description:
+            lines.append(f"  {spec.description}", style="#6f757e")
+        if absolute < end - 1:
+            lines.append("\n")
+    return lines
+
+
 class CommandPalette(Static):
     """Slash-command menu that drops down from the prompt over the key hints.
 
-    Selection and visibility live here. Filtering is pure
+    Owns selection and display only. Filtering is pure
     (:func:`tagalong.commands.match_commands`); the host supplies the catalog
-    through :attr:`TuiHooks.list_commands`. Choosing a row always becomes a
-    ``/name`` string submitted through the same path as a typed command.
+    through :attr:`TuiHooks.list_commands`. Choosing a row becomes a ``/name``
+    submitted through the same path as a typed command.
+
+    Open/close of the surrounding key strip is the app's job via
+    :meth:`VoiceCodexApp._consume_palette` — the widget does not reach for
+    siblings.
     """
 
     MAX_VISIBLE = 8
@@ -636,12 +682,7 @@ class CommandPalette(Static):
     ) -> None:
         """Open with ``items``, keeping ``prefer`` selected when still present."""
         self._items = tuple(items)
-        self._index = 0
-        if prefer:
-            for offset, spec in enumerate(self._items):
-                if spec.name == prefer:
-                    self._index = offset
-                    break
+        self._index = preferred_index(self._items, prefer)
         self._open = True
         self.display = True
         self._paint()
@@ -660,33 +701,16 @@ class CommandPalette(Static):
         return self._items[self._index]
 
     def _window(self) -> tuple[int, int]:
-        count = len(self._items)
-        if count <= self.MAX_VISIBLE:
-            return 0, count
-        half = self.MAX_VISIBLE // 2
-        start = max(0, min(self._index - half, count - self.MAX_VISIBLE))
-        return start, start + self.MAX_VISIBLE
+        return palette_window(
+            len(self._items), self._index, max_visible=self.MAX_VISIBLE
+        )
 
     def _paint(self) -> None:
-        if not self._items:
-            self.update(Text("  no matching commands", style="#6f757e"))
-            return
-        start, end = self._window()
-        name_width = max(len(spec.name) for spec in self._items[start:end])
-        lines = Text()
-        for offset, spec in enumerate(self._items[start:end]):
-            absolute = start + offset
-            selected = absolute == self._index
-            marker = "▸" if selected else " "
-            style = "#cdd6e4" if selected else "#9aa3ad"
-            name_style = "bold #6ba7ff" if selected else "#7f9bd1"
-            lines.append(f"{marker} /", style=style)
-            lines.append(f"{spec.name:<{name_width}}", style=name_style)
-            if spec.description:
-                lines.append(f"  {spec.description}", style="#6f757e")
-            if absolute < end - 1:
-                lines.append("\n")
-        self.update(lines)
+        self.update(
+            render_command_palette(
+                self._items, self._index, max_visible=self.MAX_VISIBLE
+            )
+        )
 
 
 class EntryRow(Vertical):
@@ -1930,42 +1954,59 @@ class VoiceCodexApp(App):
         self.action_quit_app()
 
     # -- slash-command palette ---------------------------------------------
+    #
+    # Lifecycle is intentional: every open goes through ``_sync_command_palette``
+    # and every close through ``_consume_palette``. That pair owns the key-strip
+    # visibility so dismiss / submit / clear cannot leave the chrome half-open.
 
     def _command_catalog(self) -> tuple[CommandSpec, ...]:
         if self.hooks.list_commands is None:
             return ()
         return tuple(self.hooks.list_commands())
 
+    def _command_palette(self) -> CommandPalette | None:
+        with suppress(NoMatches):
+            return self.query_one("#command-palette", CommandPalette)
+        return None
+
     def _palette_active(self) -> bool:
         """True when palette keys should steal navigation from the prompt."""
+        palette = self._command_palette()
+        if palette is None or not palette.is_open:
+            return False
         with suppress(NoMatches):
-            palette = self.query_one("#command-palette", CommandPalette)
-            prompt = self.query_one("#input", PromptInput)
-            return palette.is_open and prompt.has_focus
+            return self.query_one("#input", PromptInput).has_focus
         return False
 
     def _set_keys_visible(self, visible: bool) -> None:
-        """Show or hide the shortcut strip under the prompt.
-
-        The palette occupies that space while open so the menu expands down
-        over the key hints rather than shoving the transcript up.
-        """
+        """Show or hide the shortcut strip the palette drops over."""
         with suppress(NoMatches):
             self.query_one("#keys", Static).display = visible
 
+    def _consume_palette(self) -> tuple[bool, CommandSpec | None]:
+        """Close the menu if open; restore the key strip.
+
+        Returns ``(was_open, selection)``. ``selection`` is only meaningful
+        when ``was_open`` is true, and may still be ``None`` when the list was
+        empty (no matches). That distinction is what dismiss vs submit need.
+        """
+        palette = self._command_palette()
+        if palette is None or not palette.is_open:
+            return False, None
+        selected = palette.selected()
+        palette.close()
+        self._set_keys_visible(True)
+        return True, selected
+
     def _sync_command_palette(self, text: str) -> None:
         """Open, filter, or close the palette from the current prompt text."""
-        try:
-            palette = self.query_one("#command-palette", CommandPalette)
-        except NoMatches:
+        palette = self._command_palette()
+        if palette is None:
             return
         query = command_query(text)
         catalog = self._command_catalog()
         if query is None or not catalog:
-            was_open = palette.is_open
-            palette.close()
-            if was_open:
-                self._set_keys_visible(True)
+            self._consume_palette()
             return
         prefer = None
         if palette.is_open and (selected := palette.selected()) is not None:
@@ -1981,13 +2022,18 @@ class VoiceCodexApp(App):
     def action_palette_move(self, delta: int) -> None:
         if not self._palette_active():
             raise SkipAction
-        self.query_one("#command-palette", CommandPalette).move(delta)
+        palette = self._command_palette()
+        if palette is None:
+            raise SkipAction
+        palette.move(delta)
 
     def action_palette_complete(self) -> None:
         """Tab-complete the highlighted command name into the prompt."""
         if not self._palette_active():
             raise SkipAction
-        palette = self.query_one("#command-palette", CommandPalette)
+        palette = self._command_palette()
+        if palette is None:
+            raise SkipAction
         spec = palette.selected()
         if spec is None:
             raise SkipAction
@@ -1995,18 +2041,14 @@ class VoiceCodexApp(App):
         completed = f"/{spec.name}"
         prompt.value = completed
         # Land the cursor after the name so the typist can add arguments.
-        line = completed
-        prompt.cursor_location = (0, len(line))
+        prompt.cursor_location = (0, len(completed))
         self._sync_command_palette(completed)
 
     def action_dismiss_overlay(self) -> None:
         """Escape: close the command palette, else revert the silence field."""
-        with suppress(NoMatches):
-            palette = self.query_one("#command-palette", CommandPalette)
-            if palette.is_open:
-                palette.close()
-                self._set_keys_visible(True)
-                return
+        was_open, _selected = self._consume_palette()
+        if was_open:
+            return
         self.action_revert_turn_silence()
 
     def _apply_turn_silence(self, text: str) -> None:
@@ -2049,16 +2091,11 @@ class VoiceCodexApp(App):
         text = event.message.text.strip()
         images = event.message.images
         event.prompt.clear_draft()
-        # Prefer the highlighted palette row when the menu is open so Enter on
-        # ``/ne`` runs ``/new`` rather than an unknown partial.
-        with suppress(NoMatches):
-            palette = self.query_one("#command-palette", CommandPalette)
-            if palette.is_open:
-                selected = palette.selected()
-                palette.close()
-                self._set_keys_visible(True)
-                if selected is not None:
-                    text = f"/{selected.name}"
+        # Prefer the highlighted row when the menu is open so Enter on ``/ne``
+        # runs ``/new`` rather than an unknown partial.
+        was_open, selected = self._consume_palette()
+        if was_open and selected is not None:
+            text = f"/{selected.name}"
         if not text:
             return
         if text.startswith("/"):

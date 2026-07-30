@@ -631,29 +631,13 @@ def show_command_help(command, commands: CommandRouter, tui) -> None:
     """Print the command catalog, or detail for one name when given."""
     if command.arguments:
         token = command.arguments[0].removeprefix("/")
-        name = commands.resolve(token)
-        for spec in commands.specs():
-            if spec.name == name:
-                alias_text = (
-                    f" (aliases: {', '.join('/' + alias for alias in spec.aliases)})"
-                    if spec.aliases
-                    else ""
-                )
-                tui.note(
-                    f"/{spec.name}{alias_text} — {spec.description or 'no description'}"
-                )
-                return
-        tui.note(f"unknown command: /{token}")
+        spec = commands.lookup(token)
+        if spec is None:
+            tui.note(f"unknown command: /{token}")
+            return
+        tui.note(spec.detail_line())
         return
-    lines = ["commands:"]
-    for spec in commands.specs():
-        alias_text = (
-            f" ({', '.join('/' + alias for alias in spec.aliases)})"
-            if spec.aliases
-            else ""
-        )
-        detail = f" — {spec.description}" if spec.description else ""
-        lines.append(f"  /{spec.name}{alias_text}{detail}")
+    lines = ["commands:", *(spec.listing_line() for spec in commands.specs())]
     tui.note("\n".join(lines))
 
 

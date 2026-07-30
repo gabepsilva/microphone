@@ -28,6 +28,25 @@ class CommandSpec:
     description: str
     aliases: tuple[str, ...] = ()
 
+    def alias_suffix(self, *, detailed: bool = False) -> str:
+        """Parenthetical alias list for help text, or empty when there are none."""
+        if not self.aliases:
+            return ""
+        joined = ", ".join(f"/{alias}" for alias in self.aliases)
+        if detailed:
+            return f" (aliases: {joined})"
+        return f" ({joined})"
+
+    def listing_line(self) -> str:
+        """One indented catalog row for ``/help`` with no argument."""
+        detail = f" — {self.description}" if self.description else ""
+        return f"  /{self.name}{self.alias_suffix()}{detail}"
+
+    def detail_line(self) -> str:
+        """One-line description for ``/help <name>``."""
+        description = self.description or "no description"
+        return f"/{self.name}{self.alias_suffix(detailed=True)} — {description}"
+
 
 def command_query(text: str) -> str | None:
     """Return the filter fragment when the command palette should be open.
@@ -47,17 +66,23 @@ def command_query(text: str) -> str | None:
     return rest.casefold()
 
 
+def preferred_index(items: Sequence[CommandSpec], prefer: str | None) -> int:
+    """Index of ``prefer`` in ``items``, or ``0`` when absent or unset."""
+    if prefer is None:
+        return 0
+    for offset, spec in enumerate(items):
+        if spec.name == prefer:
+            return offset
+    return 0
+
+
 def _is_subsequence(query: str, name: str) -> bool:
     """True when every character of ``query`` appears in order inside ``name``."""
-    if not query:
-        return True
     position = 0
     for character in name:
-        if character == query[position]:
+        if position < len(query) and character == query[position]:
             position += 1
-            if position == len(query):
-                return True
-    return False
+    return position == len(query)
 
 
 def _name_score(name: str, query: str) -> tuple[int, int, int] | None:
@@ -88,9 +113,8 @@ def _spec_score(spec: CommandSpec, query: str) -> tuple[int, int, int, int] | No
         if score is not None and (best is None or score < best):
             best = score
     if best is not None:
-        # Fourth key: name length for stable ordering among equal scores.
         return (*best, len(spec.name))
-    if query and query in spec.description.casefold():
+    if query in spec.description.casefold():
         return (3, 0, len(spec.name), len(spec.name))
     return None
 
@@ -112,6 +136,13 @@ def match_commands(specs: Sequence[CommandSpec], query: str) -> tuple[CommandSpe
     return tuple(spec for _, spec in ranked)
 
 
+def _require_token(token: str, *, kind: str) -> str:
+    """Reject blank or whitespace-containing command tokens."""
+    if not token or any(character.isspace() for character in token):
+        raise ValueError(f"invalid command {kind}: {token!r}")
+    return token
+
+
 class CommandRouter:
     """Route registered slash commands and expose them for discovery."""
 
@@ -121,9 +152,9 @@ class CommandRouter:
         self._specs: list[CommandSpec] = []
         self._aliases: dict[str, str] = {}
 
-    # Back-compat for call sites that still touch ``handlers`` directly.
     @property
     def handlers(self) -> dict[str, Callable[[Command], None]]:
+        """Registered handlers by canonical name (read-only view for callers)."""
         return self._handlers
 
     def register(
@@ -135,30 +166,24 @@ class CommandRouter:
         aliases: tuple[str, ...] = (),
     ) -> None:
         """Make ``/name`` (and any aliases) available for this session."""
-        if not name or any(character.isspace() for character in name):
-            raise ValueError(f"invalid command name: {name!r}")
+        name = _require_token(name, kind="name")
         if name in self._handlers or name in self._aliases:
             raise ValueError(f"command already registered: {name}")
-        normalized_aliases: list[str] = []
+        normalized: list[str] = []
         for alias in aliases:
-            if not alias or any(character.isspace() for character in alias):
-                raise ValueError(f"invalid command alias: {alias!r}")
+            alias = _require_token(alias, kind="alias")
             if alias == name:
                 raise ValueError(f"alias repeats command name: {alias}")
             if alias in self._handlers or alias in self._aliases:
                 raise ValueError(f"command alias already registered: {alias}")
-            if alias in normalized_aliases:
+            if alias in normalized:
                 raise ValueError(f"duplicate command alias: {alias}")
-            normalized_aliases.append(alias)
+            normalized.append(alias)
         self._handlers[name] = handler
         self._specs.append(
-            CommandSpec(
-                name=name,
-                description=description,
-                aliases=tuple(normalized_aliases),
-            )
+            CommandSpec(name=name, description=description, aliases=tuple(normalized))
         )
-        for alias in normalized_aliases:
+        for alias in normalized:
             self._aliases[alias] = name
 
     def specs(self) -> tuple[CommandSpec, ...]:
@@ -170,6 +195,14 @@ class CommandRouter:
         if token in self._handlers:
             return token
         return self._aliases.get(token, token)
+
+    def lookup(self, token: str) -> CommandSpec | None:
+        """Resolve a name or alias to its :class:`CommandSpec`, if registered."""
+        name = self.resolve(token)
+        for spec in self._specs:
+            if spec.name == name:
+                return spec
+        return None
 
     def match(self, query: str) -> tuple[CommandSpec, ...]:
         """Filter this session's catalog for the palette."""

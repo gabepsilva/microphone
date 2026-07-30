@@ -723,6 +723,20 @@ def test_palette_window_scrolls_when_the_catalog_is_long(tui) -> None:
     assert start > 0
 
 
+def test_render_command_palette_is_pure(tui) -> None:
+    from tagalong.commands import CommandSpec
+
+    empty = tui.render_command_palette((), 0)
+    filled = tui.render_command_palette(
+        (CommandSpec("new", "Fresh"), CommandSpec("help", "List")),
+        1,
+    )
+
+    assert "no matching commands" in str(empty)
+    assert "▸ /help" in str(filled)
+    assert "  /new" in str(filled)
+
+
 def test_palette_actions_skip_when_the_menu_is_closed(tui) -> None:
     from textual.actions import SkipAction
 
