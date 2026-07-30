@@ -9,17 +9,17 @@ from types import SimpleNamespace
 
 from textual.widgets import Input
 
-from voice_codex import codex as codex_module
-from voice_codex.cli import reset_codex_session
-from voice_codex.codex import (
+from tagalong import codex as codex_module
+from tagalong.cli import reset_codex_session
+from tagalong.codex import (
     CODEX_DEVELOPER_INSTRUCTIONS,
     CodexConversation,
     CodexSettings,
     load_codex_sdk,
 )
-from voice_codex.commands import Command, CommandRouter
-from voice_codex.domain import USER_TEXT
-from voice_codex.tui import VoiceCodexTUI
+from tagalong.commands import Command, CommandRouter
+from tagalong.domain import TEXT
+from tagalong.tui import VoiceCodexTUI
 
 
 class FakeDisplay:
@@ -133,7 +133,7 @@ def test_new_session_discards_queued_context_and_keeps_its_settings(
     load_codex_sdk()
     fake_codex = FakeCodex()
     display = FakeDisplay()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -145,7 +145,7 @@ def test_new_session_discards_queued_context_and_keeps_its_settings(
         display,
     )
     try:
-        conversation.ingest(USER_TEXT, "old context", respond=True, timestamp="T1")
+        conversation.ingest(TEXT, "old context", respond=True, timestamp="T1")
         stale = conversation.requests.get_nowait()
         conversation.request_model("gpt-5.6-sol")
         conversation.request_reasoning_effort("high")
@@ -189,7 +189,7 @@ def test_reset_drops_a_late_reply_from_the_discarded_session(monkeypatch) -> Non
     load_codex_sdk()
     fake_codex = FakeCodex()
     display = FakeDisplay()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -209,7 +209,7 @@ def test_reset_drops_a_late_reply_from_the_discarded_session(monkeypatch) -> Non
 
     try:
         fake_codex.threads[0].next_turn = ResettingTurn()
-        conversation.ingest(USER_TEXT, "start over", respond=True, timestamp="T1")
+        conversation.ingest(TEXT, "start over", respond=True, timestamp="T1")
 
         conversation._run_codex(conversation.requests.get_nowait())
 
@@ -224,7 +224,7 @@ def test_a_failed_reset_keeps_the_current_session_and_pending_settings(
     load_codex_sdk()
     fake_codex = FakeCodex()
     display = FakeDisplay()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -264,7 +264,7 @@ def test_a_reset_interrupts_the_pending_guess_and_speech(monkeypatch) -> None:
     fake_codex = FakeCodex()
     display = FakeDisplay()
     speech = FakeSpeech()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -274,7 +274,7 @@ def test_a_reset_interrupts_the_pending_guess_and_speech(monkeypatch) -> None:
         speech,
     )
     try:
-        assert conversation.prefire(USER_TEXT, "unfinished", timestamp="T1")
+        assert conversation.prefire(TEXT, "unfinished", timestamp="T1")
         guess = conversation.speculation
         assert guess is not None
         guess.turn = FakeTurn()
@@ -296,7 +296,7 @@ def test_stale_work_cannot_start_a_turn_or_warm_the_new_session(monkeypatch) -> 
     load_codex_sdk()
     fake_codex = FakeCodex()
     display = FakeDisplay()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -306,8 +306,7 @@ def test_stale_work_cannot_start_a_turn_or_warm_the_new_session(monkeypatch) -> 
     )
     try:
         assert (
-            conversation._attempt("old prompt", USER_TEXT, conversation.generation + 1)
-            == []
+            conversation._attempt("old prompt", TEXT, conversation.generation + 1) == []
         )
         monkeypatch.setattr(CodexConversation, "_start_turn", lambda *_args: None)
 
@@ -362,7 +361,7 @@ def test_new_command_clears_the_transcript_without_changing_controls() -> None:
         async with facade.app.run_test() as pilot:
             facade._ready.set()
             facade._app_thread = threading.get_ident()
-            facade.commit(USER_TEXT, "previous session")
+            facade.commit(TEXT, "previous session")
             await pilot.pause()
             facade.app.query_one("#input", Input).value = "/new"
             await pilot.press("enter")

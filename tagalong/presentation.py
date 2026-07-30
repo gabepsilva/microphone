@@ -56,7 +56,7 @@ class ApplicationListSink(Protocol):
     a method its subject never reaches for.
     """
 
-    def set_them_streams(self, applications: list[tuple[str, str]]) -> None: ...
+    def set_audio_streams(self, applications: list[tuple[str, str]]) -> None: ...
 
 
 class NewSessionSink(Protocol):

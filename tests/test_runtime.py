@@ -18,16 +18,16 @@ import numpy as np
 import pytest
 from openai_codex import Sandbox
 
-from voice_codex.capture import SoundActivityReporter
-from voice_codex.catalog import CodexModelOption, probe_codex_models
-from voice_codex.choosers import audio_outputs
-from voice_codex.cli import main
-from voice_codex.codex import CodexConversation, load_codex_sdk
-from voice_codex.domain import TranscriptRouter
+from tagalong.capture import SoundActivityReporter
+from tagalong.catalog import CodexModelOption, probe_codex_models
+from tagalong.choosers import audio_outputs
+from tagalong.cli import main
+from tagalong.codex import CodexConversation, load_codex_sdk
+from tagalong.domain import TranscriptRouter
 
 
 def test_cli_no_longer_offers_the_ansi_ui_switch(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["voice_codex.py", "--help"])
+    monkeypatch.setattr(sys, "argv", ["tagalong.py", "--help"])
 
     with pytest.raises(SystemExit, match="0"):
         main()
@@ -77,14 +77,14 @@ def test_sound_activity_reporter_names_the_channel_it_speaks_for() -> None:
 def test_codex_context_entries_include_timestamps() -> None:
     router = TranscriptRouter()
     request = router.ingest(
-        "User Voice", "What time is it?", "2026-07-26T12:30:00-04:00", True
+        "Voice", "What time is it?", "2026-07-26T12:30:00-04:00", True
     )
 
     assert request is not None
     assert CodexConversation.context_entries(request) == [
         {
             "timestamp": "2026-07-26T12:30:00-04:00",
-            "source": "User Voice",
+            "source": "Voice",
             "text": "What time is it?",
         }
     ]

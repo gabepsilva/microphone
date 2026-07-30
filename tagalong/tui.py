@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Textual TUI shell for voice-codex.
+"""Textual TUI shell for tagalong.
 
 This module owns no audio, transcription, or Codex logic. It renders state and
 forwards user intent. Everything it displays arrives through
 :class:`VoiceCodexTUI`, a thread-safe facade, and everything the user does
 leaves through :class:`TuiHooks` callbacks. The runtime uses that facade as its
-display boundary when started with ``voice_codex.py``. The entry point calls
-``voice_codex.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds it
+display boundary when started with ``tagalong.py``. The entry point calls
+``tagalong.cli.run_entrypoint``, and `tests/test_entrypoints.py` holds it
 to that contract.
 """
 
@@ -43,11 +43,11 @@ from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Checkbox, Input, Link, Select, Static
 
 from .domain import (
-    CODEX,
+    AUDIO,
     RESPONSE_POLICIES,
-    THEM,
-    USER_TEXT,
-    USER_VOICE,
+    TAGA,
+    TEXT,
+    VOICE,
     parse_turn_silence,
 )
 from .speech import (
@@ -77,10 +77,10 @@ REPOSITORY_URL = "https://github.com/gabepsilva/microphone"
 # --------------------------------------------------------------------------
 
 SOURCE_STYLES = {
-    USER_VOICE: "bold #6ba7ff",  # bright blue
-    USER_TEXT: "bold #7f9bd1",  # softer blue
-    THEM: "bold #d7b562",  # bright yellow — untrusted context
-    CODEX: "bold #6cc06c",  # bright green
+    VOICE: "bold #6ba7ff",  # bright blue
+    TEXT: "bold #7f9bd1",  # softer blue
+    AUDIO: "bold #d7b562",  # bright yellow — untrusted context
+    TAGA: "bold #6cc06c",  # bright green
 }
 BODY_STYLE = "#cdd6e4"
 
@@ -126,14 +126,14 @@ class SessionState:
     started: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     mic: Channel = field(default_factory=lambda: Channel("Microphone"))
-    them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
+    audio: Channel = field(default_factory=lambda: Channel("Audio Stream"))
     microphone: str | None = None
     microphones: list[tuple[str, str]] = field(default_factory=list)
-    # The application transcribed as Them, and the ones currently offered. The
+    # The application transcribed as Audio, and the ones currently offered. The
     # list is refreshed while the session runs, because an application is only
     # in the audio graph while it is playing.
-    them_stream: str | None = None
-    them_streams: list[tuple[str, str]] = field(default_factory=list)
+    audio_stream: str | None = None
+    audio_streams: list[tuple[str, str]] = field(default_factory=list)
 
     codex_model: str = "gpt-5.6-luna"
     codex_effort: str = "low"
@@ -180,8 +180,8 @@ class TuiHooks:
     on_codex_effort: Callable[[str], bool | None] | None = None
     on_mute: Callable[[bool], None] | None = None
     on_microphone: Callable[[str | None], bool | None] | None = None
-    on_them_mute: Callable[[bool], None] | None = None
-    on_them_stream: Callable[[str | None], bool | None] | None = None
+    on_audio_mute: Callable[[bool], None] | None = None
+    on_audio_stream: Callable[[str | None], bool | None] | None = None
     on_tts: Callable[[bool], bool | None] | None = None
     on_tts_provider: Callable[[str], bool | None] | None = None
     on_turn_silence: Callable[[float], float | None] | None = None
@@ -196,7 +196,7 @@ class TuiHooks:
 
 
 def render_reasoning_body(entry: Entry) -> Text:
-    """Render a Codex reasoning section: the word, then the cost, then it.
+    """Render a Taga reasoning section: the word, then the cost, then it.
 
     While the model is thinking the row says only that it is. The summary
     arrives in pieces and reads as a half-formed answer beside the real one,
@@ -257,13 +257,13 @@ MUTED_LABEL = "muted"
 
 
 def codex_activity(stream_state: str, speaking: bool) -> str:
-    """Say what Codex is doing, counting speech as doing something.
+    """Say what Taga is doing, counting speech as doing something.
 
-    The stream state wins while there is one, because "replying to Them" says
+    The stream state wins while there is one, because "replying to Audio" says
     more than "speaking" and both are true at once — sentences play while the
     rest of the answer is still arriving. What this fixes is the tail: the
     stream ends when the last token lands, and for several seconds after that
-    Codex is still talking. That used to read as idle.
+    Taga is still talking. That used to read as idle.
     """
     if stream_state != IDLE:
         return stream_state
@@ -417,11 +417,11 @@ class Sidebar(Vertical):
     def _microphone_selection(self) -> str:
         return NO_MICROPHONE if self.state.microphone is None else self.state.microphone
 
-    def _them_options(self) -> list[tuple[str, str]]:
-        return [(NO_THEM_LABEL, NO_THEM), *self.state.them_streams]
+    def _audio_options(self) -> list[tuple[str, str]]:
+        return [(NO_THEM_LABEL, NO_THEM), *self.state.audio_streams]
 
-    def _them_selection(self) -> str:
-        return NO_THEM if self.state.them_stream is None else self.state.them_stream
+    def _audio_selection(self) -> str:
+        return NO_THEM if self.state.audio_stream is None else self.state.audio_stream
 
     def _speech_options(self) -> list[tuple[str, str]]:
         options = [(label, name) for name, label in PROVIDER_LABELS.items()]
@@ -476,12 +476,12 @@ class Sidebar(Vertical):
                 self._microphone_selection(),
             )
             yield self._mute_box("mic-mute", self.state.mic)
-        with Vertical(id="them-row"):
-            yield Static(id="panel-them")
+        with Vertical(id="audio-row"):
+            yield Static(id="panel-audio")
             yield self._picker(
-                "them-select", self._them_options(), self._them_selection()
+                "audio-select", self._audio_options(), self._audio_selection()
             )
-            yield self._mute_box("them-mute", self.state.them)
+            yield self._mute_box("audio-mute", self.state.audio)
         with Horizontal(id="silence-row"):
             yield Static("Silence Turn", id="silence-label")
             yield Input(
@@ -537,12 +537,14 @@ class Sidebar(Vertical):
             self._microphone_options(),
             self._microphone_selection(),
         )
-        self._sync_select("#them-select", self._them_options(), self._them_selection())
+        self._sync_select(
+            "#audio-select", self._audio_options(), self._audio_selection()
+        )
         self._sync_select(
             "#speech-select", self._speech_options(), self._speech_selection()
         )
         self._sync_checkbox("#mic-mute", self.state.mic.muted)
-        self._sync_checkbox("#them-mute", self.state.them.muted)
+        self._sync_checkbox("#audio-mute", self.state.audio.muted)
 
     def sync_audio(self) -> None:
         """Repaint both channel lines without re-laying-out the interface.
@@ -556,8 +558,8 @@ class Sidebar(Vertical):
         self.query_one("#panel-mic", Static).update(
             Group(*self._channel(self.state.mic, "#6ba7ff")), layout=False
         )
-        self.query_one("#panel-them", Static).update(
-            Group(*self._channel(self.state.them, "#d7b562")), layout=False
+        self.query_one("#panel-audio", Static).update(
+            Group(*self._channel(self.state.audio, "#d7b562")), layout=False
         )
 
     def _sync_checkbox(self, selector: str, muted: bool) -> None:
@@ -575,7 +577,7 @@ class Sidebar(Vertical):
         box.label = MUTED_LABEL if muted else MUTE_LABEL
 
     def sync_codex(self) -> None:
-        """Cheap per-frame repaint — only the panel naming what Codex is doing.
+        """Cheap per-frame repaint — only the panel naming what Taga is doing.
 
         ``layout=False`` for the reason :meth:`sync_audio` gives: the panel is
         a fixed number of rows whatever it says, and asking for a layout would
@@ -660,7 +662,7 @@ class Sidebar(Vertical):
             "model-select": self._model_selected,
             "reasoning-select": self._effort_selected,
             "mic-select": self._microphone_selected,
-            "them-select": self._them_selected,
+            "audio-select": self._audio_selected,
             "speech-select": self._provider_selected,
         }.get(event.select.id)
         if handler is not None:
@@ -672,7 +674,7 @@ class Sidebar(Vertical):
         A box that already agrees with its channel is :meth:`_sync_checkbox`
         repainting state the app has applied, not a request to change it.
         """
-        channel = {"mic-mute": self.state.mic, "them-mute": self.state.them}.get(
+        channel = {"mic-mute": self.state.mic, "audio-mute": self.state.audio}.get(
             event.checkbox.id or ""
         )
         if channel is None or channel.muted == event.value:
@@ -697,7 +699,7 @@ class Sidebar(Vertical):
         self.state.microphone = microphone
         self.sync()
 
-    def _them_selected(self, value: str) -> None:
+    def _audio_selected(self, value: str) -> None:
         """Ask the host to listen to another application, or to none.
 
         The picker only moves if the host accepts, so a session shows the far
@@ -705,20 +707,20 @@ class Sidebar(Vertical):
         is slow — a speech model has to load — and deliberately not waited on
         here: the name is adopted now and the channel arrives behind it.
         """
-        if value == self._them_selection():
+        if value == self._audio_selection():
             return
         application = None if value == NO_THEM else value
         if (
-            self.hooks.on_them_stream
-            and self.hooks.on_them_stream(application) is False
+            self.hooks.on_audio_stream
+            and self.hooks.on_audio_stream(application) is False
         ):
             self.sync()
             return
-        self.state.them_stream = application
+        self.state.audio_stream = application
         self.sync()
 
     def _provider_selected(self, value: str) -> None:
-        """Ask the host to change how Codex answers — either engine, or silence.
+        """Ask the host to change how Taga answers — either engine, or silence.
 
         The picker only moves if the host accepts, so a session started
         without speech shows the silence it is actually in rather than an
@@ -820,7 +822,7 @@ class Sidebar(Vertical):
         return [name]
 
     def _codex_head(self) -> list[RenderableType]:
-        return [Rule(style="#23272b"), Text("CODEX", style="#5a6068")]
+        return [Rule(style="#23272b"), Text("TAGA", style="#5a6068")]
 
     def _codex(self) -> list[RenderableType]:
         state = self.state
@@ -843,13 +845,13 @@ class Sidebar(Vertical):
                 ]
             )
         )
-        blocks.append(Text("Codex Session", style="#6f757e"))
+        blocks.append(Text("Taga Session", style="#6f757e"))
         blocks.append(Text(state.codex_thread, style="#9aa3ad"))
         blocks.append(_kv([("state", self._activity())]))
         return blocks
 
     def _activity(self) -> Text:
-        """Name what Codex is doing, speech included."""
+        """Name what Taga is doing, speech included."""
         activity = codex_activity(self.state.codex_state, self.state.codex_speaking)
         return Text(
             activity,
@@ -991,7 +993,7 @@ class VoiceCodexApp(App):
        occupies is what makes that safe: an auto height would have to be
        re-measured to grow back, and the repaint deliberately does not ask. */
     #panel-countdown { height: 1; }
-    #mic-row, #them-row { height: auto; margin-bottom: 1; }
+    #mic-row, #audio-row { height: auto; margin-bottom: 1; }
     #sidebar Checkbox {
         height: 1;
         width: auto;
@@ -1144,7 +1146,7 @@ class VoiceCodexApp(App):
                         id="prompt-mark",
                     )
                     yield Input(id="input")
-                    yield Static("User Text always gets a reply", id="input-hint")
+                    yield Static("Text always gets a reply", id="input-hint")
                 yield Static(id="keys")
             yield Sidebar(self.state, self.hooks, id="sidebar")
 
@@ -1196,13 +1198,13 @@ class VoiceCodexApp(App):
                 style=SOURCE_STYLES.get(state.partial_source, "#6f757e"),
             )
             line.append(state.partial_text, style="#8a929c")
-        elif state.mic.muted and state.them.muted:
+        elif state.mic.muted and state.audio.muted:
             line = Text(
                 "◌ mic and speaker muted — nothing transcribing", style="#6f757e"
             )
         elif state.mic.muted:
-            line = Text("◌ mic muted — Them still transcribing", style="#6f757e")
-        elif state.them.muted:
+            line = Text("◌ mic muted — Audio still transcribing", style="#6f757e")
+        elif state.audio.muted:
             line = Text("◌ speaker muted — mic still hot", style="#6f757e")
         else:
             line = Text("◌ silence — mic hot, nothing pending", style="#6f757e")
@@ -1291,7 +1293,7 @@ class VoiceCodexApp(App):
     def _held_open_by(self, row: EntryRow) -> bool:
         """Is this row still being written to?
 
-        The open Codex message, the running command and the reasoning being
+        The open Taga message, the running command and the reasoning being
         narrated are re-rendered in place as their output arrives. Unmounting
         one would leave a stream writing to a row nobody can see.
         """
@@ -1309,7 +1311,7 @@ class VoiceCodexApp(App):
 
         A row still being written to is never unmounted, and neither is anything
         newer than it, because the mounted rows have to stay one unbroken run of
-        entries for scrolling to extend them at either end. So an open Codex
+        entries for scrolling to extend them at either end. So an open Taga
         message holds the window open past its size until it closes, and the
         next trim collects what it held.
         """
@@ -1530,7 +1532,7 @@ class VoiceCodexApp(App):
             else:
                 self.add_entry(Entry(kind="note", text=f"command {text}"))
             return
-        self.add_entry(Entry(kind="speech", source=USER_TEXT, text=text))
+        self.add_entry(Entry(kind="speech", source=TEXT, text=text))
         if self.hooks.on_user_text:
             self.hooks.on_user_text(text)
 
@@ -1556,7 +1558,9 @@ class VoiceCodexApp(App):
         """
         channel.muted = muted
         hook = (
-            self.hooks.on_mute if channel is self.state.mic else self.hooks.on_them_mute
+            self.hooks.on_mute
+            if channel is self.state.mic
+            else self.hooks.on_audio_mute
         )
         self.refresh_sidebar()
         self._sync_partial()
@@ -1573,7 +1577,7 @@ class VoiceCodexApp(App):
         self.set_tts_enabled(not self.state.tts_enabled)
 
     def set_tts_enabled(self, enabled: bool) -> bool:
-        """Speak Codex responses or stop; report whether the session could.
+        """Speak Taga's responses or stop; report whether the session could.
 
         Both the key binding and the sidebar's "No voice reply" arrive here,
         so the note and the picker say the same thing however the voice was
@@ -1734,7 +1738,7 @@ class VoiceCodexTUI:
         self._call(self._codex_begin_impl, reply_to)
 
     def _codex_begin_impl(self, reply_to: str) -> None:
-        entry = Entry(kind="speech", source=CODEX, reply_to=reply_to, streaming=True)
+        entry = Entry(kind="speech", source=TAGA, reply_to=reply_to, streaming=True)
         self.app._streaming = self.app.add_entry(entry)
         self.app.refresh_sidebar()
 
@@ -1747,10 +1751,10 @@ class VoiceCodexTUI:
     def _codex_delta_impl(self, delta: str) -> None:
         row = self.app._streaming
         if row is None:
-            self._codex_begin_impl(USER_VOICE)
+            self._codex_begin_impl(VOICE)
             row = self.app._streaming
         if row is None:
-            raise RuntimeError("Could not create a streaming Codex transcript row.")
+            raise RuntimeError("Could not create a streaming Taga transcript row.")
         row.entry.text += delta
         self.app.mark_dirty(row)
 
@@ -1788,7 +1792,7 @@ class VoiceCodexTUI:
     def _reasoning_impl(self) -> None:
         self.app._streaming = None
         self.app._reasoning_row = self.app.add_entry(
-            Entry(kind="reasoning", source=CODEX, streaming=True)
+            Entry(kind="reasoning", source=TAGA, streaming=True)
         )
         self.app.refresh_sidebar()
 
@@ -1892,7 +1896,7 @@ class VoiceCodexTUI:
         posted rather than waited on, and they repaint only the two channel
         lines instead of the whole sidebar.
         """
-        target = {"mic": self.state.mic, "them": self.state.them}.get(channel)
+        target = {"mic": self.state.mic, "audio": self.state.audio}.get(channel)
         if target is None:
             return
         target.active = active
@@ -1929,7 +1933,7 @@ class VoiceCodexTUI:
                 )
         self._call(self.app.refresh_sidebar)
 
-    def set_them_streams(self, applications: list[tuple[str, str]]) -> None:
+    def set_audio_streams(self, applications: list[tuple[str, str]]) -> None:
         """Install the applications currently on offer.
 
         The one being listened to stays selectable whether or not it is in the
@@ -1937,7 +1941,7 @@ class VoiceCodexTUI:
         it from the picker would make the session look as though it had been
         pointed somewhere else.
         """
-        self.state.them_streams = list(applications)
+        self.state.audio_streams = list(applications)
         self._call(self.app.refresh_sidebar)
 
     def set_microphones(self, microphones: list[tuple[str, str]]) -> None:

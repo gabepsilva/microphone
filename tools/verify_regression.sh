@@ -15,7 +15,7 @@
 set -euo pipefail
 
 TEST_SELECTION="${1:?usage: verify_regression.sh <pytest-selection>}"
-SOURCE_PATHS=(voice_codex voice_codex.py)
+SOURCE_PATHS=(tagalong tagalong.py)
 
 if git diff --quiet -- "${SOURCE_PATHS[@]}"; then
     echo "error: no uncommitted change under ${SOURCE_PATHS[*]}."

@@ -1,8 +1,15 @@
-# Voice Codex
+# TagAlong
 
-Voice Codex is a Linux desktop assistant that continuously transcribes a
+TagAlong is a Linux desktop assistant that continuously transcribes a
 microphone and an optional PipeWire/PulseAudio output, then presents the
 conversation to Codex through its Textual interface.
+
+The assistant you talk to is called **Taga**. Address it by name and it answers;
+it is the fourth participant in a transcript whose other three sources are
+`Voice` (you, speaking), `Text` (you, typing), and `Audio` (the far end of a
+meeting). "Codex" appears throughout this document and the code only where it
+means the model and SDK underneath Taga — the model to use, its reasoning
+effort, its service tier.
 
 ## Reproducible setup
 
@@ -15,10 +22,10 @@ uv sync --locked --all-groups
 make hooks
 ```
 
-`voice.yaml` is optional and holds local audio-device choices when present; it
-is deliberately ignored by Git. With no file, Voice Codex uses Piper speech,
+`tagalong.yaml` is optional and holds local audio-device choices when present; it
+is deliberately ignored by Git. With no file, TagAlong uses Piper speech,
 listens for both voice sources, starts without a meeting application, and
-chooses the first available microphone. `voice.example.yaml` documents every
+chooses the first available microphone. `tagalong.example.yaml` documents every
 setting if you want to create the file by hand.
 
 The file is also where a session records itself: every setting the sidebar can
@@ -35,13 +42,13 @@ runtime integrations, not Python packages.
 
 ## Speech
 
-Codex answers out loud through one of two engines, chosen with `--tts-provider`
+Taga answers out loud through one of two engines, chosen with `--tts-provider`
 or from the sidebar while the session runs:
 
 - `piper` (default) synthesizes on this machine. It reaches the first word in
   roughly a quarter the time Edge needs, because no part of the answer crosses
   the network, and it keeps working offline. Its voice model downloads once, to
-  `~/.cache/voice-codex/piper`.
+  `~/.cache/tagalong/piper`.
 - `edge` uses Microsoft's online voices.
 
 Each provider speaks with its own default voice; `--tts-voice` overrides it for
@@ -56,31 +63,35 @@ off, and choosing one again turns it back on. A session started with
 ## Running and presentation
 
 ```bash
-uv run voice_codex.py
+uv run tagalong
 ```
 
-The command loads `voice.yaml` when it exists, initializes User Voice
-transcription, and also transcribes Them when `them_stream` names an
+`uv sync` installs the project, so `tagalong` is a real command. The root
+`tagalong.py` launcher still works and does the same thing; it is there for
+running from a checkout without installing.
+
+The command loads `tagalong.yaml` when it exists, initializes Voice
+transcription, and also transcribes Audio when `audio_stream` names an
 application. If the file or an input device is absent, the typed/Codex session
 still starts. The microphone picker under the mic meter refreshes as devices
 are connected, so an input can be selected later without restarting.
 
 ## Hearing the far end
 
-Them is captured from one application's own PipeWire playback stream rather
-than from a speaker's monitor. `--them-stream` names the application — the name
+Audio is captured from one application's own PipeWire playback stream rather
+than from a speaker's monitor. `--audio-stream` names the application — the name
 the desktop shows for it, such as `Chromium` or `ZOOM VoiceEngine` — and the
 session links that application's audio into a capture node of its own while it
 goes on playing to the real speakers, unrouted and unchanged. Nothing has to be
 pointed at a virtual device.
 
-Codex's own speech is a different stream and is never linked, so it cannot be
+Taga's own speech is a different stream and is never linked, so it cannot be
 transcribed back as the far end. That is a property of the wiring rather than a
 filter that can miss.
 
 An application only appears in the audio graph once it starts playing, so the
 startup menu lists what is making sound right now. A name given with
-`--them-stream` or saved in `voice.yaml` is taken as written and picked up
+`--audio-stream` or saved in `tagalong.yaml` is taken as written and picked up
 whenever that application appears — including after it restarts, and including
 every stream it opens, which is what makes a browser with several tabs work.
 
@@ -104,7 +115,7 @@ development; model selection remains a startup option because the Codex SDK
 binds it when the conversation thread is created.
 
 The executable scripts are deliberately small compatibility entry points. The
-importable `voice_codex` package separates pure configuration and transcript
+importable `tagalong` package separates pure configuration and transcript
 domain logic from presentation and runtime integrations, so hardware and SDK
 boundaries can be tested with deterministic fakes.
 
@@ -117,7 +128,7 @@ begin before Codex has produced that token, so the service tier is the part of
 the wait the rest of the pipeline cannot recover.
 
 It consumes more credits. `--no-codex-fast` asks for the standard tier
-instead, and `codex_fast: false` in `voice.yaml` makes that the default for a
+instead, and `codex_fast: false` in `tagalong.yaml` makes that the default for a
 machine. The startup summary and the sidebar both name the tier in force.
 
 ## Turn silence

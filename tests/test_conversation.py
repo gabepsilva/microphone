@@ -28,7 +28,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
 )
 
-from voice_codex.codex import (
+from tagalong.codex import (
     REASONING_SUMMARY,
     WARMUP_PROMPT,
     CodexConversation,
@@ -197,7 +197,7 @@ class FakeDisplay:
         return [call[0] for call in self.calls]
 
 
-def render(events, chunker=None, reply_to="Them"):
+def render(events, chunker=None, reply_to="Audio"):
     display = FakeDisplay()
     CodexTurnRenderer(display, reply_to, chunker).render(events)
     return display
@@ -215,7 +215,7 @@ def test_an_assistant_message_is_opened_streamed_and_closed() -> None:
     )
 
     assert display.calls == [
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Hello "),
         ("codex_delta", "there."),
         ("codex_message_close",),
@@ -226,7 +226,7 @@ def test_a_delta_without_a_start_still_opens_the_message() -> None:
     display = render([delta("Sudden text."), turn_completed()])
 
     assert display.calls == [
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Sudden text."),
         ("codex_message_close",),
     ]
@@ -256,7 +256,7 @@ def test_reasoning_is_shown_as_its_own_section() -> None:
         ("reasoning_started",),
         ("reasoning_delta", "Weighing the riddle."),
         ("reasoning_completed",),
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Nine."),
         ("codex_message_close",),
     ]
@@ -284,7 +284,7 @@ def test_every_summary_part_after_the_first_opens_a_paragraph() -> None:
 
 
 def test_reasoning_is_never_spoken() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
 
@@ -306,7 +306,9 @@ def test_reasoning_does_not_time_the_reply() -> None:
     first_deltas = []
     display = FakeDisplay()
     renderer = CodexTurnRenderer(
-        display, "Them", on_first_delta=lambda: first_deltas.append(display.names()[-1])
+        display,
+        "Audio",
+        on_first_delta=lambda: first_deltas.append(display.names()[-1]),
     )
 
     renderer.render(
@@ -333,7 +335,7 @@ def test_reasoning_closes_the_open_message_before_it_is_shown() -> None:
     )
 
     assert display.calls == [
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Let me think."),
         ("codex_message_close",),
         ("reasoning_started",),
@@ -353,7 +355,7 @@ def test_a_command_closes_the_open_message_before_it_is_shown() -> None:
     )
 
     assert display.calls == [
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Let me check."),
         ("codex_message_close",),
         ("command_started", "ls -la"),
@@ -372,7 +374,7 @@ def test_a_tool_call_closes_the_open_message_before_it_is_shown() -> None:
     )
 
     assert display.calls == [
-        ("codex_message_open", "Them"),
+        ("codex_message_open", "Audio"),
         ("codex_delta", "Looking it up."),
         ("codex_message_close",),
         ("tool_called", "files", "read"),
@@ -433,7 +435,7 @@ def test_an_unrecognised_payload_is_ignored() -> None:
 
 
 def test_speech_is_flushed_at_every_command_boundary() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     chunker = SentenceChunker(spoken.append)
@@ -452,7 +454,7 @@ def test_speech_is_flushed_at_every_command_boundary() -> None:
 
 
 def test_speech_is_flushed_when_the_turn_ends() -> None:
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     render(
@@ -525,7 +527,7 @@ class RecordedConversation(CodexConversation):
 def conversation(monkeypatch):
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     display = FakeDisplay()
     built = RecordedConversation(
         codex,
@@ -543,7 +545,7 @@ def test_the_thread_is_started_from_the_chosen_settings(quiet_conversation) -> N
     """Every argument here changes what the model is or what it may do."""
     from openai_codex import ApprovalMode, Sandbox
 
-    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
 
     assert quiet_conversation.fake_codex.start_kwargs == {
         "model": "gpt-5.6-luna",
@@ -583,7 +585,7 @@ def test_a_silent_session_still_builds_a_conversation(monkeypatch) -> None:
     """The speech pipeline is optional; nothing else may depend on it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
 
@@ -606,20 +608,20 @@ def test_a_silent_session_still_builds_a_conversation(monkeypatch) -> None:
 
 
 def test_context_accumulates_until_a_reply_is_requested(conversation) -> None:
-    conversation.ingest("Them", "A question", respond=False, timestamp="T1")
-    conversation.ingest("User Voice", "And this", respond=True, timestamp="T2")
+    conversation.ingest("Audio", "A question", respond=False, timestamp="T1")
+    conversation.ingest("Voice", "And this", respond=True, timestamp="T2")
 
     request = conversation.requests.get(timeout=WAIT_SECONDS).request
 
-    assert request.reply_to == "User Voice"
+    assert request.reply_to == "Voice"
     assert conversation.context_entries(request) == [
-        {"timestamp": "T1", "source": "Them", "text": "A question"},
-        {"timestamp": "T2", "source": "User Voice", "text": "And this"},
+        {"timestamp": "T1", "source": "Audio", "text": "A question"},
+        {"timestamp": "T2", "source": "Voice", "text": "And this"},
     ]
 
 
 def test_a_timestamp_is_generated_when_none_is_given(conversation) -> None:
-    conversation.ingest("Them", "A question", respond=True)
+    conversation.ingest("Audio", "A question", respond=True)
 
     request = conversation.requests.get(timeout=WAIT_SECONDS).request
 
@@ -629,7 +631,7 @@ def test_a_timestamp_is_generated_when_none_is_given(conversation) -> None:
 def test_a_closed_conversation_ignores_new_input(conversation) -> None:
     conversation.close()
 
-    conversation.ingest("Them", "Too late", respond=True)
+    conversation.ingest("Audio", "Too late", respond=True)
 
     assert conversation.router.pending_context == []
 
@@ -651,7 +653,7 @@ def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
     """A fork that drops an argument silently changes what Codex may do."""
     from openai_codex import ApprovalMode, Sandbox
 
-    from voice_codex.codex import CODEX_DEVELOPER_INSTRUCTIONS
+    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
 
     conversation.request_model("gpt-5.6-nova")
 
@@ -669,7 +671,18 @@ def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
     )
 
 
-def test_a_fork_re_arms_the_warm_up_and_leaves_nothing_pending(conversation) -> None:
+def test_a_fork_re_arms_the_warm_up_and_leaves_nothing_pending(
+    quiet_conversation,
+) -> None:
+    """Driven explicitly: a live worker clears the flag this asserts on.
+
+    ``_worker`` re-arms nothing, but it does consume — it calls
+    ``_apply_pending_settings`` and then ``_warm_up``, which sets
+    ``warmup_pending`` back to False. Against the live fixture this passed only
+    while the main thread got there first, and a loaded runner is where it does
+    not.
+    """
+    conversation = quiet_conversation
     conversation.request_model("gpt-5.6-nova")
     conversation.request_reasoning_effort("high")
 
@@ -717,7 +730,7 @@ def test_a_requested_reasoning_effort_is_applied(conversation) -> None:
 
 def test_every_turn_asks_for_a_reasoning_summary(conversation) -> None:
     conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
 
     conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
 
@@ -728,7 +741,7 @@ def test_every_turn_asks_for_a_reasoning_summary(conversation) -> None:
 
 def test_a_turn_renders_between_begin_and_end_markers(conversation) -> None:
     conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
     request = conversation.requests.get(timeout=WAIT_SECONDS)
 
     conversation._run_codex(request)
@@ -742,7 +755,7 @@ def test_a_turn_renders_between_begin_and_end_markers(conversation) -> None:
 
 def test_a_failing_turn_is_reported_and_still_ends_cleanly(conversation) -> None:
     conversation.thread.next_turn = FakeTurn(error=RuntimeError("stream broke"))
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
     queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
     conversation._run_codex(queued)
@@ -753,13 +766,13 @@ def test_a_failing_turn_is_reported_and_still_ends_cleanly(conversation) -> None
 
 
 def test_the_prompt_names_the_source_to_reply_to(conversation) -> None:
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
     queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
     conversation._run_codex(queued)
     prompt = conversation.thread.turns[-1]
 
-    assert "Reply now to the latest Them input" in prompt
+    assert "Reply now to the latest Audio input" in prompt
     assert '"text": "A question"' in prompt
 
 
@@ -770,22 +783,22 @@ def test_the_prompt_is_exactly_what_codex_is_asked(quiet_conversation) -> None:
     sentence unpinned, and those are what tell Codex which entries are
     context and which one it is answering.
     """
-    quiet_conversation.ingest("Them", "A question", respond=False, timestamp="T1")
-    quiet_conversation.ingest("User Voice", "And mine", respond=True, timestamp="T2")
+    quiet_conversation.ingest("Audio", "A question", respond=False, timestamp="T1")
+    quiet_conversation.ingest("Voice", "And mine", respond=True, timestamp="T2")
     request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
 
     assert CodexConversation.build_prompt(request) == (
         "Transcript entries since the previous queued reply:\n"
-        '[{"timestamp": "T1", "source": "Them", "text": "A question"}, '
-        '{"timestamp": "T2", "source": "User Voice", "text": "And mine"}]\n\n'
-        "Reply now to the latest User Voice input. "
+        '[{"timestamp": "T1", "source": "Audio", "text": "A question"}, '
+        '{"timestamp": "T2", "source": "Voice", "text": "And mine"}]\n\n'
+        "Reply now to the latest Voice input. "
         "Use the other entries as context."
     )
 
 
 def test_a_prompt_keeps_non_ascii_speech_as_it_was_heard(quiet_conversation) -> None:
     """Escaping it would hand Codex \\u00e7 where a speaker said ç."""
-    quiet_conversation.ingest("Them", "Ação sim", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "Ação sim", respond=True, timestamp="T1")
     request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
 
     assert '"text": "Ação sim"' in CodexConversation.build_prompt(request)
@@ -797,7 +810,7 @@ def test_every_turn_is_started_under_the_chosen_constraints(conversation) -> Non
     from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
 
     conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
 
     conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
 
@@ -816,7 +829,7 @@ def test_interrupting_stops_the_active_turn_and_its_speech(monkeypatch) -> None:
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     tts = SimpleNamespace(
         interrupted=0,
@@ -865,7 +878,7 @@ def test_the_worker_drains_queued_requests(conversation) -> None:
             yield from [delta("Answer."), turn_completed()]
 
     conversation.thread.next_turn = WatchedTurn()
-    conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
 
     assert rendered.wait(WAIT_SECONDS)
 
@@ -878,7 +891,7 @@ def test_the_first_word_of_a_turn_is_reported_once() -> None:
     """
     reports = []
     renderer = CodexTurnRenderer(
-        FakeDisplay(), "Them", on_first_delta=lambda: reports.append(1)
+        FakeDisplay(), "Audio", on_first_delta=lambda: reports.append(1)
     )
 
     renderer.render([delta("First "), delta("second "), delta("third.")])
@@ -888,7 +901,7 @@ def test_the_first_word_of_a_turn_is_reported_once() -> None:
 
 def test_a_guess_carries_the_moment_it_was_heard(quiet_conversation) -> None:
     """Codex reads the timestamps as conversational timing."""
-    assert quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    assert quiet_conversation.prefire("Voice", "a question", timestamp="T1")
 
     request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
 
@@ -897,10 +910,10 @@ def test_a_guess_carries_the_moment_it_was_heard(quiet_conversation) -> None:
 
 def test_a_guess_that_was_adopted_is_marked_as_committed(quiet_conversation) -> None:
     """The worker reads this to tell a reply from a guess still in flight."""
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
-    assert quiet_conversation.commit_prefire("User Voice") is True
+    assert quiet_conversation.commit_prefire("Voice") is True
 
     assert queued.speculation.committed is True
     assert queued.speculation.abandoned is False
@@ -911,7 +924,7 @@ def test_a_retreat_re_answers_the_very_same_request(quiet_conversation) -> None:
     refusal = failure('{"param": "reasoning.effort", "code": "unsupported_value"}')
     quiet_conversation.reasoning_effort = "high"
     quiet_conversation.thread.next_turn = FakeTurn([refusal, turn_completed()])
-    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -942,11 +955,11 @@ def test_the_retry_still_answers_the_source_that_asked(quiet_conversation) -> No
 
     quiet_conversation.reasoning_effort = "high"
     quiet_conversation.thread.next_turn = RefusingOnceTurn()
-    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
 
     quiet_conversation._run_codex(quiet_conversation.requests.get(timeout=WAIT_SECONDS))
 
-    assert ("codex_message_open", "Them") in quiet_conversation.fake_display.calls
+    assert ("codex_message_open", "Audio") in quiet_conversation.fake_display.calls
     assert ("codex_delta", "Nine.") in quiet_conversation.fake_display.calls
 
 
@@ -972,7 +985,7 @@ def test_closing_survives_a_turn_that_refuses_to_be_interrupted(monkeypatch) -> 
     """A wedged turn must not take the shutdown down with it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -999,10 +1012,10 @@ def test_a_guess_survives_a_turn_that_refuses_to_be_interrupted(
         def interrupt(self):
             raise RuntimeError("the turn is wedged")
 
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
     quiet_conversation.speculation.turn = RefusingTurn()
 
-    assert quiet_conversation.cancel_prefire("User Voice") is True
+    assert quiet_conversation.cancel_prefire("Voice") is True
     assert quiet_conversation.speculation is None
 
 
@@ -1010,7 +1023,7 @@ def test_closing_does_not_wait_out_a_wedged_worker(monkeypatch) -> None:
     """Shutdown is bounded: a worker that never returns cannot hang the exit."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     released = threading.Event()
     monkeypatch.setattr(
         CodexConversation, "_worker", lambda self: released.wait(WAIT_SECONDS)
@@ -1079,7 +1092,7 @@ def test_an_empty_queue_does_not_end_the_worker(conversation) -> None:
     assert waiting.wait(WAIT_SECONDS)
 
     conversation.thread.next_turn = WatchedTurn()
-    conversation.ingest("Them", "A late question", respond=True, timestamp="T1")
+    conversation.ingest("Audio", "A late question", respond=True, timestamp="T1")
 
     assert rendered.wait(WAIT_SECONDS)
 
@@ -1088,7 +1101,7 @@ def test_the_thread_it_opened_is_announced(monkeypatch, capsys) -> None:
     """The one line printed before the interface exists, for a failed start."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
 
     conversation = CodexConversation(
@@ -1120,7 +1133,7 @@ def test_a_failed_fork_puts_the_displayed_settings_back(conversation) -> None:
 def test_a_fork_keeps_the_service_tier_the_session_pays_for(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     conversation = CodexConversation(
         CodexSettings(
@@ -1142,11 +1155,11 @@ def test_a_fork_keeps_the_service_tier_the_session_pays_for(monkeypatch) -> None
 def test_the_reply_is_addressed_to_the_source_that_asked(conversation) -> None:
     """The renderer labels the row with this; the wrong source misattributes it."""
     conversation.thread.next_turn = FakeTurn([delta("Answer."), turn_completed()])
-    conversation.ingest("User Voice", "A question", respond=True, timestamp="T1")
+    conversation.ingest("Voice", "A question", respond=True, timestamp="T1")
 
     conversation._run_codex(conversation.requests.get(timeout=WAIT_SECONDS))
 
-    assert ("codex_message_open", "User Voice") in conversation.fake_display.calls
+    assert ("codex_message_open", "Voice") in conversation.fake_display.calls
 
 
 def test_a_running_turn_can_be_reached_while_it_streams(quiet_conversation) -> None:
@@ -1161,11 +1174,11 @@ def test_a_running_turn_can_be_reached_while_it_streams(quiet_conversation) -> N
         return original(streamed_turn, reply_to)
 
     quiet_conversation._stream_turn = watched
-    quiet_conversation.ingest("Them", "A question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "A question", respond=True, timestamp="T1")
 
     quiet_conversation._run_codex(quiet_conversation.requests.get(timeout=WAIT_SECONDS))
 
-    assert seen == [(turn, "Them")]
+    assert seen == [(turn, "Audio")]
     # And it is let go of once the turn is over, so a later interrupt cannot
     # reach a turn that has already finished.
     assert quiet_conversation.active_turn is None
@@ -1221,7 +1234,7 @@ def test_closing_stops_the_turn_the_speech_and_the_client(monkeypatch) -> None:
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     closed_speech = []
     tts = SimpleNamespace(
@@ -1263,7 +1276,7 @@ def test_a_turn_that_ends_on_a_command_speaks_its_text_exactly_once() -> None:
     message the command boundary closed. Speaking it twice, or not at all, are
     both audible.
     """
-    from voice_codex.domain import SentenceChunker
+    from tagalong.domain import SentenceChunker
 
     spoken: list[str] = []
     display = render(
@@ -1296,7 +1309,7 @@ def quiet_conversation(monkeypatch):
     """
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
     built = RecordedConversation(
@@ -1314,9 +1327,9 @@ def quiet_conversation(monkeypatch):
 def test_a_prefired_turn_is_queued_without_consuming_the_context(
     quiet_conversation,
 ) -> None:
-    quiet_conversation.ingest("Them", "context", respond=False, timestamp="T1")
+    quiet_conversation.ingest("Audio", "context", respond=False, timestamp="T1")
 
-    assert quiet_conversation.prefire("User Voice", "a question", timestamp="T2")
+    assert quiet_conversation.prefire("Voice", "a question", timestamp="T2")
 
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
     assert [entry.text for entry in queued.request.entries] == [
@@ -1331,25 +1344,23 @@ def test_a_closed_session_reports_that_it_did_not_guess(quiet_conversation) -> N
     """The caller submits the turn itself when told False; a wrong True is silence."""
     quiet_conversation.shutdown_requested.set()
 
-    assert quiet_conversation.prefire("User Voice", "a question", timestamp="T1") is (
-        False
-    )
+    assert quiet_conversation.prefire("Voice", "a question", timestamp="T1") is (False)
     assert quiet_conversation.requests.empty()
 
 
 def test_a_second_guess_is_refused_while_one_is_outstanding(
     quiet_conversation,
 ) -> None:
-    assert quiet_conversation.prefire("User Voice", "first", timestamp="T1") is True
+    assert quiet_conversation.prefire("Voice", "first", timestamp="T1") is True
 
-    assert quiet_conversation.prefire("User Voice", "second", timestamp="T2") is False
+    assert quiet_conversation.prefire("Voice", "second", timestamp="T2") is False
     assert quiet_conversation.requests.qsize() == 1
 
 
 def test_committing_a_prefired_turn_consumes_its_context(quiet_conversation) -> None:
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
 
-    assert quiet_conversation.commit_prefire("User Voice")
+    assert quiet_conversation.commit_prefire("Voice")
 
     assert quiet_conversation.router.pending_context == []
     assert quiet_conversation.speculation is None
@@ -1358,12 +1369,12 @@ def test_committing_a_prefired_turn_consumes_its_context(quiet_conversation) -> 
 def test_cancelling_a_prefired_turn_keeps_its_words_for_the_next_request(
     quiet_conversation,
 ) -> None:
-    quiet_conversation.prefire("User Voice", "half a thought", timestamp="T1")
+    quiet_conversation.prefire("Voice", "half a thought", timestamp="T1")
 
-    assert quiet_conversation.cancel_prefire("User Voice")
+    assert quiet_conversation.cancel_prefire("Voice")
 
     quiet_conversation.requests.get(timeout=WAIT_SECONDS)
-    quiet_conversation.ingest("User Voice", "the rest", respond=True, timestamp="T2")
+    quiet_conversation.ingest("Voice", "the rest", respond=True, timestamp="T2")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
     assert [entry.text for entry in queued.request.entries] == [
         "half a thought",
@@ -1375,10 +1386,10 @@ def test_cancelling_interrupts_the_turn_that_was_already_running(
     quiet_conversation,
 ) -> None:
     turn = FakeTurn()
-    quiet_conversation.prefire("User Voice", "half a thought", timestamp="T1")
+    quiet_conversation.prefire("Voice", "half a thought", timestamp="T1")
     quiet_conversation.speculation.turn = turn
 
-    quiet_conversation.cancel_prefire("User Voice")
+    quiet_conversation.cancel_prefire("Voice")
 
     assert turn.interrupted == 1
 
@@ -1386,31 +1397,31 @@ def test_cancelling_interrupts_the_turn_that_was_already_running(
 def test_another_speakers_cancel_leaves_this_speculation_alone(
     quiet_conversation,
 ) -> None:
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
 
-    assert not quiet_conversation.cancel_prefire("Them")
+    assert not quiet_conversation.cancel_prefire("Audio")
     assert quiet_conversation.speculation is not None
 
 
 def test_a_committed_turn_can_no_longer_be_cancelled(quiet_conversation) -> None:
     """The reply is already the answer; cutting it off would answer nothing."""
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
-    quiet_conversation.commit_prefire("User Voice")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
+    quiet_conversation.commit_prefire("Voice")
 
-    assert not quiet_conversation.cancel_prefire("User Voice")
+    assert not quiet_conversation.cancel_prefire("Voice")
 
 
 def test_a_cancelled_turn_cannot_be_committed(quiet_conversation) -> None:
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
-    quiet_conversation.cancel_prefire("User Voice")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
+    quiet_conversation.cancel_prefire("Voice")
 
-    assert not quiet_conversation.commit_prefire("User Voice")
+    assert not quiet_conversation.commit_prefire("Voice")
 
 
 def test_only_one_turn_is_guessed_at_a_time(quiet_conversation) -> None:
-    quiet_conversation.prefire("User Voice", "first", timestamp="T1")
+    quiet_conversation.prefire("Voice", "first", timestamp="T1")
 
-    assert not quiet_conversation.prefire("Them", "second", timestamp="T2")
+    assert not quiet_conversation.prefire("Audio", "second", timestamp="T2")
 
 
 def test_a_settled_request_supersedes_an_outstanding_guess(
@@ -1418,10 +1429,10 @@ def test_a_settled_request_supersedes_an_outstanding_guess(
 ) -> None:
     """Both running would answer the same transcript twice."""
     turn = FakeTurn()
-    quiet_conversation.prefire("User Voice", "half a thought", timestamp="T1")
+    quiet_conversation.prefire("Voice", "half a thought", timestamp="T1")
     quiet_conversation.speculation.turn = turn
 
-    quiet_conversation.ingest("User Text", "never mind", respond=True, timestamp="T2")
+    quiet_conversation.ingest("Text", "never mind", respond=True, timestamp="T2")
 
     assert turn.interrupted == 1
     assert quiet_conversation.speculation is None
@@ -1430,7 +1441,7 @@ def test_a_settled_request_supersedes_an_outstanding_guess(
 def test_prefiring_is_refused_when_the_session_turned_it_off(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     display = FakeDisplay()
     conversation = CodexConversation(
@@ -1444,7 +1455,7 @@ def test_prefiring_is_refused_when_the_session_turned_it_off(monkeypatch) -> Non
     )
 
     try:
-        assert not conversation.prefire("User Voice", "a question")
+        assert not conversation.prefire("Voice", "a question")
         assert conversation.requests.empty()
     finally:
         conversation.close()
@@ -1453,7 +1464,7 @@ def test_prefiring_is_refused_when_the_session_turned_it_off(monkeypatch) -> Non
 def test_a_closed_conversation_does_not_guess(quiet_conversation) -> None:
     quiet_conversation.close()
 
-    assert not quiet_conversation.prefire("User Voice", "a question")
+    assert not quiet_conversation.prefire("Voice", "a question")
 
 
 def test_a_turn_abandoned_before_it_started_is_interrupted_at_once(
@@ -1462,9 +1473,9 @@ def test_a_turn_abandoned_before_it_started_is_interrupted_at_once(
     """Cancelled while still queued: the worker must not render a dead turn."""
     turn = FakeTurn(events=[delta("Half an answer"), turn_completed()])
     quiet_conversation.fake_codex.thread.next_turn = turn
-    quiet_conversation.prefire("User Voice", "half a thought", timestamp="T1")
+    quiet_conversation.prefire("Voice", "half a thought", timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
-    quiet_conversation.cancel_prefire("User Voice")
+    quiet_conversation.cancel_prefire("Voice")
 
     quiet_conversation._run_codex(queued)
 
@@ -1494,7 +1505,7 @@ def test_the_warm_up_yields_as_soon_as_there_is_real_work(quiet_conversation) ->
     """A speaker who starts talking during startup waits for nobody."""
     turn = FakeTurn(events=[delta("rea"), delta("dy"), turn_completed()])
     quiet_conversation.fake_codex.thread.next_turn = turn
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
 
     quiet_conversation._warm_up()
 
@@ -1550,7 +1561,7 @@ def test_a_refused_effort_retreats_and_answers_anyway(quiet_conversation) -> Non
     quiet_conversation.fake_codex.thread.turn = lambda prompt, **kwargs: (
         quiet_conversation.fake_codex.thread.turns.append(prompt) or next(turns)
     )
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1566,7 +1577,7 @@ def test_an_effort_refused_at_the_fallback_is_not_retried(quiet_conversation) ->
     quiet_conversation.fake_codex.thread.next_turn = FakeTurn(
         events=[failure(REFUSAL), turn_completed()]
     )
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1579,7 +1590,7 @@ def test_an_unrelated_error_does_not_change_the_effort(quiet_conversation) -> No
     quiet_conversation.fake_codex.thread.next_turn = FakeTurn(
         events=[failure("the network went away"), turn_completed()]
     )
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1598,7 +1609,7 @@ def test_the_time_to_the_first_word_is_recorded(quiet_conversation) -> None:
     quiet_conversation.fake_codex.thread.next_turn = FakeTurn(
         events=[delta("Here"), delta(" it is."), turn_completed()]
     )
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1610,7 +1621,7 @@ def test_the_time_to_the_first_word_is_recorded(quiet_conversation) -> None:
 def test_a_turn_that_never_speaks_teaches_nothing(quiet_conversation) -> None:
     seeded = quiet_conversation.latency.estimate
     quiet_conversation.fake_codex.thread.next_turn = FakeTurn(events=[turn_completed()])
-    quiet_conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+    quiet_conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1624,7 +1635,7 @@ def test_a_cancelled_guess_stops_the_speech_it_had_already_started(
     """The half-spoken reply must stop with the turn that was producing it."""
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     interrupted: list[int] = []
     tts = SimpleNamespace(
@@ -1641,9 +1652,9 @@ def test_a_cancelled_guess_stops_the_speech_it_had_already_started(
         tts,
     )
     try:
-        conversation.prefire("User Voice", "half a thought", timestamp="T1")
+        conversation.prefire("Voice", "half a thought", timestamp="T1")
 
-        conversation.cancel_prefire("User Voice")
+        conversation.cancel_prefire("Voice")
 
         assert interrupted == [1]
     finally:
@@ -1656,7 +1667,7 @@ def test_a_started_turn_is_attached_to_the_speculation_that_owns_it(
     """Attaching is what lets a later cancel reach a turn already streaming."""
     turn = FakeTurn(events=[delta("Here it is."), turn_completed()])
     quiet_conversation.fake_codex.thread.next_turn = turn
-    quiet_conversation.prefire("User Voice", "a question", timestamp="T1")
+    quiet_conversation.prefire("Voice", "a question", timestamp="T1")
     queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
 
     quiet_conversation._run_codex(queued)
@@ -1668,7 +1679,7 @@ def test_a_started_turn_is_attached_to_the_speculation_that_owns_it(
 def test_a_turn_speaks_through_the_session_speech(monkeypatch) -> None:
     load_codex_sdk()
     codex = FakeCodex()
-    monkeypatch.setattr("voice_codex.codex.Codex", lambda: codex)
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
     spoken: list[str] = []
     turns: list[int] = []
@@ -1689,7 +1700,7 @@ def test_a_turn_speaks_through_the_session_speech(monkeypatch) -> None:
         codex.thread.next_turn = FakeTurn(
             events=[delta("Here it is. "), turn_completed()]
         )
-        conversation.ingest("Them", "a question", respond=True, timestamp="T1")
+        conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
         queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
         conversation._run_codex(queued)

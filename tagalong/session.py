@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import signal
 
-SESSION_MARKER = "VOICE_CODEX_SESSION"
+SESSION_MARKER = "TAGALONG_SESSION"
 
 PROC = "/proc"
 

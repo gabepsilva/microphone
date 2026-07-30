@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn streamed transcription events into completed turns for Codex.
+"""Turn streamed transcription events into completed turns for Taga.
 
 The silence timer here is a daemon thread, cancelled on mute and on close, so
 a pending flush cannot fire against a torn-down display.
@@ -313,14 +313,14 @@ class PrefireChannel:
 
 
 class TranscriptSubmitter:
-    """Send completed turns to Codex, discarding the assistant's own TTS echo.
+    """Send completed turns to Taga, discarding the assistant's own TTS echo.
 
-    Both microphones can hear Codex speaking. A transcript that matches recent
+    Both microphones can hear Taga speaking. A transcript that matches recent
     speech is dropped rather than answered, and a partial that matches it must
     not interrupt playback either.
     """
 
-    ECHO_PRONE_SPEAKERS = ("User Voice", "Them")
+    ECHO_PRONE_SPEAKERS = ("Voice", "Audio")
 
     def __init__(self, conversation, gate, tts, stream=sys.stderr, prefire_plan=None):
         self.conversation = conversation
@@ -381,7 +381,7 @@ class TranscriptSubmitter:
         return None if self.prefire_plan is None else PrefireChannel(self)
 
     def _is_echo(self, speaker, text) -> bool:
-        """Report whether a transcript is Codex hearing itself speak."""
+        """Report whether a transcript is Taga hearing itself speak."""
         return (
             self.tts is not None
             and speaker in self.ECHO_PRONE_SPEAKERS
@@ -424,7 +424,7 @@ class TranscriptSubmitter:
     def submit(self, speaker, text):
         if self._is_echo(speaker, text):
             print(
-                f"[ignored likely Codex TTS echo from {speaker}: {text}]",
+                f"[ignored likely Taga TTS echo from {speaker}: {text}]",
                 file=self.stream,
                 flush=True,
             )

@@ -51,7 +51,7 @@ NO_VOICE_LABEL = "No voice reply"
 
 
 class SpeechEngine(Protocol):
-    """Speak Codex sentences, and stop when the user starts talking."""
+    """Speak Taga's sentences, and stop when the user starts talking."""
 
     def begin_turn(self) -> None: ...
 

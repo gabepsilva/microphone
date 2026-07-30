@@ -1,4 +1,4 @@
-# Copy this file to voice.yaml to override or make the built-in defaults explicit.
+# Copy this file to tagalong.yaml to override or make the built-in defaults explicit.
 # Command-line options override these values.
 # Null automatically uses the first available microphone. If it is unavailable,
 # the session still starts and the sidebar can select one later.
@@ -7,13 +7,13 @@ tts: null
 # "piper" synthesizes locally and reaches the first word fastest; "edge" uses
 # Microsoft's online voices. Null keeps the default, piper.
 tts_provider: null
-# The application whose audio is transcribed as Them, by the name the
+# The application whose audio is transcribed as Audio, by the name the
 # desktop shows for it, or "none". Null keeps the built-in default, none.
-them_stream: null
-# The sink Codex speaks through. Null uses the system default.
+audio_stream: null
+# The sink Taga speaks through. Null uses the system default.
 tts_output: null
 # Null keeps the built-in default, both voice sources.
-codex_after: null
+taga_after: null
 # Left null, these take the built-in defaults: 3.0 seconds, gpt-5.6-luna, low,
 # and Codex Fast on — a spoken reply cannot start before the first token, so
 # the tier is bought back as latency. Set codex_fast to false to spend fewer

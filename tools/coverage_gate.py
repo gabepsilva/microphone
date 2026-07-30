@@ -22,7 +22,7 @@ COVERAGE_PATH = Path("coverage.json")
 
 # Recorded 2026-07-26. Raise as coverage improves; never lower.
 #
-# The voice_codex entries were re-recorded on 2026-07-27 when cli.py was split
+# The tagalong entries were re-recorded on 2026-07-27 when cli.py was split
 # into per-concern modules. The single 83% floor it used to carry was an
 # average, and averages are what this gate exists to stop: it hid a 26% wiring
 # root and a 58% listener behind well-covered choosers and Codex handling.
@@ -37,35 +37,35 @@ FLOORS = {
     "tools/ratchet_gate.py": 90.0,
     "tools/test_integrity.py": 93.0,
     "tools/worker_gate.py": 97.0,
-    "voice_codex.py": 83.0,
-    "voice_codex/__init__.py": 100.0,
-    "voice_codex/capture.py": 94.0,
-    "voice_codex/catalog.py": 97.0,
+    "tagalong.py": 83.0,
+    "tagalong/__init__.py": 100.0,
+    "tagalong/capture.py": 94.0,
+    "tagalong/catalog.py": 97.0,
     # Raised 2026-07-28 from 94, then to 100 when the virtual meeting sink
     # left and the application-stream chooser that replaced it arrived fully
     # covered.
-    "voice_codex/choosers.py": 100.0,
+    "tagalong/choosers.py": 100.0,
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
     # Raised 2026-07-28 from 98.
-    "voice_codex/cli.py": 99.0,
-    "voice_codex/codex.py": 99.0,
-    "voice_codex/config.py": 100.0,
-    "voice_codex/domain.py": 98.0,
-    "voice_codex/listener.py": 100.0,
+    "tagalong/cli.py": 99.0,
+    "tagalong/codex.py": 99.0,
+    "tagalong/config.py": 100.0,
+    "tagalong/domain.py": 98.0,
+    "tagalong/listener.py": 100.0,
     # Recorded 2026-07-27 with the speech-provider split. Each measured the
     # same figure across three consecutive runs, so none of these carries the
     # thread-interleaving slack the tts.py note below describes: piper_tts.py
     # 95.73, playback.py 98.41, speech.py 100.00.
-    "voice_codex/piper_tts.py": 95.0,
-    "voice_codex/playback.py": 98.0,
-    "voice_codex/presentation.py": 100.0,
+    "tagalong/piper_tts.py": 95.0,
+    "tagalong/playback.py": 98.0,
+    "tagalong/presentation.py": 100.0,
     # Recorded 2026-07-29 with the session tagging that lets an orphaned
     # helper be recognized and swept.
-    "voice_codex/session.py": 100.0,
-    "voice_codex/speech.py": 100.0,
-    "voice_codex/startup.py": 100.0,
+    "tagalong/session.py": 100.0,
+    "tagalong/speech.py": 100.0,
+    "tagalong/startup.py": 100.0,
     # Recorded 2026-07-28 with the PipeWire stream tap.
-    "voice_codex/streams.py": 100.0,
+    "tagalong/streams.py": 100.0,
     # This floor sat at 80 while the measurement moved between runs: five runs
     # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the
     # guard in _play was hit or missed depending on how the synthesis thread
@@ -74,8 +74,8 @@ FLOORS = {
     # exactly that: every abort and shutdown path waits on an event the fake
     # player sets. Five runs of the current tree all measure 97.19, so this is
     # the honest floor rather than the top of a flapping range.
-    "voice_codex/tts.py": 98.0,
-    "voice_codex/tui.py": 95.0,
+    "tagalong/tts.py": 98.0,
+    "tagalong/tui.py": 95.0,
 }
 
 # A module added after this gate existed has no legacy excuse.

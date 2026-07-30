@@ -3,7 +3,7 @@
 
 A sink monitor carries everything the speakers play, and on this program's own
 machine that includes the speech it just synthesized: tapping the output a
-meeting is heard through means transcribing Codex's replies back as the far
+meeting is heard through means transcribing Taga's replies back as the far
 end. The way around that used to be a virtual sink the meeting app had to be
 pointed at by hand, which every session paid for and every user had to be told
 about.
@@ -54,7 +54,7 @@ INCOMING = "in"
 CHANNEL_ORDER = ("FL", "MONO", "FR")
 
 # How far up the process tree a stream's owner is followed before it is taken
-# to be someone else's. Codex's speech plays through a direct child, so one
+# to be someone else's. Taga's speech plays through a direct child, so one
 # step would do; the rest is slack for a player that wraps itself in a shell.
 ANCESTRY_LIMIT = 8
 
@@ -111,14 +111,14 @@ def spawned_here(
 ):
     """Report whether a stream belongs to this program rather than to a user app.
 
-    Codex speaks through a short-lived player process, and the graph names that
+    Taga speaks through a short-lived player process, and the graph names that
     stream after the player. Without this the picker would offer this program's
     own voice as something to transcribe, and would offer a different one every
     sentence.
 
     Ancestry rather than the process name, because the player is an ordinary
     tool a user may also be running for their own reasons: what distinguishes
-    Codex's copy of it is that this program started it.
+    Taga's copy of it is that this program started it.
 
     The tag is checked first and ancestry second, because ancestry alone
     cannot see an orphan: a player left behind by a session that was killed
@@ -269,7 +269,7 @@ def require_pipewire():
         if shutil.which(tool) is None:
             raise RuntimeError(
                 f"{tool} is required to transcribe an application's audio. "
-                "Voice Codex captures PipeWire playback streams directly."
+                "TagAlong captures PipeWire playback streams directly."
             )
 
 
@@ -293,7 +293,7 @@ class StreamTap:
     session waits for someone to choose.
     """
 
-    NODE_PREFIX = "voice_codex_tap_"
+    NODE_PREFIX = "tagalong_tap_"
     POLL_SECONDS = 1.0
 
     # pw-record's own default is 100ms, which is added to everything this
@@ -337,7 +337,7 @@ class StreamTap:
         ``--target 0`` is the whole point. It tells PipeWire not to connect the
         capture node to anything, so it arrives empty and carries only what
         this class links into it. Without it the node autoconnects to the
-        default source, and the Them channel quietly records the microphone.
+        default source, and the Audio channel quietly records the microphone.
         """
         return [
             PW_RECORD,
@@ -532,7 +532,7 @@ class ApplicationRefresher:
         if offered == self.offered:
             return False
         self.offered = offered
-        self.display.set_them_streams(offered)
+        self.display.set_audio_streams(offered)
         return True
 
     def _serve(self):

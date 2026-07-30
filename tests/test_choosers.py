@@ -15,24 +15,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.catalog import CodexModelOption, populate_codex_model_catalog
-from voice_codex.choosers import (
+from tagalong.catalog import CodexModelOption, populate_codex_model_catalog
+from tagalong.choosers import (
     audio_outputs,
-    choose_codex_after,
+    choose_audio_stream,
     choose_microphone,
-    choose_them_stream,
+    choose_taga_after,
     choose_tts,
     choose_tts_output,
     find_audio_output,
     input_devices,
     prompt_number,
     prompt_until,
+    select_audio_stream,
     select_microphone,
-    select_them_stream,
     select_tts_output,
 )
-from voice_codex.domain import RESPONSE_POLICIES
-from voice_codex.streams import ApplicationStream, stream_label
+from tagalong.domain import RESPONSE_POLICIES
+from tagalong.streams import ApplicationStream, stream_label
 
 
 def answer_with(monkeypatch, answers):
@@ -198,7 +198,7 @@ def test_an_unknown_microphone_names_the_config_that_asked_for_it() -> None:
 def test_choosing_a_microphone_lists_every_device_before_asking(
     monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr("voice_codex.choosers.input_devices", lambda: DEVICES)
+    monkeypatch.setattr("tagalong.choosers.input_devices", lambda: DEVICES)
     answer_with(monkeypatch, ["2"])
 
     assert choose_microphone() == DEVICES[1]
@@ -208,7 +208,7 @@ def test_choosing_a_microphone_lists_every_device_before_asking(
 
 
 def test_choosing_a_microphone_fails_when_the_machine_has_none(monkeypatch) -> None:
-    monkeypatch.setattr("voice_codex.choosers.input_devices", list)
+    monkeypatch.setattr("tagalong.choosers.input_devices", list)
 
     with pytest.raises(RuntimeError, match="No audio input devices"):
         choose_microphone()
@@ -295,13 +295,13 @@ def test_an_unknown_output_matches_nothing() -> None:
 
 
 @pytest.mark.parametrize("requested", ["none", "NONE", "None"])
-def test_no_them_application_is_accepted_in_any_case(requested) -> None:
-    assert select_them_stream(requested) is None
+def test_no_audio_application_is_accepted_in_any_case(requested) -> None:
+    assert select_audio_stream(requested) is None
 
 
 def test_a_named_application_is_taken_without_checking_the_graph() -> None:
     """An application that is not playing yet still has to be selectable."""
-    assert select_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
+    assert select_audio_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
 
 
 STREAMS = [
@@ -339,27 +339,27 @@ def test_a_stream_is_labelled_by_application_title_and_whether_it_plays(
     ("answer", "expected"),
     [("0", None), ("1", "Chromium"), ("2", "ZOOM VoiceEngine")],
 )
-def test_choosing_a_them_application_maps_each_menu_entry(
+def test_choosing_an_audio_application_maps_each_menu_entry(
     monkeypatch, answer, expected
 ) -> None:
-    monkeypatch.setattr("voice_codex.choosers.graph", list)
+    monkeypatch.setattr("tagalong.choosers.graph", list)
     monkeypatch.setattr(
-        "voice_codex.choosers.offered_applications",
+        "tagalong.choosers.offered_applications",
         lambda objects: [(stream_label(s), s.application) for s in STREAMS],
     )
     answer_with(monkeypatch, [answer])
 
-    assert choose_them_stream() == expected
+    assert choose_audio_stream() == expected
 
 
 def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
     monkeypatch, capsys
 ) -> None:
-    monkeypatch.setattr("voice_codex.choosers.graph", list)
-    monkeypatch.setattr("voice_codex.choosers.offered_applications", lambda objects: [])
+    monkeypatch.setattr("tagalong.choosers.graph", list)
+    monkeypatch.setattr("tagalong.choosers.offered_applications", lambda objects: [])
     answer_with(monkeypatch, ["0"])
 
-    assert choose_them_stream() is None
+    assert choose_audio_stream() is None
     assert "No application is playing audio yet" in capsys.readouterr().out
 
 
@@ -380,13 +380,13 @@ def test_no_requested_speech_output_leaves_the_system_default_alone(
     def unreachable():
         raise AssertionError("the sinks were listed for a question nobody asked")
 
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", unreachable)
+    monkeypatch.setattr("tagalong.choosers.audio_outputs", unreachable)
 
     assert choose_tts_output() is None
 
 
 def test_a_requested_speech_output_is_resolved_against_the_sinks(monkeypatch) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    monkeypatch.setattr("tagalong.choosers.audio_outputs", lambda: list(OUTPUTS))
 
     assert choose_tts_output("Headset")["name"] == "sink.b"
 
@@ -394,14 +394,14 @@ def test_a_requested_speech_output_is_resolved_against_the_sinks(monkeypatch) ->
 @pytest.mark.parametrize(
     ("requested", "label"),
     [
-        ("them", "Them"),
-        ("both", "User Voice and Them"),
-        ("user", "User Voice"),
-        ("quiet", "Codex will be quiet for voice"),
+        ("audio", "Audio"),
+        ("both", "Voice and Audio"),
+        ("voice", "Voice"),
+        ("quiet", "Taga will be quiet for voice"),
     ],
 )
 def test_a_requested_response_policy_needs_no_prompt(requested, label) -> None:
-    assert choose_codex_after(requested).label == label
+    assert choose_taga_after(requested).label == label
 
 
 def test_choosing_a_response_policy_accepts_its_menu_number(
@@ -409,12 +409,12 @@ def test_choosing_a_response_policy_accepts_its_menu_number(
 ) -> None:
     answer_with(monkeypatch, ["9", "2"])
 
-    policy = choose_codex_after()
+    policy = choose_taga_after()
 
     assert (policy.name, policy.label, policy.speakers) == (
         "both",
-        "User Voice and Them",
-        frozenset({"User Voice", "Them"}),
+        "Voice and Audio",
+        frozenset({"Voice", "Audio"}),
     )
     assert "Please enter a number from 1 to 4." in capsys.readouterr().out
 
@@ -452,7 +452,7 @@ def test_an_unrecognised_tts_answer_is_asked_again(monkeypatch, capsys) -> None:
 
 def test_the_model_catalog_populates_the_sidebar_selectors(monkeypatch) -> None:
     option = CodexModelOption("slug-a", "Model A", ("low", "high"), "high")
-    monkeypatch.setattr("voice_codex.catalog.probe_codex_models", lambda: [option])
+    monkeypatch.setattr("tagalong.catalog.probe_codex_models", lambda: [option])
     recorded = {}
 
     display = RecordingStatus()
@@ -466,7 +466,7 @@ def test_the_model_catalog_populates_the_sidebar_selectors(monkeypatch) -> None:
 
 
 def test_an_unavailable_model_catalog_notes_it_instead_of_failing(monkeypatch) -> None:
-    monkeypatch.setattr("voice_codex.catalog.probe_codex_models", list)
+    monkeypatch.setattr("tagalong.catalog.probe_codex_models", list)
     display = RecordingStatus()
 
     populate_codex_model_catalog(display)
@@ -498,26 +498,26 @@ def refuse_input(monkeypatch):
 
 
 def test_a_requested_microphone_skips_the_menu(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("voice_codex.choosers.input_devices", lambda: DEVICES)
+    monkeypatch.setattr("tagalong.choosers.input_devices", lambda: DEVICES)
     refuse_input(monkeypatch)
 
     assert choose_microphone("Webcam") == DEVICES[1]
     assert capsys.readouterr().out == ""
 
 
-def test_a_requested_them_application_skips_the_menu(monkeypatch, capsys) -> None:
+def test_a_requested_audio_application_skips_the_menu(monkeypatch, capsys) -> None:
     def unreachable():
         raise AssertionError("the graph was read for a question nobody asked")
 
-    monkeypatch.setattr("voice_codex.choosers.graph", unreachable)
+    monkeypatch.setattr("tagalong.choosers.graph", unreachable)
     refuse_input(monkeypatch)
 
-    assert choose_them_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
+    assert choose_audio_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
     assert capsys.readouterr().out == ""
 
 
 def test_a_requested_speech_output_skips_the_menu(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("voice_codex.choosers.audio_outputs", lambda: list(OUTPUTS))
+    monkeypatch.setattr("tagalong.choosers.audio_outputs", lambda: list(OUTPUTS))
     refuse_input(monkeypatch)
 
     assert choose_tts_output("Headset") is OUTPUTS[1]
@@ -529,7 +529,7 @@ def test_the_startup_menu_offers_every_defined_policy_in_order(
 ) -> None:
     answer_with(monkeypatch, ["1"])
 
-    choose_codex_after()
+    choose_taga_after()
 
     menu = capsys.readouterr().out
     for number, policy in enumerate(RESPONSE_POLICIES.values(), start=1):
@@ -543,5 +543,5 @@ def test_every_policy_is_reachable_by_name_and_by_menu_number(name) -> None:
 
     # Both spellings a user can supply resolve to the same policy, so the menu
     # numbering cannot drift away from the mapping it is generated from.
-    assert choose_codex_after(name) is policy
-    assert choose_codex_after(number) is policy
+    assert choose_taga_after(name) is policy
+    assert choose_taga_after(number) is policy

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Speak Codex responses through Edge TTS, one sentence at a time.
+"""Speak Taga's responses through Edge TTS, one sentence at a time.
 
 The worker thread here follows the package's shutdown contract: it is a
 daemon, and ``close`` joins it with a timeout. ``tools/worker_gate.py``

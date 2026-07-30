@@ -188,7 +188,12 @@ def _check_pyproject(base: str, failures: list[str]) -> None:
             f"coverage fail_under lowered {was_fail_under:g} -> {now_fail_under:g}."
         )
 
-    dropped = set(was_paths) - set(now_paths)
+    # Same allowance the coverage floors get: a threshold may be dropped when
+    # its source file is genuinely gone. Without this, renaming the package
+    # reads as narrowing the scope, because the comparison is stringwise and
+    # the base branch still spells the old prefix. Dropping a module that is
+    # still there remains a failure, which is the case worth catching.
+    dropped = {path for path in set(was_paths) - set(now_paths) if Path(path).exists()}
     if dropped:
         failures.append(
             f"mutmut source_paths narrowed; no longer mutated: {sorted(dropped)}."

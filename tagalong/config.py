@@ -17,9 +17,9 @@ STARTUP_CONFIG_KEYS = (
     "microphone",
     "tts",
     "tts_provider",
-    "them_stream",
+    "audio_stream",
     "tts_output",
-    "codex_after",
+    "taga_after",
     "turn_silence",
     "codex_model",
     "codex_reasoning",
@@ -80,7 +80,7 @@ def load_startup_config(
 def save_startup_config(filename: str | Path, settings: Mapping[str, object]) -> None:
     """Save prompt answers as dependency-free, human-editable YAML."""
     lines = [
-        "# Voice Codex startup choices",
+        "# TagAlong startup choices",
         "# Command-line options override these values.",
     ]
     for key in STARTUP_CONFIG_KEYS:

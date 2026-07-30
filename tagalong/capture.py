@@ -353,7 +353,7 @@ class ApplicationStreamTranscriber:
                 self.stream.add_audio(audio.tolist(), self.capture.samplerate)
             except Exception as error:
                 print(
-                    f"Them transcription error: {error}",
+                    f"Audio transcription error: {error}",
                     file=sys.stderr,
                     flush=True,
                 )

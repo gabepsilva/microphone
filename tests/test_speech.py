@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from voice_codex import piper_tts, tts
-from voice_codex.speech import (
+from tagalong import piper_tts, tts
+from tagalong.speech import (
     DEFAULT_PROVIDER,
     PROVIDER_LABELS,
     PROVIDERS,

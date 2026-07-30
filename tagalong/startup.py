@@ -15,9 +15,9 @@ from dataclasses import dataclass
 
 from .catalog import CodexModelOption
 from .choosers import (
-    NO_THEM_STREAM,
-    choose_codex_after,
-    choose_them_stream,
+    NO_AUDIO_STREAM,
+    choose_audio_stream,
+    choose_taga_after,
     choose_tts,
     choose_tts_output,
     input_devices,
@@ -31,8 +31,8 @@ DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
 DEFAULT_TTS = "on"
-DEFAULT_THEM_STREAM = NO_THEM_STREAM
-DEFAULT_CODEX_AFTER = "both"
+DEFAULT_AUDIO_STREAM = NO_AUDIO_STREAM
+DEFAULT_TAGA_AFTER = "both"
 
 # Pre-firing overlaps Codex's thinking with the silence a finished turn is
 # already waiting out, which is the difference between the first word landing
@@ -49,12 +49,12 @@ DEFAULT_CODEX_FAST = True
 
 DEFAULT_CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "voice.yaml",
+    "tagalong.yaml",
 )
 
 
 def build_parser():
-    """Build the command-line parser for the Voice Codex entry point."""
+    """Build the command-line parser for the TagAlong entry point."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
@@ -86,7 +86,7 @@ def build_parser():
     parser.add_argument(
         "--turn-silence",
         type=float,
-        help=f"Quiet seconds before sending a turn to Codex (default: {DEFAULT_TURN_SILENCE})",
+        help=f"Quiet seconds before sending a turn to Taga (default: {DEFAULT_TURN_SILENCE})",
     )
     parser.add_argument(
         "--sandbox",
@@ -128,33 +128,33 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--them-stream",
+        "--audio-stream",
         help=(
-            "Application whose audio is transcribed as Them, or 'none'; "
-            f"default: {DEFAULT_THEM_STREAM}"
+            "Application whose audio is transcribed as Audio, or 'none'; "
+            f"default: {DEFAULT_AUDIO_STREAM}"
         ),
     )
     parser.add_argument(
         "--tts-output",
-        help="Sink Codex speaks through; the system default when omitted",
+        help="Sink Taga speaks through; the system default when omitted",
     )
     parser.add_argument(
-        "--codex-after",
+        "--taga-after",
         choices=POLICY_NAMES,
         help=(
-            "Which completed transcript turns trigger Codex "
-            f"(default: {DEFAULT_CODEX_AFTER})"
+            "Which completed transcript turns trigger Taga "
+            f"(default: {DEFAULT_TAGA_AFTER})"
         ),
     )
     parser.add_argument(
         "--tts",
         choices=("on", "off"),
-        help=f"Speak Codex responses (default: {DEFAULT_TTS})",
+        help=f"Speak Taga's responses (default: {DEFAULT_TTS})",
     )
     parser.add_argument(
         "--tts-provider",
         choices=PROVIDERS,
-        help=(f"Speech synthesizer for Codex responses (default: {DEFAULT_PROVIDER})"),
+        help=(f"Speech synthesizer for Taga's responses (default: {DEFAULT_PROVIDER})"),
     )
     parser.add_argument(
         "--tts-voice",
@@ -166,7 +166,7 @@ def build_parser():
 def _apply_startup_config(parser, args):
     """Fill options the command line left unset from the startup config file.
 
-    ``--config`` always names a file, defaulting to ``voice.yaml`` beside the
+    ``--config`` always names a file, defaulting to ``tagalong.yaml`` beside the
     package. A missing file is an empty configuration layer so a first run can
     start from built-in defaults; every other read failure remains fatal.
     """
@@ -197,8 +197,8 @@ def _resolve_defaults(args):
     """
     for option, fallback in (
         ("tts", DEFAULT_TTS),
-        ("them_stream", DEFAULT_THEM_STREAM),
-        ("codex_after", DEFAULT_CODEX_AFTER),
+        ("audio_stream", DEFAULT_AUDIO_STREAM),
+        ("taga_after", DEFAULT_TAGA_AFTER),
         ("tts_provider", DEFAULT_PROVIDER),
         ("turn_silence", DEFAULT_TURN_SILENCE),
         ("codex_model", DEFAULT_CODEX_MODEL),
@@ -234,9 +234,9 @@ def _validate_startup_args(parser, args):
         or not isinstance(args.turn_silence, int | float)
     ):
         parser.error("startup config 'turn_silence' must be a number")
-    if args.codex_after is not None and args.codex_after not in POLICY_NAMES:
+    if args.taga_after is not None and args.taga_after not in POLICY_NAMES:
         allowed = ", ".join(repr(name) for name in POLICY_NAMES)
-        parser.error(f"startup config 'codex_after' must be one of {allowed}")
+        parser.error(f"startup config 'taga_after' must be one of {allowed}")
     if not 0.0 <= args.confidence <= 1.0:
         parser.error("--confidence must be between 0.0 and 1.0")
     if args.turn_silence is not None and not (
@@ -278,7 +278,7 @@ class StartupSelection:
     device: dict | None
     tts_enabled: bool
     tts_provider: str
-    them_stream: str | None
+    audio_stream: str | None
     tts_output: dict | None
     policy: ResponsePolicy
 
@@ -293,13 +293,15 @@ def startup_settings(selection, args):
         ),
         "tts": "on" if selection.tts_enabled else "off",
         "tts_provider": selection.tts_provider,
-        "them_stream": (
-            NO_THEM_STREAM if selection.them_stream is None else selection.them_stream
+        "audio_stream": (
+            NO_AUDIO_STREAM
+            if selection.audio_stream is None
+            else selection.audio_stream
         ),
         "tts_output": (
             selection.tts_output["name"] if selection.tts_output is not None else None
         ),
-        "codex_after": selection.policy.name,
+        "taga_after": selection.policy.name,
         "turn_silence": args.turn_silence,
         "codex_model": args.codex_model,
         "codex_reasoning": args.codex_reasoning,
@@ -310,24 +312,24 @@ def startup_settings(selection, args):
 
 def print_startup_summary(args, selection, stream=sys.stderr):
     """Report the resolved startup choices before the slow model load begins."""
-    them_stream = selection.them_stream
+    audio_stream = selection.audio_stream
     tts_output = selection.tts_output
     microphone = (
         selection.device["name"] if selection.device is not None else "None yet"
     )
-    print(f"\nUser microphone: {microphone}", file=stream)
-    print(f"Them application: {them_stream or 'None'}", file=stream)
-    print(f"Codex response policy: {selection.policy.label}", file=stream)
+    print(f"\nVoice microphone: {microphone}", file=stream)
+    print(f"Audio application: {audio_stream or 'None'}", file=stream)
+    print(f"Taga response policy: {selection.policy.label}", file=stream)
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
     print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
     print(f"Codex command access: {args.sandbox}", file=stream)
     if selection.tts_enabled:
         engine = PROVIDER_LABELS[selection.tts_provider]
-        print(f"Codex audio: {engine} ({args.tts_voice})", file=stream)
+        print(f"Taga audio: {engine} ({args.tts_voice})", file=stream)
     else:
-        print("Codex audio: Off", file=stream)
+        print("Taga audio: Off", file=stream)
     if tts_output is not None:
-        print(f"Codex speaks through: {tts_output['description']}", file=stream)
+        print(f"Taga speaks through: {tts_output['description']}", file=stream)
     print(f"Loading Moonshine {args.model} model...", file=stream)
 
 
@@ -353,14 +355,14 @@ def resolve_startup_selection(args):
                 file=sys.stderr,
             )
     tts_enabled = choose_tts(args.tts)
-    them_stream = choose_them_stream(args.them_stream)
-    policy = choose_codex_after(args.codex_after)
+    audio_stream = choose_audio_stream(args.audio_stream)
+    policy = choose_taga_after(args.taga_after)
     return StartupSelection(
         device_index=device_index,
         device=device,
         tts_enabled=tts_enabled,
         tts_provider=args.tts_provider,
-        them_stream=them_stream,
+        audio_stream=audio_stream,
         tts_output=choose_tts_output(args.tts_output),
         policy=policy,
     )
@@ -399,7 +401,7 @@ def build_session_state(args, selection, models: list[CodexModelOption] | None =
     )
 
 
-def run_session(tui, channels, conversation, them=None, microphone=None):
+def run_session(tui, channels, conversation, audio=None, microphone=None):
     """Run the interface until it quits, then tear every channel down in order.
 
     Transcribers stop before their listeners close so a listener cannot be fed
@@ -417,8 +419,8 @@ def run_session(tui, channels, conversation, them=None, microphone=None):
     except KeyboardInterrupt:
         print("\nStopping...", flush=True)
     finally:
-        if them is not None:
-            them.close()
+        if audio is not None:
+            audio.close()
         if microphone is not None:
             microphone.close()
         for transcriber, _ in channels:

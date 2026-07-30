@@ -78,11 +78,11 @@ def test_each_audio_channel_uses_the_same_active_and_inactive_dots(tui) -> None:
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
     quiet_mic = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
-    quiet_stream = _rendered(sidebar._channel(state.them, "#d7b562")[0])
+    quiet_stream = _rendered(sidebar._channel(state.audio, "#d7b562")[0])
     state.mic.active = True
-    state.them.active = True
+    state.audio.active = True
     active_mic = _rendered(sidebar._channel(state.mic, "#6ba7ff")[0])
-    active_stream = _rendered(sidebar._channel(state.them, "#d7b562")[0])
+    active_stream = _rendered(sidebar._channel(state.audio, "#d7b562")[0])
 
     assert quiet_mic.split() == [tui.SOUND_OFF, "Microphone"]
     assert active_mic.split() == [tui.SOUND_ON, "Microphone"]
@@ -103,7 +103,7 @@ def test_quiet_response_policy_is_labeled_stay_silent(tui) -> None:
 def test_facade_updates_state_before_the_app_starts(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
-    facade.update(tui.USER_VOICE, "testing")
+    facade.update(tui.VOICE, "testing")
     facade.set_audio("mic", active=True)
     facade.set_microphones([("USB mic", "USB mic")])
 
@@ -115,9 +115,9 @@ def test_facade_updates_state_before_the_app_starts(tui) -> None:
 def test_facade_implements_runtime_display_events_before_the_app_starts(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
-    facade.update(tui.USER_VOICE, "testing")
+    facade.update(tui.VOICE, "testing")
     facade.begin_codex()
-    facade.codex_message_open(tui.THEM)
+    facade.codex_message_open(tui.AUDIO)
     facade.token_usage(123)
     facade.end_codex()
 
@@ -144,7 +144,7 @@ def test_textual_app_accepts_typed_input_and_records_a_transcript_entry(tui) -> 
 
     assert received == ["hello from test"]
     assert [(entry.source, entry.text) for entry in app.entries] == [
-        (tui.USER_TEXT, "hello from test")
+        (tui.TEXT, "hello from test")
     ]
 
 
@@ -335,7 +335,7 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
     async def exercise() -> None:
         async with app.run_test() as pilot:
             row = app.add_entry(
-                tui.Entry(kind="speech", source=tui.USER_VOICE, text="copy this")
+                tui.Entry(kind="speech", source=tui.VOICE, text="copy this")
             )
             await pilot.pause()
             body = row.query_one(".entry-body", Static)
@@ -387,7 +387,7 @@ def test_ctrl_shift_c_copies_selected_transcript_rows_as_tabular_text(tui) -> No
             row = app.add_entry(
                 tui.Entry(
                     kind="speech",
-                    source=tui.USER_VOICE,
+                    source=tui.VOICE,
                     text="copy this",
                     stamp="13:40:46",
                 )
@@ -395,7 +395,7 @@ def test_ctrl_shift_c_copies_selected_transcript_rows_as_tabular_text(tui) -> No
             await pilot.pause()
             app.screen._select_all_in_widget(row)
             await pilot.press("ctrl+shift+c")
-            assert app.clipboard == "13:40:46\tUser Voice\tcopy this"
+            assert app.clipboard == "13:40:46\tVoice\tcopy this"
 
             await pilot.press("ctrl+v")
             assert app.query_one("#input", Input).value == app.clipboard
@@ -461,7 +461,7 @@ def test_transcript_timestamp_column_fits_a_full_timestamp(tui) -> None:
             row = app.add_entry(
                 tui.Entry(
                     kind="speech",
-                    source=tui.USER_VOICE,
+                    source=tui.VOICE,
                     text="test",
                     stamp="13:40:46",
                 )
@@ -484,7 +484,7 @@ def test_tui_disables_native_interrupts_before_textual_import() -> None:
             sys.executable,
             "-c",
             (
-                "import os; from voice_codex import tui; "
+                "import os; from tagalong import tui; "
                 "from textual import constants; "
                 "print(os.environ.get('TEXTUAL_ALLOW_SIGNALS')); "
                 "print(os.environ.get('TEXTUAL_DISABLE_KITTY_KEY')); "
@@ -517,7 +517,7 @@ def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:
 
 
 def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
-    from voice_codex.domain import RESPONSE_POLICIES
+    from tagalong.domain import RESPONSE_POLICIES
 
     # The picker's labels are the domain's, so a policy added there appears
     # here without a second list to remember to update.
@@ -528,7 +528,7 @@ def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
 
 
 def test_the_speech_picker_offers_every_provider_and_silence(tui) -> None:
-    from voice_codex.speech import NO_VOICE, NO_VOICE_LABEL, PROVIDER_LABELS
+    from tagalong.speech import NO_VOICE, NO_VOICE_LABEL, PROVIDER_LABELS
 
     # The picker's labels are the speech boundary's, so a provider added there
     # appears here without a second list to remember to update. Silence is
@@ -543,10 +543,10 @@ def test_the_speech_picker_offers_every_provider_and_silence(tui) -> None:
 
 
 def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
-    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
+    state = tui.SessionState(audio_streams=[("Brave (playing)", "Brave")])
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
-    assert sidebar._them_options() == [
+    assert sidebar._audio_options() == [
         (tui.NO_THEM_LABEL, tui.NO_THEM),
         ("Brave (playing)", "Brave"),
     ]
@@ -625,70 +625,70 @@ def test_a_refused_microphone_leaves_the_picker_where_it_was(tui) -> None:
 
 def test_the_far_end_picker_shows_silence_when_nothing_is_chosen(tui) -> None:
     """None is not a value a Select can hold, so silence is spelled."""
-    sidebar = tui.Sidebar(tui.SessionState(them_stream=None), tui.TuiHooks())
+    sidebar = tui.Sidebar(tui.SessionState(audio_stream=None), tui.TuiHooks())
 
-    assert sidebar._them_selection() == tui.NO_THEM
+    assert sidebar._audio_selection() == tui.NO_THEM
 
 
 def test_choosing_an_application_asks_the_host_and_adopts_it(tui) -> None:
     chosen: list[str | None] = []
-    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
+    state = tui.SessionState(audio_streams=[("Brave (playing)", "Brave")])
     app = tui.VoiceCodexApp(
         state,
-        tui.TuiHooks(on_them_stream=lambda name: chosen.append(name) or True),
+        tui.TuiHooks(on_audio_stream=lambda name: chosen.append(name) or True),
     )
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            app.query_one("#them-select", Select).value = "Brave"
+            app.query_one("#audio-select", Select).value = "Brave"
             await pilot.pause()
 
     asyncio.run(exercise())
 
     assert chosen == ["Brave"]
-    assert state.them_stream == "Brave"
+    assert state.audio_stream == "Brave"
 
 
 def test_choosing_silence_asks_the_host_to_drop_the_far_end(tui) -> None:
     chosen: list[str | None] = []
     state = tui.SessionState(
-        them_stream="Brave", them_streams=[("Brave (playing)", "Brave")]
+        audio_stream="Brave", audio_streams=[("Brave (playing)", "Brave")]
     )
     app = tui.VoiceCodexApp(
         state,
-        tui.TuiHooks(on_them_stream=lambda name: chosen.append(name) or True),
+        tui.TuiHooks(on_audio_stream=lambda name: chosen.append(name) or True),
     )
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            app.query_one("#them-select", Select).value = tui.NO_THEM
+            app.query_one("#audio-select", Select).value = tui.NO_THEM
             await pilot.pause()
 
     asyncio.run(exercise())
 
     assert chosen == [None]
-    assert state.them_stream is None
+    assert state.audio_stream is None
 
 
 def test_a_refused_application_leaves_the_picker_where_it_was(tui) -> None:
     shown: list[str] = []
-    state = tui.SessionState(them_streams=[("Brave (playing)", "Brave")])
-    app = tui.VoiceCodexApp(state, tui.TuiHooks(on_them_stream=lambda _name: False))
+    state = tui.SessionState(audio_streams=[("Brave (playing)", "Brave")])
+    app = tui.VoiceCodexApp(state, tui.TuiHooks(on_audio_stream=lambda _name: False))
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            app.query_one("#them-select", Select).value = "Brave"
+            app.query_one("#audio-select", Select).value = "Brave"
             await pilot.pause()
-            shown.append(str(app.query_one("#them-select", Select).value))
+            shown.append(str(app.query_one("#audio-select", Select).value))
 
     asyncio.run(exercise())
 
-    assert state.them_stream is None
+    assert state.audio_stream is None
     assert shown == [tui.NO_THEM]
 
 
 def test_the_speech_picker_shows_silence_while_the_voice_is_off(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     shown: list[str] = []
     state = tui.SessionState(tts_provider="piper", tts_enabled=True)
@@ -710,7 +710,7 @@ def test_the_speech_picker_shows_silence_while_the_voice_is_off(tui) -> None:
 
 
 def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     toggled: list[bool] = []
     state = tui.SessionState(tts_provider="piper")
@@ -732,7 +732,7 @@ def test_choosing_no_voice_reply_silences_the_session(tui) -> None:
 
 
 def test_choosing_an_engine_again_gives_the_session_its_voice_back(tui) -> None:
-    from voice_codex.speech import default_voice
+    from tagalong.speech import default_voice
 
     toggled: list[bool] = []
     switched: list[str] = []
@@ -760,7 +760,7 @@ def test_choosing_an_engine_again_gives_the_session_its_voice_back(tui) -> None:
 
 
 def test_a_silent_session_cannot_be_given_a_voice_by_the_picker(tui) -> None:
-    from voice_codex.speech import NO_VOICE
+    from tagalong.speech import NO_VOICE
 
     shown: list[str] = []
     # Started with --tts off: there is no engine to switch or unmute, and both
@@ -788,7 +788,7 @@ def test_a_silent_session_cannot_be_given_a_voice_by_the_picker(tui) -> None:
 
 
 def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:
-    from voice_codex.speech import DEFAULT_PROVIDER, default_voice
+    from tagalong.speech import DEFAULT_PROVIDER, default_voice
 
     state = tui.SessionState()
 
@@ -797,7 +797,7 @@ def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:
 
 
 def test_choosing_a_speech_provider_switches_the_engine_and_its_voice(tui) -> None:
-    from voice_codex.speech import default_voice
+    from tagalong.speech import default_voice
 
     switched: list[str] = []
     state = tui.SessionState(tts_provider="piper")
@@ -1161,8 +1161,8 @@ def test_escape_outside_the_field_does_not_steal_the_key(tui) -> None:
         ("idle", True, "speaking"),
         # The stream state is the more specific of the two, and both are true
         # at once while sentences play against an answer still arriving.
-        ("replying to User Voice", True, "replying to User Voice"),
-        ("replying to User Voice", False, "replying to User Voice"),
+        ("replying to Voice", True, "replying to Voice"),
+        ("replying to Voice", False, "replying to Voice"),
         ("running command", True, "running command"),
     ],
 )
@@ -1294,7 +1294,7 @@ def test_ticking_the_mic_box_blocks_the_microphone(tui) -> None:
 
     assert muted == [True]
     assert app.state.mic.muted is True
-    assert app.state.them.muted is False
+    assert app.state.audio.muted is False
     assert app.entries[-1].text == "Microphone muted"
 
 
@@ -1315,25 +1315,25 @@ def test_clearing_the_mic_box_lets_the_microphone_through_again(tui) -> None:
 def test_ticking_the_speaker_box_blocks_listening_to_the_speaker(tui) -> None:
     them: list[bool] = []
     mic: list[bool] = []
-    app = _mute_app(tui, on_them_mute=them.append, on_mute=mic.append)
+    app = _mute_app(tui, on_audio_mute=them.append, on_mute=mic.append)
 
-    _tick(app, "#them-mute", True)
+    _tick(app, "#audio-mute", True)
 
     assert them == [True]
     # The two channels are muted independently; one box must not move the other.
     assert mic == []
-    assert app.state.them.muted is True
+    assert app.state.audio.muted is True
     assert app.state.mic.muted is False
     assert app.entries[-1].text == "Audio Stream muted"
 
 
 def test_a_session_without_a_speaker_channel_still_ticks_its_box(tui) -> None:
-    """No Them listener means no hook, and no crash when the box is used."""
+    """No Audio listener means no hook, and no crash when the box is used."""
     app = _mute_app(tui)
 
-    _tick(app, "#them-mute", True)
+    _tick(app, "#audio-mute", True)
 
-    assert app.state.them.muted is True
+    assert app.state.audio.muted is True
 
 
 def test_the_mic_box_follows_the_mute_key(tui) -> None:
@@ -1389,11 +1389,11 @@ def test_the_mute_box_reads_muted_once_the_channel_is(tui) -> None:
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
-            labels.append(str(app.query_one("#them-mute", Checkbox).label))
-            app.query_one("#them-mute", Checkbox).value = True
+            labels.append(str(app.query_one("#audio-mute", Checkbox).label))
+            app.query_one("#audio-mute", Checkbox).value = True
             for _ in range(3):
                 await pilot.pause()
-            labels.append(str(app.query_one("#them-mute", Checkbox).label))
+            labels.append(str(app.query_one("#audio-mute", Checkbox).label))
 
     asyncio.run(exercise())
 
@@ -1413,7 +1413,7 @@ def test_the_live_line_names_which_channels_are_muted(tui) -> None:
                 (True, True),
             ):
                 app.state.mic.muted = mic
-                app.state.them.muted = them
+                app.state.audio.muted = them
                 app._sync_partial()
                 lines.append(app.query_one("#partial", Static).content.plain)
 
@@ -1421,7 +1421,7 @@ def test_the_live_line_names_which_channels_are_muted(tui) -> None:
 
     assert lines == [
         "◌ silence — mic hot, nothing pending",
-        "◌ mic muted — Them still transcribing",
+        "◌ mic muted — Audio still transcribing",
         "◌ speaker muted — mic still hot",
         "◌ mic and speaker muted — nothing transcribing",
     ]
@@ -1435,7 +1435,7 @@ def test_a_ticked_mute_box_is_visible_and_an_empty_one_is_not(tui) -> None:
     one.
     """
     state = tui.SessionState()
-    state.them.muted = True
+    state.audio.muted = True
     marks: dict[bool, tuple[object, object]] = {}
     app = tui.VoiceCodexApp(state, tui.TuiHooks())
 

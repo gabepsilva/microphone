@@ -15,10 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex import catalog, startup
-from voice_codex.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
-from voice_codex.listener import TranscriptSubmitter, tts_switch
-from voice_codex.startup import (
+from tagalong import catalog, startup
+from tagalong.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
+from tagalong.listener import TranscriptSubmitter, tts_switch
+from tagalong.startup import (
     StartupSelection,
     build_session_state,
     parse_startup_args,
@@ -31,7 +31,7 @@ from voice_codex.startup import (
 
 
 def write_config(tmp_path, body):
-    path = tmp_path / "voice.yaml"
+    path = tmp_path / "tagalong.yaml"
     path.write_text(body, encoding="utf-8")
     return str(path)
 
@@ -45,9 +45,9 @@ BASE_SELECTION = StartupSelection(
     device={"name": "Yeti"},
     tts_enabled=False,
     tts_provider="piper",
-    them_stream=None,
+    audio_stream=None,
     tts_output=None,
-    policy=RESPONSE_POLICIES["them"],
+    policy=RESPONSE_POLICIES["audio"],
 )
 
 
@@ -66,7 +66,7 @@ def saved_args(**overrides):
 
 
 def selection(**overrides):
-    """A resolved selection: a plain User-Voice-only session unless overridden."""
+    """A resolved selection: a plain Voice-only session unless overridden."""
     return replace(BASE_SELECTION, **overrides)
 
 
@@ -89,20 +89,20 @@ def test_parser_defaults_match_the_documented_startup_choices(tmp_path) -> None:
         "en_US-lessac-medium",
     )
     assert args.codex_fast is True
-    assert (args.tts, args.codex_after, args.microphone) == ("on", "both", None)
-    assert args.them_stream == "none"
+    assert (args.tts, args.taga_after, args.microphone) == ("on", "both", None)
+    assert args.audio_stream == "none"
 
 
 def test_command_line_overrides_the_startup_config_file(tmp_path) -> None:
     config = write_config(
         tmp_path,
-        'microphone: "Config Mic"\ntts: "on"\ncodex_after: "user"\n',
+        'microphone: "Config Mic"\ntts: "on"\ntaga_after: "voice"\n',
     )
 
     _, args = parse_startup_args(["--config", config, "--microphone", "Flag Mic"])
 
     assert args.microphone == "Flag Mic"
-    assert (args.tts, args.codex_after) == ("on", "user")
+    assert (args.tts, args.taga_after) == ("on", "voice")
 
 
 def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
@@ -110,7 +110,7 @@ def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
 
     _, args = parse_startup_args(["--config", missing])
 
-    assert (args.tts, args.them_stream, args.codex_after) == (
+    assert (args.tts, args.audio_stream, args.taga_after) == (
         "on",
         "none",
         "both",
@@ -118,7 +118,7 @@ def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
 
 
 def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> None:
-    unreadable = tmp_path / "voice.yaml"
+    unreadable = tmp_path / "tagalong.yaml"
     unreadable.mkdir()
 
     with pytest.raises(SystemExit, match="2"):
@@ -129,7 +129,7 @@ def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> No
     ("body", "argv"),
     [
         ('tts: "maybe"\n', []),
-        ('codex_after: "sometimes"\n', []),
+        ('taga_after: "sometimes"\n', []),
         ("", ["--confidence", "1.5"]),
         ("", ["--confidence", "-0.1"]),
         ("", ["--turn-silence", "0"]),
@@ -146,7 +146,7 @@ def test_out_of_range_startup_values_are_rejected(tmp_path, body, argv) -> None:
 def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     chosen = selection(
         tts_enabled=True,
-        them_stream="Chromium",
+        audio_stream="Chromium",
         tts_output={"name": "alsa_output.pci", "description": "Speakers"},
         policy=RESPONSE_POLICIES["both"],
     )
@@ -155,9 +155,9 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         "microphone": "Yeti",
         "tts": "on",
         "tts_provider": "piper",
-        "them_stream": "Chromium",
+        "audio_stream": "Chromium",
         "tts_output": "alsa_output.pci",
-        "codex_after": "both",
+        "taga_after": "both",
         "turn_silence": 3.0,
         "codex_model": "gpt-5.6-luna",
         "codex_reasoning": "low",
@@ -166,11 +166,11 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     }
 
 
-def test_a_session_without_them_saves_the_word_the_parser_reads_back() -> None:
-    """The saved name has to be one ``--them-stream`` accepts, not ``None``."""
+def test_a_session_without_audio_saves_the_word_the_parser_reads_back() -> None:
+    """The saved name has to be one ``--audio-stream`` accepts, not ``None``."""
     saved = startup_settings(selection(), saved_args())
 
-    assert saved["them_stream"] == "none"
+    assert saved["audio_stream"] == "none"
     assert saved["tts_output"] is None
 
 
@@ -182,24 +182,24 @@ def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
         args,
         selection(
             tts_enabled=True,
-            them_stream="ZOOM VoiceEngine",
+            audio_stream="ZOOM VoiceEngine",
             tts_output={"name": "alsa", "description": "Speakers"},
         ),
         stream=stream,
     )
     summary = stream.getvalue()
 
-    assert "User microphone: Yeti" in summary
-    assert "Them application: ZOOM VoiceEngine" in summary
-    assert "Codex response policy: Them" in summary
+    assert "Voice microphone: Yeti" in summary
+    assert "Audio application: ZOOM VoiceEngine" in summary
+    assert "Taga response policy: Audio" in summary
     assert "Voice turn silence: 3.0s" in summary
     assert "Codex speed: Fast" in summary
     assert "Codex command access: full-access" in summary
-    assert "Codex audio: Piper (local) (en_US-lessac-medium)" in summary
-    assert "Codex speaks through: Speakers" in summary
+    assert "Taga audio: Piper (local) (en_US-lessac-medium)" in summary
+    assert "Taga speaks through: Speakers" in summary
 
 
-def test_the_startup_summary_names_a_session_with_no_them_application(
+def test_the_startup_summary_names_a_session_with_no_audio_application(
     tmp_path,
 ) -> None:
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
@@ -208,8 +208,8 @@ def test_the_startup_summary_names_a_session_with_no_them_application(
     print_startup_summary(args, selection(tts_enabled=True), stream=stream)
     summary = stream.getvalue()
 
-    assert "Them application: None" in summary
-    assert "Codex speaks through" not in summary
+    assert "Audio application: None" in summary
+    assert "Taga speaks through" not in summary
 
 
 def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> None:
@@ -225,11 +225,11 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
 
     state = build_session_state(
         args,
-        selection(tts_enabled=True, policy=RESPONSE_POLICIES["user"]),
+        selection(tts_enabled=True, policy=RESPONSE_POLICIES["voice"]),
     )
 
     assert (state.policy, state.codex_tier, state.codex_effort) == (
-        "user",
+        "voice",
         "fast",
         "high",
     )
@@ -315,35 +315,35 @@ def test_the_chosen_application_and_speech_output_reach_the_selection(
     speakers = {"name": "alsa", "description": "Speakers"}
     monkeypatch.setattr(startup, "input_devices", lambda: [(2, {"name": "M"})])
     monkeypatch.setattr(startup, "choose_tts", lambda requested: False)
-    monkeypatch.setattr(startup, "choose_them_stream", lambda requested: "Chromium")
+    monkeypatch.setattr(startup, "choose_audio_stream", lambda requested: "Chromium")
     monkeypatch.setattr(startup, "choose_tts_output", lambda requested: speakers)
     monkeypatch.setattr(
-        startup, "choose_codex_after", lambda requested: ("Them", {"Them"})
+        startup, "choose_taga_after", lambda requested: ("Audio", {"Audio"})
     )
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
 
     chosen = resolve_startup_selection(args)
 
-    assert chosen.them_stream == "Chromium"
+    assert chosen.audio_stream == "Chromium"
     assert chosen.tts_output is speakers
     assert (chosen.device_index, chosen.tts_enabled) == (2, False)
 
 
-def test_a_session_with_no_them_application_resolves_to_nothing(
+def test_a_session_with_no_audio_application_resolves_to_nothing(
     monkeypatch, tmp_path
 ) -> None:
-    """Speech no longer constrains the Them choice, so None must survive it."""
+    """Speech no longer constrains the Audio choice, so None must survive it."""
     monkeypatch.setattr(startup, "input_devices", lambda: [(0, {"name": "M"})])
     monkeypatch.setattr(startup, "choose_tts", lambda requested: True)
-    monkeypatch.setattr(startup, "choose_them_stream", lambda requested: None)
+    monkeypatch.setattr(startup, "choose_audio_stream", lambda requested: None)
     monkeypatch.setattr(
-        startup, "choose_codex_after", lambda requested: ("User Voice", {"User Voice"})
+        startup, "choose_taga_after", lambda requested: ("Voice", {"Voice"})
     )
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
 
     chosen = resolve_startup_selection(args)
 
-    assert chosen.them_stream is None
+    assert chosen.audio_stream is None
     assert chosen.tts_output is None
     assert chosen.tts_enabled is True
 
@@ -352,7 +352,7 @@ def test_startup_keeps_running_without_a_microphone(monkeypatch, tmp_path) -> No
     # Fake the adapter where both the old startup chooser and the new direct
     # resolver reach it, so the regression fails on behavior rather than on a
     # refactor-specific missing attribute.
-    monkeypatch.setattr("voice_codex.choosers.input_devices", list)
+    monkeypatch.setattr("tagalong.choosers.input_devices", list)
     if hasattr(startup, "input_devices"):
         monkeypatch.setattr(startup, "input_devices", list)
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
@@ -419,15 +419,15 @@ class FakeConversation:
 
 def test_the_submitter_answers_only_the_speakers_the_policy_allows() -> None:
     conversation = FakeConversation()
-    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
 
-    submitter.submit("Them", "a question")
-    submitter.submit("User Voice", "thinking aloud")
+    submitter.submit("Audio", "a question")
+    submitter.submit("Voice", "thinking aloud")
 
     assert conversation.ingested == [
-        ("Them", "a question", True),
-        ("User Voice", "thinking aloud", False),
+        ("Audio", "a question", True),
+        ("Voice", "thinking aloud", False),
     ]
 
 
@@ -448,62 +448,62 @@ class FakeChannel:
 
 
 def test_a_reply_carries_context_still_buffered_on_the_other_channel() -> None:
-    """Them's answer must not wait out User Voice's own silence timer."""
+    """Audio's answer must not wait out Voice's own silence timer."""
     conversation = FakeConversation()
-    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
-    user = FakeChannel("User Voice", conversation, buffered="what about latency")
+    user = FakeChannel("Voice", conversation, buffered="what about latency")
     submitter.add_listener(user)
-    submitter.add_listener(FakeChannel("Them", conversation))
+    submitter.add_listener(FakeChannel("Audio", conversation))
 
-    submitter.submit("Them", "so what do you think")
+    submitter.submit("Audio", "so what do you think")
 
     assert user.flushes == 1
     assert conversation.ingested == [
-        ("User Voice", "what about latency", False),
-        ("Them", "so what do you think", True),
+        ("Voice", "what about latency", False),
+        ("Audio", "so what do you think", True),
     ]
 
 
 def test_a_context_only_channel_is_never_swept_by_its_own_turn() -> None:
     conversation = FakeConversation()
-    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
-    them = FakeChannel("Them", conversation)
-    user = FakeChannel("User Voice", conversation)
-    submitter.add_listener(them)
+    audio = FakeChannel("Audio", conversation)
+    user = FakeChannel("Voice", conversation)
+    submitter.add_listener(audio)
     submitter.add_listener(user)
 
-    submitter.submit("User Voice", "thinking aloud")
+    submitter.submit("Voice", "thinking aloud")
 
-    assert (them.flushes, user.flushes) == (0, 0)
-    assert conversation.ingested == [("User Voice", "thinking aloud", False)]
+    assert (audio.flushes, user.flushes) == (0, 0)
+    assert conversation.ingested == [("Voice", "thinking aloud", False)]
 
 
 def test_a_channel_the_policy_answers_is_left_to_its_own_silence() -> None:
     """Sweeping it would queue a reply to speech its speaker has not finished."""
     conversation = FakeConversation()
-    gate = SpeakerGate({"User Voice", "Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Voice", "Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
-    user = FakeChannel("User Voice", conversation, buffered="mid sentence")
+    user = FakeChannel("Voice", conversation, buffered="mid sentence")
     submitter.add_listener(user)
 
-    submitter.submit("Them", "so what do you think")
+    submitter.submit("Audio", "so what do you think")
 
     assert user.flushes == 0
-    assert conversation.ingested == [("Them", "so what do you think", True)]
+    assert conversation.ingested == [("Audio", "so what do you think", True)]
 
 
 def test_an_ignored_echo_never_sweeps_the_other_channel() -> None:
     conversation = FakeConversation()
-    gate = SpeakerGate({"Them"}, {"User Voice", "Them"})
+    gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(
         conversation, gate, FakeTTS(echoes={"my own reply"}), stream=io.StringIO()
     )
-    user = FakeChannel("User Voice", conversation, buffered="still talking")
+    user = FakeChannel("Voice", conversation, buffered="still talking")
     submitter.add_listener(user)
 
-    submitter.submit("Them", "my own reply")
+    submitter.submit("Audio", "my own reply")
 
     assert user.flushes == 0
     assert conversation.ingested == []
@@ -511,29 +511,29 @@ def test_an_ignored_echo_never_sweeps_the_other_channel() -> None:
 
 def test_the_submitter_drops_a_transcript_of_codex_speaking() -> None:
     conversation = FakeConversation()
-    gate = SpeakerGate({"Them"}, {"Them"})
+    gate = SpeakerGate({"Audio"}, {"Audio"})
     stream = io.StringIO()
     submitter = TranscriptSubmitter(
         conversation, gate, FakeTTS(echoes={"my own reply"}), stream=stream
     )
 
-    submitter.submit("Them", "my own reply")
-    submitter.submit("Them", "a real question")
+    submitter.submit("Audio", "my own reply")
+    submitter.submit("Audio", "a real question")
 
-    assert conversation.ingested == [("Them", "a real question", True)]
-    assert "ignored likely Codex TTS echo from Them" in stream.getvalue()
+    assert conversation.ingested == [("Audio", "a real question", True)]
+    assert "ignored likely Taga TTS echo from Audio" in stream.getvalue()
 
 
 def test_typed_text_is_never_treated_as_an_echo() -> None:
     conversation = FakeConversation()
-    gate = SpeakerGate({"User Text"}, {"User Text"})
+    gate = SpeakerGate({"Text"}, {"Text"})
     submitter = TranscriptSubmitter(
         conversation, gate, FakeTTS(echoes={"my own reply"})
     )
 
-    submitter.submit("User Text", "my own reply")
+    submitter.submit("Text", "my own reply")
 
-    assert conversation.ingested == [("User Text", "my own reply", True)]
+    assert conversation.ingested == [("Text", "my own reply", True)]
 
 
 def test_real_speech_interrupts_playback_but_an_echo_does_not() -> None:
@@ -586,7 +586,7 @@ def session_parts(monkeypatch, run):
     )
     channels = [
         (FakeTranscriber("mic", events), FakeListener("mic", events)),
-        (FakeTranscriber("them", events), FakeListener("them", events)),
+        (FakeTranscriber("audio", events), FakeListener("audio", events)),
     ]
     conversation = SimpleNamespace(close=lambda: events.append("close conversation"))
     return events, tui, channels, conversation
@@ -599,13 +599,13 @@ def test_a_session_tears_every_channel_down_in_a_safe_order(monkeypatch) -> None
 
     assert events == [
         "start mic",
-        "start them",
+        "start audio",
         "stop mic",
-        "stop them",
+        "stop audio",
         "close listener mic",
-        "close listener them",
+        "close listener audio",
         "close mic",
-        "close them",
+        "close audio",
         "close conversation",
     ]
 
@@ -615,18 +615,18 @@ def test_a_session_closes_the_far_end_before_the_channels_it_started_with(
 ) -> None:
     """It owns the only reference to whatever it built while the session ran."""
     events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
-    them = SimpleNamespace(close=lambda: events.append("close them"))
+    audio = SimpleNamespace(close=lambda: events.append("close audio"))
 
-    run_session(tui, channels, conversation, them=them)
+    run_session(tui, channels, conversation, audio=audio)
 
-    assert events[:3] == ["start mic", "start them", "close them"]
+    assert events[:3] == ["start mic", "start audio", "close audio"]
 
 
 def test_a_session_closes_dynamic_audio_channels_before_static_ones(
     monkeypatch,
 ) -> None:
     events, tui, channels, conversation = session_parts(monkeypatch, run=lambda: None)
-    them = SimpleNamespace(close=lambda: events.append("close dynamic them"))
+    audio = SimpleNamespace(close=lambda: events.append("close dynamic audio"))
     microphone = SimpleNamespace(
         close=lambda: events.append("close dynamic microphone")
     )
@@ -635,14 +635,14 @@ def test_a_session_closes_dynamic_audio_channels_before_static_ones(
         tui,
         channels,
         conversation,
-        them=them,
+        audio=audio,
         microphone=microphone,
     )
 
     assert events[:4] == [
         "start mic",
-        "start them",
-        "close dynamic them",
+        "start audio",
+        "close dynamic audio",
         "close dynamic microphone",
     ]
 
@@ -684,7 +684,7 @@ def test_the_speech_toggle_forwards_to_the_engine() -> None:
 
 def test_the_command_line_offers_exactly_the_defined_policies() -> None:
     parser = startup.build_parser()
-    action = next(a for a in parser._actions if a.dest == "codex_after")
+    action = next(a for a in parser._actions if a.dest == "taga_after")
 
     assert tuple(action.choices) == POLICY_NAMES
 
@@ -692,7 +692,7 @@ def test_the_command_line_offers_exactly_the_defined_policies() -> None:
 def test_a_bad_config_policy_is_rejected_by_naming_every_real_one(
     tmp_path, capsys
 ) -> None:
-    config = write_config(tmp_path, 'codex_after: "sometimes"\n')
+    config = write_config(tmp_path, 'taga_after: "sometimes"\n')
 
     with pytest.raises(SystemExit):
         parse_startup_args(["--config", config])
@@ -706,7 +706,7 @@ def test_every_policy_round_trips_through_a_saved_config() -> None:
     for name, policy in RESPONSE_POLICIES.items():
         saved = startup_settings(selection(policy=policy), saved_args())
 
-        assert saved["codex_after"] == name
+        assert saved["taga_after"] == name
         # A saved name has to be a name the command line will take back.
         assert name in POLICY_NAMES
 
@@ -740,7 +740,7 @@ def test_the_startup_summary_reports_a_session_without_speech(tmp_path) -> None:
 
     print_startup_summary(args, selection(tts_enabled=False), stream=stream)
 
-    assert "Codex audio: Off" in stream.getvalue()
+    assert "Taga audio: Off" in stream.getvalue()
 
 
 @pytest.mark.parametrize("seconds", ["0.1", "31", "0"])
@@ -865,8 +865,8 @@ def test_the_codex_sdk_is_not_imported_just_to_start_the_interface() -> None:
     """
     probe = (
         "import sys;"
-        "import voice_codex.cli;"
-        "import voice_codex.tui;"
+        "import tagalong.cli;"
+        "import tagalong.tui;"
         "print('openai_codex' in sys.modules)"
     )
     result = subprocess.run(
@@ -882,7 +882,7 @@ def test_the_codex_sdk_is_not_imported_just_to_start_the_interface() -> None:
 
 def test_building_a_conversation_loads_the_sdk_it_dispatches_on() -> None:
     """Deferring the import must not leave the dispatch names unbound."""
-    from voice_codex import codex as codex_module
+    from tagalong import codex as codex_module
 
     codex_module.load_codex_sdk()
 

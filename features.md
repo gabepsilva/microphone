@@ -4,9 +4,9 @@
 
 2. Silence-based detection to determine when the user has finished speaking.
 
-3. Direct voice conversations with Codex.
+3. Direct voice conversations with Taga.
 
-4. Written Codex output in the terminal or a Markdown interface.
+4. Written Taga output in the terminal or a Markdown interface.
 
 5. Separate audio and written response channels:
    - Concise, conversational text for TTS.
@@ -18,7 +18,7 @@
    for a session that should stay silent. Per-provider voice selection is not
    implemented yet; each engine speaks with its own default.
 
-7. Stream complete Codex sentences to TTS for lower latency.
+7. Stream complete Taga sentences to TTS for lower latency.
 
 8. Barge-in support: speaking interrupts TTS playback and optionally the active
    Codex turn.
@@ -39,20 +39,20 @@
 14. Separate audio paths for:
     - The user's microphone.
     - Meeting audio.
-    - Codex TTS playback.
+    - Taga TTS playback.
 
-15. Continuous meeting transcription that never pauses while Codex performs
+15. Continuous meeting transcription that never pauses while Taga performs
     analysis.
 
 16. Timestamped storage of the complete meeting transcript.
 
-17. A rolling meeting summary so Codex retains useful context without repeatedly
+17. A rolling meeting summary so Taga retains useful context without repeatedly
     processing the entire transcript.
 
 18. A separate Codex conversation or agent for meeting analysis, isolated from
     the user's direct conversation.
 
-19. Periodic meeting insights instead of sending every sentence to Codex.
+19. Periodic meeting insights instead of sending every sentence to Taga.
 
 20. On-demand meeting analysis through questions such as, "What do you think
     about that?"
@@ -68,17 +68,17 @@
     - `insights-on`
     - `insights-off`
 
-24. Ability to disable Codex insights while transcription continues
+24. Ability to disable Taga insights while transcription continues
     uninterrupted.
 
-25. Input-source labeling so Codex distinguishes:
+25. Input-source labeling so Taga distinguishes:
     - Voice commands.
     - Typed messages.
     - Meeting transcripts.
 
 26. Protection against treating meeting dialogue as instructions to Codex.
 
-27. Protection against Codex TTS being transcribed back into the meeting
+27. Protection against Taga TTS being transcribed back into the meeting
     transcript.
 
 28. Handling of overlapping meeting speakers and, eventually, speaker
@@ -87,7 +87,7 @@
 29. Explicit assistant states such as `LISTENING`, `THINKING`, and `SPEAKING`.
 
 30. Independent queues or asynchronous tasks for audio capture, transcription,
-    Codex analysis, TTS, and playback.
+    Taga analysis, TTS, and playback.
 
 31. Central coordination for modes, routing, cancellation, priorities, and
     clean shutdown.
@@ -103,29 +103,29 @@
 35. Continue implementing in Python initially, with an architecture that could
     later be migrated to Go if scale or reliability requirements justify it.
 
-36. A transcript-chat view with explicit `User Voice`, `User Text`, `Them`, and
-    `Codex` sources.
+36. A transcript-chat view with explicit `Voice`, `Text`, `Audio`, and
+    `Taga` sources.
 
-37. Optional selection of an audio output to transcribe as `Them`, including a
-    `None` choice that disables `Them` transcription.
+37. Optional selection of an audio output to transcribe as `Audio`, including a
+    `None` choice that disables `Audio` transcription.
 
-38. A startup response policy controlling when Codex responds:
-    - After `Them`.
-    - After both `User Voice` and `Them`.
-    - After `User Voice`.
+38. A startup response policy controlling when Taga responds:
+    - After `Audio`.
+    - After both `Voice` and `Audio`.
+    - After `Voice`.
     - Never after voice input, while transcription continues.
 
-39. Always-available typed input that queues `User Text` for Codex regardless of
+39. Always-available typed input that queues `Text` for Taga regardless of
     the selected voice-response policy.
 
-40. Continuous context collection from `User Voice` and `Them`, including when
-    those sources do not trigger an immediate Codex response.
+40. Continuous context collection from `Voice` and `Audio`, including when
+    those sources do not trigger an immediate Taga response.
 
 41. A serialized Codex request queue that explicitly identifies whether each
-    response is replying to `Them`, `User Voice`, or `User Text`.
+    response is replying to `Audio`, `Voice`, or `Text`.
 
 42. Color-coded terminal transcripts:
-    - `Them` in bright yellow.
-    - `Codex` in bright green.
-    - `User Voice` in bright blue.
-    - `User Text` in a slightly softer, but still light, blue.
+    - `Audio` in bright yellow.
+    - `Taga` in bright green.
+    - `Voice` in bright blue.
+    - `Text` in a slightly softer, but still light, blue.

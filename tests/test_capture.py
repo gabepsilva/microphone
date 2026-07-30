@@ -17,7 +17,7 @@ import types
 import numpy as np
 import pytest
 
-from voice_codex.capture import (
+from tagalong.capture import (
     ApplicationStreamTranscriber,
     CaptureSettings,
     MuteGate,
@@ -164,7 +164,7 @@ class RecordedCapture(ApplicationStreamTranscriber):
 def capture(monkeypatch):
     """Build a stream transcriber with the recorder, tap, and Moonshine faked."""
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr("voice_codex.capture.Transcriber", FakeTranscriber)
+    monkeypatch.setattr("tagalong.capture.Transcriber", FakeTranscriber)
     monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
     def build(reads=(), exit_code=None, **kwargs):
@@ -202,7 +202,7 @@ def _recording_display(reports):
 def test_continuing_sound_is_reported_once() -> None:
     """Steady speech is one report, not one per audio block."""
     reports: list[bool] = []
-    reporter = SoundActivityReporter(_recording_display(reports), "them")
+    reporter = SoundActivityReporter(_recording_display(reports), "audio")
 
     reporter.update(np.full(64, 0.1, dtype=np.float32))
     reporter.update(np.full(64, 0.1, dtype=np.float32))
@@ -213,7 +213,7 @@ def test_continuing_sound_is_reported_once() -> None:
 
 def test_continuing_silence_is_never_reported() -> None:
     reports: list[bool] = []
-    reporter = SoundActivityReporter(_recording_display(reports), "them")
+    reporter = SoundActivityReporter(_recording_display(reports), "audio")
 
     reporter.update(np.zeros(64, dtype=np.float32))
     reporter.update(np.zeros(64, dtype=np.float32))
@@ -563,7 +563,7 @@ def test_a_transcription_failure_is_reported_without_ending_capture(
     try:
         monitor.stop()
 
-        assert "Them transcription error: model is busy" in capsys.readouterr().err
+        assert "Audio transcription error: model is busy" in capsys.readouterr().err
     finally:
         monitor.close()
 

@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from voice_codex import cli
-from voice_codex.catalog import _parse_codex_model_catalog
+from tagalong import cli
+from tagalong.catalog import _parse_codex_model_catalog
 
-ENTRYPOINTS = ["voice_codex.py"]
+ENTRYPOINTS = ["tagalong.py"]
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,7 +19,7 @@ def test_each_entrypoint_launches_the_configured_application(
     monkeypatch, script
 ) -> None:
     called: list[bool] = []
-    monkeypatch.setattr("voice_codex.cli.main", lambda: called.append(True))
+    monkeypatch.setattr("tagalong.cli.main", lambda: called.append(True))
 
     runpy.run_path(str(ROOT / script), run_name="__main__")
 
@@ -184,9 +184,9 @@ def test_the_committed_example_config_is_valid_for_a_first_run() -> None:
     config without a line in the example is one a new machine cannot discover,
     and a second hand-written list here would not notice.
     """
-    from voice_codex.config import STARTUP_CONFIG_KEYS, load_startup_config
+    from tagalong.config import STARTUP_CONFIG_KEYS, load_startup_config
 
-    assert load_startup_config(ROOT / "voice.example.yaml") == dict.fromkeys(
+    assert load_startup_config(ROOT / "tagalong.example.yaml") == dict.fromkeys(
         STARTUP_CONFIG_KEYS
     )
 

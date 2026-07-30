@@ -6,10 +6,10 @@ import asyncio
 
 import sounddevice
 
-from voice_codex.catalog import probe_codex_models
-from voice_codex.choosers import audio_outputs, input_devices
-from voice_codex.piper_tts import ensure_model
-from voice_codex.speech import EDGE, PIPER, default_voice
+from tagalong.catalog import probe_codex_models
+from tagalong.choosers import audio_outputs, input_devices
+from tagalong.piper_tts import ensure_model
+from tagalong.speech import EDGE, PIPER, default_voice
 
 
 def test_the_default_microphone_records_real_samples() -> None:
@@ -44,7 +44,7 @@ def test_the_default_piper_voice_synthesizes_audio() -> None:
     import piper
 
     model = piper.PiperVoice.load(str(ensure_model(default_voice(PIPER))))
-    chunks = list(model.synthesize("Voice Codex smoke test."))
+    chunks = list(model.synthesize("TagAlong smoke test."))
 
     assert chunks
     assert any(chunk.audio_int16_bytes for chunk in chunks)
@@ -55,7 +55,7 @@ async def _edge_audio() -> bytes:
 
     audio = bytearray()
     communicate = edge_tts.Communicate(
-        "Voice Codex smoke test.",
+        "TagAlong smoke test.",
         default_voice(EDGE),
     )
     async for chunk in communicate.stream():

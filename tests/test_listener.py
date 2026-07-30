@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from voice_codex.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
-from voice_codex.listener import ConversationListener, TranscriptSubmitter
+from tagalong.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
+from tagalong.listener import ConversationListener, TranscriptSubmitter
 
 
 class RecordingDisplay:
@@ -68,7 +68,7 @@ def listener():
         submitted,
         confidence_threshold=0.6,
         turn_silence=TurnSilence(3.0),
-        speaker="User Voice",
+        speaker="Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
         on_speech=lambda partial: True,
@@ -78,7 +78,7 @@ def listener():
 def test_a_completed_line_is_committed_and_starts_the_silence_timer(listener) -> None:
     listener.on_line_completed(SimpleNamespace(line=line("hello there")))
 
-    assert listener.recorded.commits == [("User Voice", "hello there")]
+    assert listener.recorded.commits == [("Voice", "hello there")]
     assert listener.timer is not None
     listener.timer.cancel()
 
@@ -90,8 +90,8 @@ def test_the_silence_timer_flushes_every_buffered_line_as_one_turn(listener) -> 
 
     listener._flush(listener.timer_generation)
 
-    assert listener.submitted == [("User Voice", "first sentence second sentence")]
-    assert listener.recorded.finished == ["User Voice"]
+    assert listener.submitted == [("Voice", "first sentence second sentence")]
+    assert listener.recorded.finished == ["Voice"]
     assert listener.pending == []
 
 
@@ -117,8 +117,8 @@ def test_flushing_now_submits_the_buffer_without_waiting_for_silence(
 
     listener.flush_now()
 
-    assert listener.submitted == [("User Voice", "worth knowing")]
-    assert listener.recorded.finished == ["User Voice"]
+    assert listener.submitted == [("Voice", "worth knowing")]
+    assert listener.recorded.finished == ["Voice"]
     assert listener.pending == []
     assert listener.timer is None
     assert pending_timer.finished.is_set()
@@ -134,7 +134,7 @@ def test_an_immediate_flush_leaves_nothing_for_the_timer_to_resubmit(
     listener.flush_now()
     listener._flush(stale_generation)
 
-    assert listener.submitted == [("User Voice", "said once")]
+    assert listener.submitted == [("Voice", "said once")]
 
 
 def test_flushing_an_empty_buffer_now_submits_nothing(listener) -> None:
@@ -172,8 +172,8 @@ def test_a_partial_updates_the_display_and_reports_speech_once(listener) -> None
     listener.on_line_text_changed(SimpleNamespace(line=line("still talking")))
 
     assert listener.recorded.partials == [
-        ("User Voice", "still talk"),
-        ("User Voice", "still talking"),
+        ("Voice", "still talk"),
+        ("Voice", "still talking"),
     ]
     assert calls == ["still talk"]
 
@@ -230,7 +230,7 @@ def test_muting_discards_the_buffer_and_every_later_event(listener) -> None:
     assert listener.pending == []
     assert listener.submitted == []
     assert listener.recorded.partials == []
-    assert listener.recorded.commits == [("User Voice", "before the mute")]
+    assert listener.recorded.commits == [("Voice", "before the mute")]
 
 
 def test_unmuting_resumes_submitting_turns(listener) -> None:
@@ -241,7 +241,7 @@ def test_unmuting_resumes_submitting_turns(listener) -> None:
     listener.timer.cancel()
     listener._flush(listener.timer_generation)
 
-    assert listener.submitted == [("User Voice", "back on")]
+    assert listener.submitted == [("Voice", "back on")]
 
 
 def test_closing_cancels_the_timer_and_closes_the_speaker(listener) -> None:
@@ -252,7 +252,7 @@ def test_closing_cancels_the_timer_and_closes_the_speaker(listener) -> None:
 
     assert listener.timer is None
     assert pending_timer.finished.is_set() or not pending_timer.is_alive()
-    assert listener.recorded.closed == ["User Voice"]
+    assert listener.recorded.closed == ["Voice"]
     assert listener.submitted == []
 
 
@@ -260,7 +260,7 @@ def test_closing_twice_is_harmless(listener) -> None:
     listener.close()
     listener.close()
 
-    assert listener.recorded.closed == ["User Voice", "User Voice"]
+    assert listener.recorded.closed == ["Voice", "Voice"]
 
 
 class RecordingCountdown:
@@ -299,7 +299,7 @@ def counting_listener(countdown=None):
         submitted,
         confidence_threshold=0.6,
         turn_silence=TurnSilence(3.0),
-        speaker="User Voice",
+        speaker="Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
         countdown=countdown,
@@ -312,7 +312,7 @@ def test_a_completed_line_starts_the_countdown() -> None:
 
     listener.on_line_completed(SimpleNamespace(line=line("all done")))
 
-    assert countdown.waiting == ["User Voice"]
+    assert countdown.waiting == ["Voice"]
     listener.close()
 
 
@@ -341,7 +341,7 @@ def test_a_submitted_turn_stops_the_countdown() -> None:
     listener._flush(listener.timer_generation)
 
     assert countdown.waiting == []
-    assert listener.submitted == [("User Voice", "all done")]
+    assert listener.submitted == [("Voice", "all done")]
 
 
 def test_muting_stops_the_countdown() -> None:
@@ -379,7 +379,7 @@ def test_a_listener_without_a_countdown_still_completes_a_turn(listener) -> None
     listener.on_line_completed(SimpleNamespace(line=line("all done")))
     listener._flush(listener.timer_generation)
 
-    assert listener.submitted == [("User Voice", "all done")]
+    assert listener.submitted == [("Voice", "all done")]
     listener.close()
 
 
@@ -396,7 +396,7 @@ class RecordingConversation:
 def two_channels(policy):
     """Two live listeners sharing one submitter, as a session wires them."""
     conversation = RecordingConversation()
-    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"User Voice", "Them"})
+    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
     display = RecordingDisplay()
     listeners = {
@@ -407,55 +407,59 @@ def two_channels(policy):
             submit=submitter.submit,
             presentation=display,
         )
-        for speaker in ("User Voice", "Them")
+        for speaker in ("Voice", "Audio")
     }
     for listener in listeners.values():
         submitter.add_listener(listener)
     return conversation, listeners
 
 
-def test_answering_them_takes_the_user_context_transcribed_so_far() -> None:
-    """The reply goes out on Them's silence, carrying words User Voice has
+def test_answering_audio_takes_the_voice_context_transcribed_so_far() -> None:
+    """The reply goes out on Audio's silence, carrying words Voice has
     already said but not yet finished waiting out."""
-    conversation, listeners = two_channels("them")
-    listeners["User Voice"].on_line_completed(
+    conversation, listeners = two_channels("audio")
+    listeners["Voice"].on_line_completed(
         SimpleNamespace(line=line("check the latency"))
     )
-    listeners["Them"].on_line_completed(SimpleNamespace(line=line("what do you think")))
-    listeners["Them"].timer.cancel()
+    listeners["Audio"].on_line_completed(
+        SimpleNamespace(line=line("what do you think"))
+    )
+    listeners["Audio"].timer.cancel()
 
-    listeners["Them"]._flush(listeners["Them"].timer_generation)
+    listeners["Audio"]._flush(listeners["Audio"].timer_generation)
 
     assert conversation.ingested == [
-        ("User Voice", "check the latency", False),
-        ("Them", "what do you think", True),
+        ("Voice", "check the latency", False),
+        ("Audio", "what do you think", True),
     ]
-    assert listeners["User Voice"].timer is None
-    assert listeners["User Voice"].pending == []
+    assert listeners["Voice"].timer is None
+    assert listeners["Voice"].pending == []
 
 
-def test_answering_the_user_takes_the_them_context_transcribed_so_far() -> None:
-    conversation, listeners = two_channels("user")
-    listeners["Them"].on_line_completed(SimpleNamespace(line=line("the build is red")))
-    listeners["User Voice"].on_line_completed(SimpleNamespace(line=line("why is that")))
-    listeners["User Voice"].timer.cancel()
+def test_answering_voice_takes_the_audio_context_transcribed_so_far() -> None:
+    conversation, listeners = two_channels("voice")
+    listeners["Audio"].on_line_completed(SimpleNamespace(line=line("the build is red")))
+    listeners["Voice"].on_line_completed(SimpleNamespace(line=line("why is that")))
+    listeners["Voice"].timer.cancel()
 
-    listeners["User Voice"]._flush(listeners["User Voice"].timer_generation)
+    listeners["Voice"]._flush(listeners["Voice"].timer_generation)
 
     assert conversation.ingested == [
-        ("Them", "the build is red", False),
-        ("User Voice", "why is that", True),
+        ("Audio", "the build is red", False),
+        ("Voice", "why is that", True),
     ]
 
 
 def test_a_silent_other_channel_adds_nothing_to_the_reply() -> None:
-    conversation, listeners = two_channels("them")
-    listeners["Them"].on_line_completed(SimpleNamespace(line=line("what do you think")))
-    listeners["Them"].timer.cancel()
+    conversation, listeners = two_channels("audio")
+    listeners["Audio"].on_line_completed(
+        SimpleNamespace(line=line("what do you think"))
+    )
+    listeners["Audio"].timer.cancel()
 
-    listeners["Them"]._flush(listeners["Them"].timer_generation)
+    listeners["Audio"]._flush(listeners["Audio"].timer_generation)
 
-    assert conversation.ingested == [("Them", "what do you think", True)]
+    assert conversation.ingested == [("Audio", "what do you think", True)]
 
 
 # --------------------------------------------------------------------------
@@ -505,7 +509,7 @@ def guessing(prefire):
         submitted,
         confidence_threshold=0.6,
         turn_silence=TurnSilence(3.0),
-        speaker="User Voice",
+        speaker="Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
         on_speech=lambda partial: True,
@@ -532,7 +536,7 @@ def test_the_guess_starts_a_turn_from_what_is_buffered_so_far(
 
     guessing._speculate(guessing.timer_generation)
 
-    assert prefire.started == [("User Voice", "a question")]
+    assert prefire.started == [("Voice", "a question")]
     assert guessing.prefired is True
     # The buffer is untouched: the deadline still owns the turn until it fires.
     assert guessing.pending == ["a question"]
@@ -546,9 +550,9 @@ def test_a_guess_that_was_right_becomes_the_reply(guessing, prefire) -> None:
 
     guessing._flush(guessing.timer_generation)
 
-    assert prefire.committed == ["User Voice"]
+    assert prefire.committed == ["Voice"]
     assert guessing.submitted == []
-    assert guessing.recorded.finished == ["User Voice"]
+    assert guessing.recorded.finished == ["Voice"]
 
 
 def test_a_refused_commit_still_submits_the_turn(guessing, prefire) -> None:
@@ -560,8 +564,8 @@ def test_a_refused_commit_still_submits_the_turn(guessing, prefire) -> None:
 
     guessing._flush(guessing.timer_generation)
 
-    assert prefire.committed == ["User Voice"]
-    assert guessing.submitted == [("User Voice", "a question")]
+    assert prefire.committed == ["Voice"]
+    assert guessing.submitted == [("Voice", "a question")]
 
 
 def test_resumed_speech_abandons_the_guess(guessing, prefire) -> None:
@@ -571,7 +575,7 @@ def test_resumed_speech_abandons_the_guess(guessing, prefire) -> None:
 
     guessing.on_line_text_changed(SimpleNamespace(line=line("and the rest")))
 
-    assert prefire.cancelled == ["User Voice"]
+    assert prefire.cancelled == ["Voice"]
     assert guessing.prefired is False
 
 
@@ -586,7 +590,7 @@ def test_the_whole_turn_is_submitted_after_a_wrong_guess(guessing, prefire) -> N
 
     guessing._flush(guessing.timer_generation)
 
-    assert guessing.submitted == [("User Voice", "half a thought and the rest")]
+    assert guessing.submitted == [("Voice", "half a thought and the rest")]
     assert prefire.committed == []
 
 
@@ -597,7 +601,7 @@ def test_muting_abandons_the_guess(guessing, prefire) -> None:
 
     guessing.set_muted(True)
 
-    assert prefire.cancelled == ["User Voice"]
+    assert prefire.cancelled == ["Voice"]
     assert guessing.timer is None
     assert guessing.prefire_timer is None
 
@@ -609,7 +613,7 @@ def test_closing_abandons_the_guess(guessing, prefire) -> None:
 
     guessing.close()
 
-    assert prefire.cancelled == ["User Voice"]
+    assert prefire.cancelled == ["Voice"]
 
 
 def test_a_guess_from_a_superseded_timer_is_ignored(guessing, prefire) -> None:
@@ -634,7 +638,7 @@ def test_a_refused_guess_leaves_nothing_to_commit(guessing, prefire) -> None:
 
     assert guessing.prefired is False
     assert prefire.committed == []
-    assert guessing.submitted == [("User Voice", "an echo")]
+    assert guessing.submitted == [("Voice", "an echo")]
 
 
 def test_the_same_turn_is_only_guessed_at_once(guessing, prefire) -> None:
@@ -644,7 +648,7 @@ def test_the_same_turn_is_only_guessed_at_once(guessing, prefire) -> None:
     guessing._speculate(guessing.timer_generation)
     guessing._speculate(guessing.timer_generation)
 
-    assert prefire.started == [("User Voice", "a question")]
+    assert prefire.started == [("Voice", "a question")]
 
 
 def test_an_empty_buffer_is_not_guessed_at(guessing, prefire) -> None:
@@ -708,9 +712,9 @@ class EchoingTTS:
         return None
 
 
-def prefiring_submitter(policy="them", tts=None):
+def prefiring_submitter(policy="audio", tts=None):
     conversation = PrefiringConversation()
-    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"User Voice", "Them"})
+    gate = SpeakerGate(RESPONSE_POLICIES[policy].speakers, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(
         conversation, gate, tts, prefire_plan=RecordingPrefire()
     )
@@ -720,29 +724,29 @@ def prefiring_submitter(policy="them", tts=None):
 def test_a_guess_reaches_codex_when_the_policy_answers_that_speaker() -> None:
     conversation, submitter = prefiring_submitter()
 
-    assert submitter.prefire("Them", "what do you think")
-    assert conversation.prefired == [("Them", "what do you think")]
+    assert submitter.prefire("Audio", "what do you think")
+    assert conversation.prefired == [("Audio", "what do you think")]
 
 
 def test_a_speaker_the_policy_stays_silent_for_is_never_guessed_at() -> None:
     """A late reply nobody wanted is caught downstream; an early one is not."""
-    conversation, submitter = prefiring_submitter(policy="them")
+    conversation, submitter = prefiring_submitter(policy="audio")
 
-    assert not submitter.prefire("User Voice", "thinking out loud")
+    assert not submitter.prefire("Voice", "thinking out loud")
     assert conversation.prefired == []
 
 
 def test_codex_hearing_itself_is_not_guessed_at() -> None:
     conversation, submitter = prefiring_submitter(tts=EchoingTTS("my own words"))
 
-    assert not submitter.prefire("Them", "my own words")
+    assert not submitter.prefire("Audio", "my own words")
     assert conversation.prefired == []
 
 
 def test_a_guess_sweeps_the_context_channels_first() -> None:
     """The reply being guessed at must carry what the other channel has said."""
     conversation = PrefiringConversation()
-    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"User Voice", "Them"})
+    gate = SpeakerGate(RESPONSE_POLICIES["audio"].speakers, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(
         conversation, gate, None, prefire_plan=RecordingPrefire()
     )
@@ -750,7 +754,7 @@ def test_a_guess_sweeps_the_context_channels_first() -> None:
     user = ConversationListener(
         confidence_threshold=0.6,
         turn_silence=TurnSilence(3.0),
-        speaker="User Voice",
+        speaker="Voice",
         submit=submitter.submit,
         presentation=display,
     )
@@ -759,30 +763,30 @@ def test_a_guess_sweeps_the_context_channels_first() -> None:
     assert user.timer is not None
     user.timer.cancel()
 
-    submitter.prefire("Them", "what do you think")
+    submitter.prefire("Audio", "what do you think")
 
-    assert conversation.ingested == [("User Voice", "check the latency", False)]
-    assert conversation.prefired == [("Them", "what do you think")]
+    assert conversation.ingested == [("Voice", "check the latency", False)]
+    assert conversation.prefired == [("Audio", "what do you think")]
 
 
 def test_a_session_without_a_plan_builds_channels_that_never_guess() -> None:
     conversation = PrefiringConversation()
-    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"Them"})
+    gate = SpeakerGate(RESPONSE_POLICIES["audio"].speakers, {"Audio"})
     submitter = TranscriptSubmitter(conversation, gate, None)
 
-    listener = submitter.channel(0.6, TurnSilence(3.0), "Them", RecordingDisplay())
+    listener = submitter.channel(0.6, TurnSilence(3.0), "Audio", RecordingDisplay())
 
     assert listener.prefire is None
 
 
 def test_a_session_with_a_plan_builds_channels_that_guess() -> None:
     conversation = PrefiringConversation()
-    gate = SpeakerGate(RESPONSE_POLICIES["them"].speakers, {"Them"})
+    gate = SpeakerGate(RESPONSE_POLICIES["audio"].speakers, {"Audio"})
     submitter = TranscriptSubmitter(
         conversation, gate, None, prefire_plan=RecordingPrefire()
     )
 
-    listener = submitter.channel(0.6, TurnSilence(3.0), "Them", RecordingDisplay())
+    listener = submitter.channel(0.6, TurnSilence(3.0), "Audio", RecordingDisplay())
 
     assert listener.prefire is not None
     assert listener.prefire.delay(3.0) == pytest.approx(1.0)
@@ -792,13 +796,13 @@ def test_the_prefire_channel_passes_each_moment_to_the_submitter() -> None:
     """The seam is a pass-through; a dropped call would silently stop guessing."""
     conversation, submitter = prefiring_submitter()
     channel = submitter.channel(
-        0.6, TurnSilence(3.0), "Them", RecordingDisplay()
+        0.6, TurnSilence(3.0), "Audio", RecordingDisplay()
     ).prefire
 
-    assert channel.start("Them", "what do you think")
-    assert channel.commit("Them")
-    assert channel.cancel("Them")
-    assert conversation.prefired == [("Them", "what do you think")]
+    assert channel.start("Audio", "what do you think")
+    assert channel.commit("Audio")
+    assert channel.cancel("Audio")
+    assert conversation.prefired == [("Audio", "what do you think")]
 
 
 # --------------------------------------------------------------------------
@@ -834,7 +838,7 @@ def listening_for_speech(speaking=True, window=3.0, **kwargs):
         submitted,
         confidence_threshold=0.6,
         turn_silence=TurnSilence(window),
-        speaker="User Voice",
+        speaker="Voice",
         submit=lambda speaker, text: submitted.append((speaker, text)),
         presentation=display,
         presence=presence,
@@ -878,7 +882,7 @@ def test_a_deadline_reached_in_silence_sends_the_turn_as_before() -> None:
 
     reach_deadline(listener)
 
-    assert listener.submitted == [("User Voice", "that is all")]
+    assert listener.submitted == [("Voice", "that is all")]
     assert presence.asked == 1
     listener.close()
 
@@ -891,7 +895,7 @@ def test_a_turn_held_open_puts_the_grace_back_on_the_countdown() -> None:
 
     reach_deadline(listener)
 
-    assert countdown.waiting == ["User Voice"]
+    assert countdown.waiting == ["Voice"]
     assert countdown.windows == [3.0, ConversationListener.EXTENSION_GRACE]
     listener.close()
 
@@ -906,7 +910,7 @@ def test_a_channel_that_never_goes_quiet_still_sends_its_turn() -> None:
         assert listener.submitted == []
     reach_deadline(listener)
 
-    assert listener.submitted == [("User Voice", "said once")]
+    assert listener.submitted == [("Voice", "said once")]
     listener.close()
 
 
@@ -961,7 +965,7 @@ def test_an_immediate_flush_is_never_held_open() -> None:
 
     listener.flush_now()
 
-    assert listener.submitted == [("User Voice", "context for the reply")]
+    assert listener.submitted == [("Voice", "context for the reply")]
     assert presence.asked == 0
     listener.close()
 
@@ -973,11 +977,11 @@ def test_holding_a_turn_open_abandons_the_guess_it_had_already_made() -> None:
     listener.on_line_completed(SimpleNamespace(line=line("what do you think")))
     listener.prefire_timer.cancel()
     listener._speculate(listener.timer_generation)
-    assert guess.started == [("User Voice", "what do you think")]
+    assert guess.started == [("Voice", "what do you think")]
 
     reach_deadline(listener)
 
-    assert guess.cancelled == ["User Voice"]
+    assert guess.cancelled == ["Voice"]
     assert listener.prefired is False
     assert guess.committed == []
     listener.close()
@@ -1009,7 +1013,7 @@ def test_muting_forgets_what_a_turn_was_held_open_on() -> None:
 
 def test_retiring_a_channel_that_was_never_registered_is_quiet() -> None:
     """A far end can be dropped before its listener ever reached the submitter."""
-    submitter = TranscriptSubmitter(None, SpeakerGate({"Them"}, {"Them"}), None)
+    submitter = TranscriptSubmitter(None, SpeakerGate({"Audio"}, {"Audio"}), None)
     submitter.add_listener("kept")
 
     submitter.remove_listener("never added")

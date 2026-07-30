@@ -13,10 +13,10 @@ import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-USER_VOICE = "User Voice"
-USER_TEXT = "User Text"
-THEM = "Them"
-CODEX = "Codex"
+VOICE = "Voice"
+TEXT = "Text"
+AUDIO = "Audio"
+TAGA = "Taga"
 
 
 @dataclass(frozen=True)
@@ -39,16 +39,16 @@ class ResponsePolicy:
 # it: the CLI choices, the startup menu and its numbering, the saved config
 # value, and the interface picker. Insertion order is menu order.
 RESPONSE_POLICIES = {
-    "them": ResponsePolicy("them", "Them", "Them", frozenset({THEM})),
+    "audio": ResponsePolicy("audio", "Audio", "Audio", frozenset({AUDIO})),
     "both": ResponsePolicy(
         "both",
-        "User Voice and Them",
-        "User Voice + Them",
-        frozenset({USER_VOICE, THEM}),
+        "Voice and Audio",
+        "Voice + Audio",
+        frozenset({VOICE, AUDIO}),
     ),
-    "user": ResponsePolicy("user", "User Voice", "User Voice", frozenset({USER_VOICE})),
+    "voice": ResponsePolicy("voice", "Voice", "Voice", frozenset({VOICE})),
     "quiet": ResponsePolicy(
-        "quiet", "Codex will be quiet for voice", "stay silent", frozenset()
+        "quiet", "Taga will be quiet for voice", "stay silent", frozenset()
     ),
 }
 POLICY_NAMES = tuple(RESPONSE_POLICIES)
@@ -283,7 +283,7 @@ class SpeechActivity:
     """Count the sentences a speech engine still owes the listener.
 
     Asking the player whether a process is alive is not enough to answer "is
-    Codex still speaking": between two sentences the player has exited and the
+    Taga still speaking": between two sentences the player has exited and the
     next one is still being synthesized, so a poll lands in the gap and reads
     silence. At ten frames a second that gap is visible as a flicker.
 
@@ -354,7 +354,7 @@ class TurnSilence:
 
 
 class TurnLatencyEstimator:
-    """Track how long Codex takes to reach the first word of a reply.
+    """Track how long Taga takes to reach the first word of a reply.
 
     A moving average rather than the last sample: one slow turn should nudge
     the moment a speculative turn fires, not move it across half the silence
@@ -387,7 +387,7 @@ class TurnLatencyEstimator:
 class PrefirePlan:
     """Decide how far into a silence window a speculative turn should wait.
 
-    Firing at ``window - estimate`` puts Codex's first word at the moment the
+    Firing at ``window - estimate`` puts Taga's first word at the moment the
     window closes, which is the whole point: the model thinks during the wait
     that was already happening rather than after it. Two bounds keep that from
     becoming reckless. The lead never takes more than ``MAX_LEAD_FRACTION`` of
@@ -526,7 +526,7 @@ class SpeakerGate:
     """Decide which completed turns trigger a reply, as the policy changes.
 
     A policy names speakers that may not exist in this session: selecting
-    "both" with no far end must not make Them replies possible. The gate
+    "both" with no far end must not make Audio replies possible. The gate
     therefore intersects every policy with the speakers actually available.
 
     Both halves move while the session runs — the policy from its picker, the
