@@ -804,6 +804,69 @@ def test_a_prompt_keeps_non_ascii_speech_as_it_was_heard(quiet_conversation) -> 
     assert '"text": "Ação sim"' in CodexConversation.build_prompt(request)
 
 
+def test_request_image_paths_dedupes_and_preserves_order() -> None:
+    """Paths ride the request in entry order; a repeated path is listed once."""
+    from tagalong.domain import TranscriptRouter
+
+    router = TranscriptRouter()
+    first = router.ingest(
+        "Text",
+        "see [Image #1]",
+        "T1",
+        True,
+        images=("/cache/a.png", "/cache/b.png"),
+    )
+    assert first is not None
+    # Leave the first reply's context consumed, then collect a second request
+    # that reuses one path so dedupe has something to do.
+    second = router.ingest(
+        "Text",
+        "and again [Image #1]",
+        "T2",
+        True,
+        images=("/cache/b.png", "/cache/c.png"),
+    )
+    assert second is not None
+    request = type("R", (), {"entries": (*first.entries, *second.entries)})()
+
+    assert CodexConversation.request_image_paths(request) == (
+        "/cache/a.png",
+        "/cache/b.png",
+        "/cache/c.png",
+    )
+
+
+def test_build_turn_input_stays_a_string_without_images(quiet_conversation) -> None:
+    quiet_conversation.ingest("Audio", "hi", respond=True, timestamp="T1")
+    request = quiet_conversation.requests.get(timeout=WAIT_SECONDS).request
+
+    assert CodexConversation.build_turn_input(request) == (
+        CodexConversation.build_prompt(request)
+    )
+
+
+def test_build_turn_input_attaches_local_images_in_path_order() -> None:
+    from openai_codex import LocalImageInput, TextInput
+
+    from tagalong.domain import TranscriptRouter
+
+    request = TranscriptRouter().ingest(
+        "Text",
+        "look [Image #1]",
+        "T1",
+        True,
+        images=("/cache/tagalong/attachments/a.png",),
+    )
+    assert request is not None
+    turn_input = CodexConversation.build_turn_input(request)
+
+    assert isinstance(turn_input, list)
+    assert isinstance(turn_input[0], TextInput)
+    assert isinstance(turn_input[1], LocalImageInput)
+    assert turn_input[0].text == CodexConversation.build_prompt(request)
+    assert turn_input[1].path == "/cache/tagalong/attachments/a.png"
+
+
 def test_every_turn_is_started_under_the_chosen_constraints(conversation) -> None:
     """Effort, summary and sandbox are re-sent per turn, not just per thread."""
     from openai_codex import ApprovalMode, Sandbox

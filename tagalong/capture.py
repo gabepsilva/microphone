@@ -116,6 +116,25 @@ def transcriber_options(options=None):
     return merged
 
 
+def release_microphone_input(transcriber) -> None:
+    """Stop and drop the live PortAudio capture stream, if any.
+
+    Moonshine's ``MicTranscriber.stop`` / ``close`` leave ``_sd_stream``
+    running. An orphaned PortAudio callback into a closed Moonshine model
+    crashes the process a few seconds later — exactly when a session switches
+    microphones by rebuilding the channel, or when the interpreter reclaims
+    the retired one.
+    """
+    stream = getattr(transcriber, "_sd_stream", None)
+    if stream is None:
+        return
+    with suppress(Exception):
+        stream.stop()
+    with suppress(Exception):
+        stream.close()
+    transcriber._sd_stream = None
+
+
 def switch_microphone_input(transcriber, device: int) -> None:
     """Move a live transcriber to another PortAudio input, rolling back errors."""
     previous_device = transcriber._device
@@ -123,7 +142,8 @@ def switch_microphone_input(transcriber, device: int) -> None:
     previous_stream = transcriber._sd_stream
 
     transcriber._should_listen = False
-    previous_stream.stop()
+    if previous_stream is not None:
+        previous_stream.stop()
     transcriber._device = device
     transcriber._sd_stream = None
     try:
@@ -136,10 +156,12 @@ def switch_microphone_input(transcriber, device: int) -> None:
         transcriber._device = previous_device
         transcriber._samplerate = previous_samplerate
         transcriber._sd_stream = previous_stream
-        previous_stream.start()
+        if previous_stream is not None:
+            previous_stream.start()
         transcriber._should_listen = True
         raise
-    previous_stream.close()
+    if previous_stream is not None:
+        previous_stream.close()
     transcriber._should_listen = True
 
 

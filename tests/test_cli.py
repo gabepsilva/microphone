@@ -86,6 +86,9 @@ class FakeTranscriber:
         self.stopped = False
         self.closed = False
         self.muted = False
+        self.devices: list[int] = []
+        self._device = kwargs.get("device")
+        self._sd_stream = None
 
     def add_listener(self, listener):
         self.listeners.append(listener)
@@ -101,6 +104,10 @@ class FakeTranscriber:
 
     def set_muted(self, muted):
         self.muted = muted
+
+    def switch_device(self, device):
+        self.devices.append(device)
+        self._device = device
 
 
 class FakeConversation:
@@ -317,7 +324,13 @@ def test_a_saved_microphone_opens_when_it_appears_later() -> None:
     ]
 
 
-def test_switching_microphones_retires_the_old_capture_before_opening_the_new() -> None:
+def test_switching_microphones_retargets_the_live_capture_without_rebuilding() -> None:
+    """A live switch must not tear down Moonshine or leave PortAudio dangling.
+
+    Rebuilding the channel used to stop the recognizer while the PortAudio
+    stream kept calling into it; a few seconds later the process crashed.
+    Retargeting reopens only the input stream on the existing transcriber.
+    """
     microphone, _, opened = managed_microphone(INPUTS)
     microphone.select("Yeti")
     microphone.reconcile()
@@ -326,10 +339,44 @@ def test_switching_microphones_retires_the_old_capture_before_opening_the_new() 
     microphone.select("Webcam")
     microphone.reconcile()
 
-    assert [index for index, _, _ in opened] == [3, 7]
-    assert (first_transcriber.stopped, first_transcriber.closed) == (True, True)
-    assert first_listener.closed is True
+    assert [index for index, _, _ in opened] == [3]
+    assert first_transcriber.devices == [7]
+    assert (first_transcriber.stopped, first_transcriber.closed) == (False, False)
+    assert first_listener.closed is False
     assert microphone.current == "Webcam"
+    assert microphone.transcriber is first_transcriber
+
+
+def test_a_failed_microphone_switch_keeps_the_current_capture() -> None:
+    microphone, tui, opened = managed_microphone(INPUTS)
+    microphone.select("Yeti")
+    microphone.reconcile()
+    _, first_transcriber, _ = opened[0]
+
+    def reject(_device):
+        raise RuntimeError("device busy")
+
+    first_transcriber.switch_device = reject
+
+    microphone.select("Webcam")
+    microphone.reconcile()
+    microphone.reconcile()
+
+    assert microphone.current == "Yeti"
+    assert microphone.transcriber is first_transcriber
+    assert first_transcriber.stopped is False
+    assert tui.notes == ["could not listen to Webcam: device busy"]
+
+
+def test_retargeting_without_a_live_channel_is_a_no_op() -> None:
+    """_retarget guards a concurrent retire; reconcile never calls it this way."""
+    microphone, tui, opened = managed_microphone(INPUTS)
+
+    microphone._retarget(3, {"name": "Yeti"})
+
+    assert opened == []
+    assert microphone.current is None
+    assert tui.notes == []
 
 
 def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
@@ -418,7 +465,17 @@ def test_building_a_microphone_closes_capture_if_the_listener_cannot_be_built(
 def test_closing_a_microphone_unregisters_its_listener() -> None:
     events: list[str] = []
 
+    class Stream:
+        def stop(self):
+            events.append("stop stream")
+
+        def close(self):
+            events.append("close stream")
+
     class Transcriber:
+        def __init__(self):
+            self._sd_stream = Stream()
+
         def stop(self):
             events.append("stop capture")
 
@@ -430,6 +487,7 @@ def test_closing_a_microphone_unregisters_its_listener() -> None:
             events.append("close listener")
 
     listener = Listener()
+    transcriber = Transcriber()
     parts = SimpleNamespace(
         submitter=SimpleNamespace(
             remove_listener=lambda removed: events.append(
@@ -438,14 +496,17 @@ def test_closing_a_microphone_unregisters_its_listener() -> None:
         )
     )
 
-    cli.close_microphone_channel(parts, Transcriber(), listener)
+    cli.close_microphone_channel(parts, transcriber, listener)
 
     assert events == [
         "stop capture",
+        "stop stream",
+        "close stream",
         "close listener",
         "close capture",
         "unregister listener",
     ]
+    assert transcriber._sd_stream is None
 
 
 def test_a_microphone_opened_while_muted_starts_muted() -> None:

@@ -39,7 +39,9 @@ FLOORS = {
     "tools/worker_gate.py": 97.0,
     "tagalong.py": 83.0,
     "tagalong/__init__.py": 100.0,
-    "tagalong/capture.py": 94.0,
+    # Raised 2026-07-30 from 94 when microphone retarget/release paths
+    # closed the remaining null-stream branches.
+    "tagalong/capture.py": 95.0,
     "tagalong/catalog.py": 97.0,
     # Raised 2026-07-28 from 94, then to 100 when the virtual meeting sink
     # left and the application-stream chooser that replaced it arrived fully
