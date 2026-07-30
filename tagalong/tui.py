@@ -679,7 +679,7 @@ class Sidebar(Vertical):
             yield self._picker(
                 "policy-select", self._policy_options(), self.state.policy
             )
-        yield Static(id="panel-audio")
+        yield Static(id="panel-audio-head")
         # Each channel's own mute box sits under its meter, so the control and
         # the level it silences read as one thing.
         with Vertical(id="mic-row"):
@@ -731,7 +731,7 @@ class Sidebar(Vertical):
 
     def sync(self) -> None:
         self.sync_clock()
-        self.query_one("#panel-audio", Static).update(Group(*self._audio_head()))
+        self.query_one("#panel-audio-head", Static).update(Group(*self._audio_head()))
         self.query_one("#panel-codex-head", Static).update(Group(*self._codex_head()))
         self.sync_audio()
         self.query_one("#panel-codex", Static).update(Group(*self._codex()))
@@ -1008,14 +1008,9 @@ class Sidebar(Vertical):
         self.sync()
 
     def sync_clock(self) -> None:
-        """Cheap per-tick repaint — only the panel holding the session clock."""
-        state = self.state
-        elapsed = int((datetime.now(UTC) - state.started).total_seconds())
-        clock = f"{elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}"
-        live = Text("◉ ", style="#6cc06c" if state.live else "#c96a5c")
-        live.append(state.status, style="#9aa3ad")
+        """Show the application name at the top of the sidebar."""
         self.query_one("#panel-clock", Static).update(
-            _kv([(live, Text(clock, style="#6f757e"))])
+            Text("TagAlong", style="bold #cdd6e4")
         )
 
     def _audio_head(self) -> list[RenderableType]:
@@ -1036,7 +1031,7 @@ class Sidebar(Vertical):
         return [name]
 
     def _codex_head(self) -> list[RenderableType]:
-        return [Rule(style="#23272b"), Text("TAGA", style="#5a6068")]
+        return [Rule(style="#23272b"), Text("CODEX", style="#5a6068")]
 
     def _codex(self) -> list[RenderableType]:
         state = self.state
@@ -1378,7 +1373,6 @@ class VoiceCodexApp(App):
     def on_mount(self) -> None:
         self.query_one("#keys", Static).update(self._keys_text())
         self._sync_partial()
-        self.set_interval(0.25, self._tick)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.set_interval(self.STREAM_FLUSH_INTERVAL_SECONDS, self.flush_stream)
@@ -1440,11 +1434,6 @@ class VoiceCodexApp(App):
         else:
             line = Text("◌ silence — mic hot, nothing pending", style="#6f757e")
         self.query_one("#partial", Static).update(line)
-
-    def _tick(self) -> None:
-        # The clock and the live indicator sit in the sidebar's top panel.
-        with suppress(NoMatches):
-            self.query_one("#sidebar", Sidebar).sync_clock()
 
     def _tick_countdown(self) -> None:
         """Redraw the silence countdown, and only while there is one.

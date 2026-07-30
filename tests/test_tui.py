@@ -150,7 +150,6 @@ def test_textual_app_accepts_typed_input_and_records_a_transcript_entry(tui) -> 
             await pilot.press("enter")
 
     asyncio.run(exercise())
-    app._tick()
 
     assert received == ["hello from test"]
     assert [(entry.source, entry.text) for entry in app.entries] == [
@@ -182,7 +181,6 @@ def test_shift_enter_inserts_a_newline_and_enter_submits_the_whole_message(
             assert prompt.value == ""
 
     asyncio.run(exercise())
-    app._tick()
 
     assert received == ["a\nb"]
     assert [(entry.source, entry.text) for entry in app.entries] == [(tui.TEXT, "a\nb")]
@@ -572,16 +570,8 @@ def test_ctrl_v_pastes_clipboard_text_into_the_input(tui) -> None:
     asyncio.run(exercise())
 
 
-def test_session_clock_computes_elapsed_from_timezone_aware_timestamps(tui) -> None:
-    """The clock subtracts two datetimes, so both sides must carry a timezone.
-
-    A naive ``datetime.now()`` on either side raises TypeError against an aware
-    one, and the session panel is repainted on every tick.
-    """
-    assert tui.SessionState().started.tzinfo is not None
-
-    started = datetime.now(UTC) - timedelta(hours=1, minutes=2, seconds=3)
-    app = tui.VoiceCodexApp(tui.SessionState(started=started), tui.TuiHooks())
+def test_sidebar_shows_the_app_name_at_the_top(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
     rendered: list[str] = []
 
     async def exercise() -> None:
@@ -593,7 +583,7 @@ def test_session_clock_computes_elapsed_from_timezone_aware_timestamps(tui) -> N
 
     asyncio.run(exercise())
 
-    assert any("01:02:03" in line for line in rendered), rendered
+    assert any("TagAlong" in line for line in rendered), rendered
 
 
 def test_transcript_stamp_uses_local_wall_clock_time(tui) -> None:
