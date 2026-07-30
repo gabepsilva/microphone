@@ -45,6 +45,7 @@ from .capture import (
 from .catalog import probe_codex_models
 from .choosers import NO_THEM_STREAM, input_devices
 from .codex import CodexConversation, CodexSettings
+from .commands import CommandRouter
 from .config import StartupConfigFile, save_startup_config
 from .domain import (
     PrefirePlan,
@@ -54,7 +55,6 @@ from .domain import (
     TurnSilenceClock,
 )
 from .listener import TranscriptSubmitter, tts_switch
-from .presentation import NO_DEVICE
 from .session import sweep_orphans
 from .speech import SwitchableSpeech, provider_switch
 from .startup import (
@@ -303,14 +303,7 @@ class MicrophoneChannel:
 
     @staticmethod
     def _options(devices):
-        return [
-            (
-                f"{device['name']} "
-                f"(device {index}, {int(device['default_samplerate'])} Hz)",
-                device["name"],
-            )
-            for index, device in devices
-        ]
+        return [(device["name"], device["name"]) for _, device in devices]
 
     def start(self):
         """Begin refreshing devices and serving choices."""
@@ -384,14 +377,12 @@ class MicrophoneChannel:
         self.tui.hooks.on_mute = muting(transcriber, listener)
         if self.tui.state.mic.muted:
             self.tui.hooks.on_mute(True)
-        self.tui.set_audio("mic", device=device["name"])
 
     def _retire(self):
         transcriber, listener = self.transcriber, self.listener
         self.transcriber = self.listener = None
         self.current = None
         self.tui.hooks.on_mute = None
-        self.tui.set_audio("mic", device=NO_DEVICE)
         if transcriber is not None and listener is not None:
             self.close_channel(transcriber, listener)
 
@@ -483,7 +474,7 @@ class ThemChannel:
                 self._open(wanted)
             else:
                 self.tap.follow(wanted)
-                self._announce(wanted)
+                self.current = wanted
 
     def _open(self, application):
         tap = StreamTap(application)
@@ -499,11 +490,7 @@ class ThemChannel:
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
         self.tui.hooks.on_them_mute = muting(transcriber, listener)
         self.gate.set_available(BASE_SPEAKERS | {"Them"})
-        self._announce(application)
-
-    def _announce(self, application):
         self.current = application
-        self.tui.set_audio("them", device=application)
 
     def _retire(self):
         """Close the channel, if one is open, and forget the far end."""
@@ -512,7 +499,6 @@ class ThemChannel:
         self.current = None
         self.tui.hooks.on_them_mute = None
         self.gate.set_available(BASE_SPEAKERS)
-        self.tui.set_audio("them", device=NO_DEVICE)
         self.close_channel(transcriber, listener)
 
     def close(self):
@@ -569,6 +555,11 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
         "User Text", text, respond=True
     )
     tui.hooks.on_interrupt = conversation.interrupt
+    commands = CommandRouter(tui)
+    commands.register(
+        "new", lambda command: reset_codex_session(command, conversation, tui)
+    )
+    tui.hooks.on_command = commands.handle
     tui.hooks.on_codex_model = remembering(
         conversation.request_model, config, "codex_model"
     )
@@ -582,6 +573,15 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
         provider_switch(tts), config, "tts_provider"
     )
     tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
+
+
+def reset_codex_session(command, conversation, tui):
+    """Start a fresh Codex conversation and clear its visible transcript."""
+    if command.arguments:
+        tui.note("usage: /new")
+        return
+    if conversation.new_session():
+        tui.reset_transcript()
 
 
 def remembering_turn_silence(turn_silence, config):

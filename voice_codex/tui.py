@@ -50,7 +50,6 @@ from .domain import (
     USER_VOICE,
     parse_turn_silence,
 )
-from .presentation import NO_DEVICE
 from .speech import (
     DEFAULT_PROVIDER,
     NO_VOICE,
@@ -87,7 +86,6 @@ BODY_STYLE = "#cdd6e4"
 
 POLICIES = {name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.items()}
 
-
 # --------------------------------------------------------------------------
 # State
 # --------------------------------------------------------------------------
@@ -113,7 +111,6 @@ class Entry:
 @dataclass
 class Channel:
     label: str
-    device: str = NO_DEVICE
     # Whether the channel is hearing anything right now. A bare presence flag
     # rather than a level: it only changes when speech starts or stops, and
     # the interface repaints on change, so a quiet channel costs nothing.
@@ -128,7 +125,7 @@ class SessionState:
     policy: str = "both"
     started: datetime = field(default_factory=lambda: datetime.now(UTC))
 
-    mic: Channel = field(default_factory=lambda: Channel("mic"))
+    mic: Channel = field(default_factory=lambda: Channel("Microphone"))
     them: Channel = field(default_factory=lambda: Channel("Audio Stream"))
     microphone: str | None = None
     microphones: list[tuple[str, str]] = field(default_factory=list)
@@ -247,7 +244,7 @@ SOUND_OFF = "○"
 
 
 def sound_dot(active: bool, style: str = "#6cc06c") -> Text:
-    """Show whether a channel is hearing anything, in its own colour."""
+    """Show whether a channel is hearing anything."""
     return Text(SOUND_ON if active else SOUND_OFF, style=style if active else "#2f343b")
 
 
@@ -809,22 +806,18 @@ class Sidebar(Vertical):
         return [Rule(style="#23272b"), Text("AUDIO", style="#5a6068")]
 
     def _channel(self, channel: Channel, style: str) -> list[RenderableType]:
-        """Name one capture channel, its device, and whether it hears anything.
+        """Name one capture channel and whether it hears anything.
 
-        The dot sits on the channel's own line rather than under it, so the
+        The icon sits on the channel's own line rather than under it, so the
         panel keeps a fixed height and can repaint without the interface
         laying itself out again.
         """
-        head = Table.grid(expand=True)
-        head.add_column(justify="left", no_wrap=True)
-        head.add_column(justify="right", ratio=1, overflow="ellipsis")
         # A muted channel reads as silent because nothing it hears is used.
         name = sound_dot(channel.active and not channel.muted, style)
         name.append(" ")
         name.append(channel.label, style=style)
         # The mute state is not restated here. The box below says it.
-        head.add_row(name, Text(channel.device, style="#9aa3ad"))
-        return [head]
+        return [name]
 
     def _codex_head(self) -> list[RenderableType]:
         return [Rule(style="#23272b"), Text("CODEX", style="#5a6068")]
@@ -1277,6 +1270,19 @@ class VoiceCodexApp(App):
         transcript.scroll_end(animate=False)
         return row
 
+    def clear_transcript(self) -> None:
+        """Forget every rendered and saved transcript row for a new session."""
+        for row in self._window:
+            row.remove()
+        self.entries.clear()
+        self._streaming = None
+        self._command_row = None
+        self._reasoning_row = None
+        self._dirty.clear()
+        self._window.clear()
+        self._window_start = 0
+        self._tailing = True
+
     @property
     def _window_end(self) -> int:
         """One past the newest entry the window holds."""
@@ -1519,9 +1525,10 @@ class VoiceCodexApp(App):
         if not text:
             return
         if text.startswith("/"):
-            self.add_entry(Entry(kind="note", text=f"command {text}"))
             if self.hooks.on_command:
                 self.hooks.on_command(text)
+            else:
+                self.add_entry(Entry(kind="note", text=f"command {text}"))
             return
         self.add_entry(Entry(kind="speech", source=USER_TEXT, text=text))
         if self.hooks.on_user_text:
@@ -1711,6 +1718,12 @@ class VoiceCodexTUI:
         """Append a dim system line (policy changes, echo suppression, …)."""
         self._call(lambda: self.app.add_entry(Entry(kind="note", text=text)))
 
+    def reset_transcript(self) -> None:
+        """Clear the transcript without changing the session's controls."""
+        self.state.partial_source = ""
+        self.state.partial_text = ""
+        self._call(self.app.clear_transcript)
+
     # -- Codex turn --------------------------------------------------------
 
     def begin_codex(self) -> None:
@@ -1870,10 +1883,10 @@ class VoiceCodexTUI:
     def set_audio(
         self,
         channel: str,
-        device: str | None = None,
-        active: bool | None = None,
+        *,
+        active: bool,
     ) -> None:
-        """Name a capture channel's device, or say whether it hears anything.
+        """Say whether a capture channel hears anything.
 
         The sound reports come from an audio callback thread, so they are
         posted rather than waited on, and they repaint only the two channel
@@ -1882,14 +1895,8 @@ class VoiceCodexTUI:
         target = {"mic": self.state.mic, "them": self.state.them}.get(channel)
         if target is None:
             return
-        if device is not None:
-            target.device = device
-        if active is not None:
-            target.active = active
-        if device is None and active is not None:
-            self._post(self.app.refresh_audio)
-        else:
-            self._call(self.app.refresh_sidebar)
+        target.active = active
+        self._post(self.app.refresh_audio)
 
     def set_codex(self, **fields) -> None:
         """Update any of model/effort/tier/sandbox/thread/state."""

@@ -788,3 +788,11 @@ def test_mutmut_mutates_files_that_exist() -> None:
     assert source_paths
     for path in source_paths:
         assert (ROOT / path).is_file(), f"mutmut mutates nothing: {path} is missing"
+
+
+def test_mutmut_runs_the_reset_contract() -> None:
+    """A new Codex-session path is meaningful only if mutation testing runs it."""
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    selected = config["tool"]["mutmut"]["pytest_add_cli_args_test_selection"]
+
+    assert "tests/test_new_session.py" in selected

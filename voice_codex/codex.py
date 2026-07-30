@@ -332,6 +332,27 @@ class QueuedTurn:
 
     request: CodexRequest
     speculation: Speculation | None = None
+    generation: int = 0
+
+
+class CurrentSessionDisplay:
+    """Forward presentation calls only while a conversation session is current.
+
+    Resetting starts another Codex thread immediately, while interrupting the
+    old thread may still leave it with one last notification to yield.  Those
+    notifications belong to the discarded transcript, not the new one.
+    """
+
+    def __init__(self, conversation, generation):
+        self.conversation = conversation
+        self.generation = generation
+
+    def __getattr__(self, name):
+        def report(*args, **kwargs):
+            if self.conversation.is_current(self.generation):
+                getattr(self.conversation.transcript_display, name)(*args, **kwargs)
+
+        return report
 
 
 class CodexConversation:
@@ -352,8 +373,10 @@ class CodexConversation:
         self.context_lock = threading.Lock()
         self.settings_lock = threading.Lock()
         self.router = TranscriptRouter()
+        self.generation = 0
         self.shutdown_requested = threading.Event()
         self.active_turn: ActiveTurn | None = None
+        self._turn_display = None
         self.requested_model = None
         self.requested_reasoning_effort = None
         self.prefire_enabled = settings.prefire
@@ -394,8 +417,9 @@ class CodexConversation:
         timestamp = timestamp or self._now()
         with self.context_lock:
             request = self.router.ingest(speaker, text, timestamp, respond)
+            generation = self.generation
         if request is not None:
-            self.requests.put_nowait(QueuedTurn(request))
+            self.requests.put_nowait(QueuedTurn(request, generation=generation))
 
     def _abandon_speculation(self, speaker=None) -> bool:
         """Drop the outstanding speculative turn and cut off what it started.
@@ -438,7 +462,8 @@ class CodexConversation:
             request = self.router.speculate(speaker, text, timestamp)
             speculation = Speculation(request)
             self.speculation = speculation
-        self.requests.put_nowait(QueuedTurn(request, speculation))
+            generation = self.generation
+        self.requests.put_nowait(QueuedTurn(request, speculation, generation))
         return True
 
     def cancel_prefire(self, speaker) -> bool:
@@ -473,6 +498,62 @@ class CodexConversation:
         """Queue a reasoning-effort change for the next Codex turn."""
         with self.settings_lock:
             self.requested_reasoning_effort = effort
+        return True
+
+    def is_current(self, generation: int) -> bool:
+        """Report whether work belongs to the active Codex session."""
+        with self.context_lock:
+            return generation == self.generation
+
+    def new_session(self) -> bool:
+        """Discard the transcript context and start a fresh, equivalent thread."""
+        with self.settings_lock:
+            model = self.requested_model or self.model
+            effort = self.requested_reasoning_effort or self.reasoning_effort
+        try:
+            thread = self.codex.thread_start(
+                model=model,
+                service_tier=self.service_tier,
+                sandbox=self.sandbox,
+                approval_mode=ApprovalMode.deny_all,
+                cwd=os.getcwd(),
+                developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
+            )
+        except Exception as error:
+            self.transcript_display.error(
+                f"Could not start a new Codex session: {error}"
+            )
+            return False
+
+        with self.context_lock:
+            self.generation += 1
+            self.router = TranscriptRouter()
+            speculation = self.speculation
+            self.speculation = None
+            active_turn = self.active_turn
+            self.thread = thread
+            self.model = model
+            self.reasoning_effort = effort
+            self.warmup_pending = True
+        with self.settings_lock:
+            if self.requested_model == model:
+                self.requested_model = None
+            if self.requested_reasoning_effort == effort:
+                self.requested_reasoning_effort = None
+        if speculation is not None and speculation.turn is not None:
+            with suppress(Exception):
+                speculation.turn.interrupt()
+        if active_turn is not None:
+            with suppress(Exception):
+                active_turn.interrupt()
+        if self.tts is not None:
+            self.tts.interrupt()
+        self.transcript_display.set_codex(
+            model=self.model,
+            effort=self.reasoning_effort,
+            thread=self.thread.id,
+            state="idle",
+        )
         return True
 
     def _apply_pending_settings(self) -> None:
@@ -531,8 +612,12 @@ class CodexConversation:
             "Use the other entries as context."
         )
 
-    def _start_turn(self, prompt):
-        return self.thread.turn(
+    def _start_turn(self, prompt, generation):
+        with self.context_lock:
+            if generation != self.generation:
+                return None
+            thread = self.thread
+        return thread.turn(
             prompt,
             effort=ReasoningEffort(self.reasoning_effort),
             summary=ReasoningSummary(REASONING_SUMMARY),
@@ -541,23 +626,37 @@ class CodexConversation:
         )
 
     def _run_codex(self, queued):
+        if not self.is_current(queued.generation):
+            return
         request = queued.request
         speculation = queued.speculation
-        self.transcript_display.begin_codex()
+        display = CurrentSessionDisplay(self, queued.generation)
+        self._turn_display = display
+        display.begin_codex()
         try:
             prompt = self.build_prompt(request)
-            errors = self._attempt(prompt, request.reply_to, speculation)
-            if self._effort_refused(errors) and self._retreat_effort():
-                self._attempt(prompt, request.reply_to, speculation)
+            errors = self._attempt(
+                prompt, request.reply_to, queued.generation, speculation
+            )
+            if (
+                self.is_current(queued.generation)
+                and self._effort_refused(errors)
+                and self._retreat_effort()
+            ):
+                self._attempt(prompt, request.reply_to, queued.generation, speculation)
         except Exception as error:
-            self.transcript_display.error(f"Codex error: {error}")
+            display.error(f"Codex error: {error}")
         finally:
-            self.active_turn = None
-            self.transcript_display.end_codex()
+            if self.is_current(queued.generation):
+                self.active_turn = None
+            self._turn_display = None
+            display.end_codex()
 
-    def _attempt(self, prompt, reply_to, speculation=None):
+    def _attempt(self, prompt, reply_to, generation, speculation=None):
         """Run one turn to completion; report the errors it streamed back."""
-        turn = self._start_turn(prompt)
+        turn = self._start_turn(prompt, generation)
+        if turn is None:
+            return []
         self.active_turn = turn
         if speculation is not None and not self._adopt_turn(speculation, turn):
             # Abandoned between queueing and starting: the speaker resumed
@@ -600,7 +699,9 @@ class CodexConversation:
         )
         started = time.monotonic()
         renderer = CodexTurnRenderer(
-            self.transcript_display,
+            self.transcript_display
+            if self._turn_display is None
+            else self._turn_display,
             reply_to,
             sentence_chunker,
             on_first_delta=lambda: self.latency.record(time.monotonic() - started),
@@ -621,7 +722,9 @@ class CodexConversation:
         """
         self.warmup_pending = False
         try:
-            turn = self._start_turn(WARMUP_PROMPT)
+            turn = self._start_turn(WARMUP_PROMPT, self.generation)
+            if turn is None:
+                return
         except Exception:
             return
         self.active_turn = turn
