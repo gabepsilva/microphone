@@ -1012,7 +1012,11 @@ def test_an_early_comma_is_passed_over_rather_than_ending_the_chunk() -> None:
 
 def test_clause_breaking_can_be_turned_off_entirely() -> None:
     emitted: list[str] = []
-    chunker = SentenceChunker(emitted.append, first_clause_min_chars=None)
+    chunker = SentenceChunker(
+        emitted.append,
+        first_clause_min_chars=None,
+        first_chunk_max_words=None,
+    )
 
     chunker.feed("That depends on whether you want it fast, but I can check.")
 
@@ -1036,6 +1040,37 @@ def test_the_opening_words_are_spoken_without_waiting_for_punctuation() -> None:
 
     chunker.feed(
         "The deployment finished without errors and the service looks healthy right now too"
+    )
+
+    assert emitted == [
+        "The deployment finished without errors and the service looks healthy right now"
+    ]
+    assert chunker.buffer == "too"
+
+
+def test_opening_words_accumulate_across_streamed_feeds() -> None:
+    """Real Codex deltas arrive in pieces; the cap must count across them."""
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed("The deployment finished without ")
+    assert emitted == []
+    chunker.feed("errors and the service looks healthy right ")
+    assert emitted == []
+    chunker.feed("now too")
+
+    assert emitted == [
+        "The deployment finished without errors and the service looks healthy right now"
+    ]
+    assert chunker.buffer == "too"
+
+
+def test_leading_whitespace_does_not_block_the_opening_word_break() -> None:
+    emitted: list[str] = []
+    chunker = SentenceChunker(emitted.append)
+
+    chunker.feed(
+        "  The deployment finished without errors and the service looks healthy right now too"
     )
 
     assert emitted == [

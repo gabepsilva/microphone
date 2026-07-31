@@ -233,12 +233,15 @@ class SentenceChunker:
         r'(?<=[.!?])(?:["”\N{RIGHT SINGLE QUOTATION MARK}\')\]]*)\s+'
     )
     CLAUSE_END = re.compile(r"[,;:\N{EM DASH}\N{EN DASH}]\s")
+    WORD = re.compile(r"\S+")
     # Below this, an opening clause is not worth hearing on its own: "Sure,"
     # spoken alone is a worse start than the fraction of a second it saves.
     FIRST_CLAUSE_MIN_CHARS = 20
     # Cap the first spoken fragment when no sentence or clause end arrives.
     # A twelve-word start is long enough to be a real answer and short enough
     # that Piper can begin while the rest of the sentence is still streaming.
+    # Keep in lockstep with CODEX_DEVELOPER_INSTRUCTIONS, which quotes this
+    # value so the model and the chunker agree on the opening length.
     FIRST_CHUNK_MAX_WORDS = 12
 
     def __init__(
@@ -322,14 +325,15 @@ class SentenceChunker:
         limit = self.first_chunk_max_words
         if limit < 1:
             return
-        match = re.match(rf"\S+(?:\s+\S+){{{limit - 1}}}", self.buffer)
-        if match is None:
+        # Leading whitespace must not block the match: a feed can arrive with
+        # padding, and re.match on the raw buffer would wait forever.
+        text = self.buffer.lstrip()
+        words = list(self.WORD.finditer(text))
+        if len(words) <= limit:
             return
-        remainder = self.buffer[match.end() :]
-        if not remainder.lstrip():
-            return
-        chunk = match.group(0)
-        self.buffer = remainder.lstrip()
+        cut = words[limit - 1].end()
+        chunk = text[:cut]
+        self.buffer = text[cut:].lstrip()
         self._emit_bounded(chunk)
 
     def feed(self, text: str) -> None:
