@@ -29,6 +29,7 @@ from openai_codex.generated.v2_all import (
 )
 
 from tagalong.codex import (
+    CODEX_DEVELOPER_INSTRUCTIONS,
     REASONING_SUMMARY,
     WARMUP_PROMPT,
     CodexConversation,
@@ -37,6 +38,7 @@ from tagalong.codex import (
     item_root,
     load_codex_sdk,
 )
+from tagalong.domain import SentenceChunker
 
 WAIT_SECONDS = 10
 
@@ -545,8 +547,6 @@ def test_the_thread_is_started_from_the_chosen_settings(quiet_conversation) -> N
     """Every argument here changes what the model is or what it may do."""
     from openai_codex import ApprovalMode, Sandbox
 
-    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
-
     assert quiet_conversation.fake_codex.start_kwargs == {
         "model": "gpt-5.6-luna",
         "service_tier": None,
@@ -652,8 +652,6 @@ def test_a_requested_model_forks_the_thread_before_the_next_turn(
 def test_a_fork_carries_the_whole_thread_configuration(conversation) -> None:
     """A fork that drops an argument silently changes what Codex may do."""
     from openai_codex import ApprovalMode, Sandbox
-
-    from tagalong.codex import CODEX_DEVELOPER_INSTRUCTIONS
 
     conversation.request_model("gpt-5.6-nova")
 
@@ -774,6 +772,14 @@ def test_the_prompt_names_the_source_to_reply_to(conversation) -> None:
 
     assert "Reply now to the latest Audio input" in prompt
     assert '"text": "A question"' in prompt
+
+
+def test_developer_instructions_use_the_chunker_opening_word_cap() -> None:
+    """Prompt and chunker must name the same limit, or speech and speech diverge."""
+    assert (
+        f"at most {SentenceChunker.FIRST_CHUNK_MAX_WORDS} words"
+        in CODEX_DEVELOPER_INSTRUCTIONS
+    )
 
 
 def test_the_prompt_is_exactly_what_codex_is_asked(quiet_conversation) -> None:
