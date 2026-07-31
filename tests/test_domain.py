@@ -16,8 +16,10 @@ from tagalong.domain import (
     TurnLatencyEstimator,
     TurnSilence,
     TurnSilenceClock,
+    markdown_to_speech,
     parse_turn_silence,
     resolve_response_policy,
+    speech_sink,
 )
 
 
@@ -779,6 +781,187 @@ def test_context_within_the_bound_is_carried_whole() -> None:
 
     assert request is not None
     assert [entry.text for entry in request.entries] == ["first", "second", "third"]
+
+
+# --------------------------------------------------------------------------
+# Markdown cleaned for speech
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("source", "spoken"),
+    [
+        ("", ""),
+        ("Plain prose with no markup.", "Plain prose with no markup."),
+        (
+            "Hello **bold** and *italic* with `code`.",
+            "Hello bold and italic with code.",
+        ),
+        (
+            "See the [docs](https://example.com/path) for detail.",
+            "See the docs for detail.",
+        ),
+        (
+            "Here is a diagram: ![network](net.png).",
+            "Here is a diagram: network.",
+        ),
+        ("# Title\n\nA short answer.", "Title A short answer."),
+        (
+            "Steps:\n\n- first\n- second\n\n1. third",
+            "Steps: first second third",
+        ),
+        ("> quoted advice\n\nand more.", "quoted advice and more."),
+        (
+            "Before.\n```python\nprint(1)\n```\nAfter.",
+            "Before. After.",
+        ),
+        (
+            "Use `path/to/file` carefully.",
+            "Use path/to/file carefully.",
+        ),
+        (
+            "keep snake_case and file_name intact.",
+            "keep snake_case and file_name intact.",
+        ),
+        ("~~old~~ plan.", "old plan."),
+        ("```\nonly code\n```", ""),
+        # Unclosed fence: CommonMark treats the rest as a fence; drop it.
+        ("Start\n```python\nprint(1)", "Start"),
+        (
+            "Visit https://example.com/now please.",
+            "Visit please.",
+        ),
+        (
+            "Also see <https://example.com/docs>.",
+            "Also see.",
+        ),
+    ],
+)
+def test_markdown_to_speech_strips_markup_not_words(source, spoken) -> None:
+    """TTS hears the words; asterisks, fences, and URLs must not be spoken."""
+    assert markdown_to_speech(source) == spoken
+
+
+def test_markdown_to_speech_does_not_leave_emphasis_markers() -> None:
+    """Closed or orphan bold markers are both audible garbage if left behind."""
+    cleaned = markdown_to_speech("Really **important** point.")
+    assert cleaned == "Really important point."
+    assert "*" not in cleaned
+    assert "`" not in cleaned
+
+    unclosed = markdown_to_speech("This is **not closed")
+    assert unclosed == "This is not closed"
+    assert "*" not in unclosed
+
+    # Asterisk italic must drop both open and close markers, not only strong.
+    italic = markdown_to_speech("A *soft* word.")
+    assert italic == "A soft word."
+    assert "*" not in italic
+
+
+def test_markdown_to_speech_prefers_link_labels_over_urls() -> None:
+    cleaned = markdown_to_speech("Open [settings](https://example.com/settings) now.")
+    assert cleaned == "Open settings now."
+    assert "http" not in cleaned
+    assert "example.com" not in cleaned
+    assert "settings" in cleaned
+
+
+def test_markdown_to_speech_preserves_code_and_math_like_prose() -> None:
+    """A coding assistant must not mangle identifiers the model wrote plainly.
+
+    CommonMark leaves ``3 * 4``, ``*ptr``, and ``**kwargs`` as literal text
+    (they are not emphasis). Orphan ``**`` stripping turns ``**kwargs`` into
+    ``kwargs``, which is still speakable and better than "asterisk asterisk".
+    """
+    assert markdown_to_speech("Compute 3 * 4 please.") == "Compute 3 * 4 please."
+    assert markdown_to_speech("Dereference *ptr carefully.") == (
+        "Dereference *ptr carefully."
+    )
+    assert markdown_to_speech("Pass **kwargs through.") == "Pass kwargs through."
+
+
+def test_markdown_to_speech_keeps_dunder_names() -> None:
+    """``__init__`` is CommonMark strong emphasis; speech still needs the dunders.
+
+    When the model remembers backticks, inline code already preserves them.
+    When it forgets, underscore markup is re-emitted around the span.
+    """
+    assert markdown_to_speech("Call `__init__` once.") == "Call __init__ once."
+    assert markdown_to_speech("Call __init__ once.") == "Call __init__ once."
+    # Single-underscore emphasis is the em form; markers must still return.
+    assert markdown_to_speech("See _name_ here.") == "See _name_ here."
+
+
+def test_markdown_to_speech_url_punctuation_stays_with_the_sentence() -> None:
+    """URL bodies drop; a trailing period is sentence structure, not the URL."""
+    assert markdown_to_speech("See https://example.com/path.") == "See."
+    assert markdown_to_speech("See https://example.com/path please.") == "See please."
+    assert "http" not in markdown_to_speech("See https://example.com/path.")
+    assert "example" not in markdown_to_speech("See https://example.com/path.")
+
+
+def test_markdown_to_speech_skips_empty_inlines_without_stopping() -> None:
+    """An empty heading inline must not ``break`` the walk before later prose.
+
+    ``continue`` vs ``break`` on empty children is a real behavior fork: break
+    would drop everything after the first vacant inline.
+    """
+    assert markdown_to_speech("# \n\nSpoken body.") == "Spoken body."
+    assert markdown_to_speech("# \n\nFirst.\n\nSecond.") == "First. Second."
+
+
+def test_markdown_to_speech_reads_image_alt_from_children() -> None:
+    """Image alts live in nested inline children; that path must actually run."""
+    assert (
+        markdown_to_speech("Diagram: ![left hub](a.png) and done.")
+        == "Diagram: left hub and done."
+    )
+
+
+def test_speech_sink_drops_empty_chunks_and_forwards_prose() -> None:
+    spoken: list[str] = []
+    emit = speech_sink(spoken.append)
+
+    emit("```\nprint(1)\n```")
+    emit("Hello **world**.")
+
+    assert spoken == ["Hello world."]
+
+
+def test_markdown_to_speech_joins_breaks_and_skips_rules() -> None:
+    """Soft and hard breaks become spaces; rules and empty alts contribute nothing."""
+    assert markdown_to_speech("line one\\\nline two") == "line one line two"
+    # Soft break: a single newline inside a paragraph.
+    assert markdown_to_speech("soft\nbreak") == "soft break"
+    assert markdown_to_speech("---\n\nAfter the rule.") == "After the rule."
+    assert markdown_to_speech("![](ignored.png)") == ""
+    assert markdown_to_speech("a<br>b") == "ab"
+    assert "<" not in markdown_to_speech("a<br>b")
+
+
+def test_markdown_to_speech_unknown_inline_shapes_stay_silent_or_recurse() -> None:
+    """Defensive branches: the walker must not crash on unexpected tokens."""
+    from types import SimpleNamespace
+
+    from tagalong.domain import _render_speech_inlines
+
+    nested = SimpleNamespace(
+        type="custom",
+        content="",
+        markup="",
+        children=[
+            SimpleNamespace(type="text", content="nested", markup="", children=None)
+        ],
+    )
+    bare = SimpleNamespace(type="custom", content="x", markup="", children=None)
+    image_fallback = SimpleNamespace(
+        type="image", content="fallback-alt", markup="", children=None
+    )
+
+    assert _render_speech_inlines([nested]) == "nested"
+    assert _render_speech_inlines([bare]) == ""
+    assert _render_speech_inlines([image_fallback]) == "fallback-alt"
 
 
 # --------------------------------------------------------------------------

@@ -1774,6 +1774,80 @@ def test_a_turn_speaks_through_the_session_speech(monkeypatch) -> None:
         conversation.close()
 
 
+def test_speech_hears_cleaned_markdown_while_the_transcript_keeps_source(
+    monkeypatch,
+) -> None:
+    """Display and voice split: markup stays readable, TTS gets prose."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    spoken: list[str] = []
+    tts = SimpleNamespace(
+        interrupt=lambda: None,
+        close=lambda: None,
+        begin_turn=lambda: None,
+        speak=spoken.append,
+    )
+    display = FakeDisplay()
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        display,
+        tts,
+    )
+    try:
+        source = (
+            "Use the **bold** path with `code` and a [link](https://example.com/x). "
+        )
+        codex.thread.next_turn = FakeTurn(events=[delta(source), turn_completed()])
+        conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
+        queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+        conversation._run_codex(queued)
+
+        assert spoken == ["Use the bold path with code and a link."]
+        assert "*" not in "".join(spoken)
+        assert "http" not in "".join(spoken)
+        assert ("codex_delta", source) in display.calls
+    finally:
+        conversation.close()
+
+
+def test_a_code_only_chunk_is_not_spoken(monkeypatch) -> None:
+    """Fenced source is noise on the ear; the display still shows it."""
+    load_codex_sdk()
+    codex = FakeCodex()
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    spoken: list[str] = []
+    tts = SimpleNamespace(
+        interrupt=lambda: None,
+        close=lambda: None,
+        begin_turn=lambda: None,
+        speak=spoken.append,
+    )
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+        ),
+        FakeDisplay(),
+        tts,
+    )
+    try:
+        fence = "```python\nprint(1)\n```"
+        codex.thread.next_turn = FakeTurn(events=[delta(fence), turn_completed()])
+        conversation.ingest("Audio", "a question", respond=True, timestamp="T1")
+        queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+        conversation._run_codex(queued)
+
+        assert spoken == []
+    finally:
+        conversation.close()
+
+
 def test_a_warm_up_whose_turn_will_not_start_is_given_up_on(
     quiet_conversation,
 ) -> None:

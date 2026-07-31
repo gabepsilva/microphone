@@ -6,6 +6,10 @@ readme = "features.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "edge-tts==7.2.8",
+    # Direct: speech render walks CommonMark tokens. Already pulled by Rich /
+    # Textual for display markdown; declared here so TTS cleaning does not
+    # depend on a transitive import staying put.
+    "markdown-it-py==4.2.0",
     "moonshine-voice==0.0.73",
     "numpy==2.5.1",
     "openai-codex==0.144.4",
