@@ -296,12 +296,15 @@ def _feed_moonshine_buffer(stream, audio, sample_rate) -> bool:
     Mirrors ``Stream.add_audio`` closely enough that the stream clock and
     update cadence stay correct. Attribute or type errors mean this Moonshine
     build is not the one we know; the caller must fall back rather than lose
-    the block.
+    the block. Once the native add succeeds, return True even if later
+    bookkeeping fails — otherwise the list fallback would feed the same audio
+    twice.
     """
     lib = getattr(stream, "_lib", None)
     if lib is None or audio.size == 0:
         return False
     count = int(audio.size)
+    fed = False
     try:
         error = lib.moonshine_transcribe_add_audio_to_stream(
             stream._transcriber._handle,
@@ -312,12 +315,13 @@ def _feed_moonshine_buffer(stream, audio, sample_rate) -> bool:
             0,
         )
         check_error(error)
+        fed = True
         stream._stream_time += count / sample_rate
         if stream._stream_time - stream._last_update_time >= stream._update_interval:
             stream.update_transcription(stream._transcribe_flags)
             stream._last_update_time = stream._stream_time
     except (AttributeError, TypeError, ValueError):
-        return False
+        return fed
     return True
 
 

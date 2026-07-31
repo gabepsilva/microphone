@@ -552,6 +552,28 @@ def test_a_moonshine_api_mismatch_falls_back_to_the_list_path() -> None:
     assert received == [([0.5], 16000)]
 
 
+def test_bookkeeping_failure_after_a_native_feed_does_not_double_feed() -> None:
+    feeds = {"native": 0, "list": 0}
+
+    class Lib:
+        @staticmethod
+        def moonshine_transcribe_add_audio_to_stream(*_args):
+            feeds["native"] += 1
+            return 0
+
+    stream = types.SimpleNamespace(
+        _lib=Lib(),
+        _transcriber=types.SimpleNamespace(_handle=object()),
+        _handle=object(),
+        # Missing _stream_time forces AttributeError after the native add.
+        add_audio=lambda *_a, **_k: feeds.__setitem__("list", feeds["list"] + 1),
+    )
+
+    feed_stream_audio(stream, np.array([0.25], dtype=np.float32), 16000)
+
+    assert feeds == {"native": 1, "list": 0}
+
+
 def test_an_empty_queue_yields_only_the_first_chunk() -> None:
     raw, stop_requested = drain_audio_queue(queue.Queue(), object(), b"only")
 

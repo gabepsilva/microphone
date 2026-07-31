@@ -1939,6 +1939,36 @@ def test_deltas_before_ready_still_land_when_the_app_starts(tui) -> None:
     drive(facade, body)
 
 
+def test_begin_codex_discards_orphaned_stream_buffers(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    facade._answer_deltas.append("stale answer")
+    facade._reasoning_deltas.append("stale thought")
+
+    facade.begin_codex()
+
+    assert facade._answer_deltas.buffered() is False
+    assert facade._reasoning_deltas.buffered() is False
+
+
+def test_interrupt_drains_buffered_reasoning_as_well_as_answers(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.reasoning_started()
+        await pilot.pause()
+        facade._app_thread = -1
+        facade.app.call_later = lambda fn, *args: None
+        facade.reasoning_delta("still thinking")
+        facade._app_thread = threading.get_ident()
+        assert facade._reasoning_deltas.buffered() is True
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert facade._reasoning_deltas.buffered() is False
+        assert any(entry.text == "still thinking" for entry in facade.app.entries)
+
+    drive(facade, body)
+
+
 def test_rapid_partials_coalesce_into_one_repaint(tui) -> None:
     """Only the newest text matters; queueing every revision wastes layout."""
     facade = tui.VoiceCodexTUI()

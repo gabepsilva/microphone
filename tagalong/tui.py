@@ -1752,15 +1752,22 @@ class VoiceCodexApp(App):
 
     # -- chrome ------------------------------------------------------------
 
-    def _sync_partial(self) -> None:
+    def _sync_partial(
+        self,
+        *,
+        partial_source: str | None = None,
+        partial_text: str | None = None,
+    ) -> None:
         state = self.state
-        if state.partial_text:
+        source = state.partial_source if partial_source is None else partial_source
+        text = state.partial_text if partial_text is None else partial_text
+        if text:
             line = Text("◌ ", style="#5a6068")
             line.append(
-                f"{state.partial_source}  ",
-                style=SOURCE_STYLES.get(state.partial_source, "#6f757e"),
+                f"{source}  ",
+                style=SOURCE_STYLES.get(source, "#6f757e"),
             )
-            line.append(state.partial_text, style="#8a929c")
+            line.append(text, style="#8a929c")
         elif state.mic.muted and state.audio.muted:
             line = Text(
                 "◌ mic and speaker muted, nothing transcribing", style="#6f757e"
@@ -2383,7 +2390,7 @@ class VoiceCodexTUI:
         self._reasoning_deltas = OrderedDeltaBuffer()
         # Interrupt runs on the app thread and must see text that is still
         # sitting in the buffer, so the cut-off mark lands on the full answer.
-        self.app.apply_pending_stream_text = self._flush_answer_deltas
+        self.app.apply_pending_stream_text = self._apply_pending_stream_text
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -2466,7 +2473,9 @@ class VoiceCodexTUI:
     def _flush_partial(self) -> None:
         with self._partial_lock:
             self._partial_pending = False
-        self.app._sync_partial()
+            source = self.state.partial_source
+            text = self.state.partial_text
+        self.app._sync_partial(partial_source=source, partial_text=text)
 
     def _clear_partial(self) -> None:
         self._show_partial("", "")
@@ -2507,12 +2516,19 @@ class VoiceCodexTUI:
         with self._partial_lock:
             self.state.partial_source = ""
             self.state.partial_text = ""
+        self._answer_deltas.take()
+        self._reasoning_deltas.take()
         self._call(self.app.clear_transcript)
 
     # -- Codex turn --------------------------------------------------------
 
     def begin_codex(self) -> None:
         self._clear_partial()
+        # A stale turn's end_codex may be dropped when the session generation
+        # moves on; discard any buffered stream text so the next turn cannot
+        # merge with or flush orphaned chunks.
+        self._answer_deltas.take()
+        self._reasoning_deltas.take()
 
     def codex_message_open(self, reply_to: str) -> None:
         self.state.codex_state = f"replying to {reply_to}"
@@ -2542,6 +2558,11 @@ class VoiceCodexTUI:
         text = self._answer_deltas.take()
         if text:
             self._codex_delta_impl(text)
+
+    def _apply_pending_stream_text(self) -> None:
+        """Drain coalesced answer and reasoning text before interrupt or cut-off."""
+        self._flush_answer_deltas()
+        self._flush_reasoning_deltas()
 
     def codex_message_close(self) -> None:
         """Keep the row open until the Codex turn itself has completed."""
