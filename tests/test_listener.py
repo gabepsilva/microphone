@@ -13,7 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from tagalong.domain import RESPONSE_POLICIES, SpeakerGate, TurnSilence
+from tagalong.domain import (
+    CLEAR_TURN_SILENCE,
+    RESPONSE_POLICIES,
+    SpeakerGate,
+    TurnSilence,
+)
 from tagalong.listener import ConversationListener, TranscriptSubmitter
 
 
@@ -1019,3 +1024,501 @@ def test_retiring_a_channel_that_was_never_registered_is_quiet() -> None:
     submitter.remove_listener("never added")
 
     assert submitter.listeners == ["kept"]
+
+
+# --------------------------------------------------------------------------
+# Energy-aware turn closure, adaptive silence, and partial prefires
+# --------------------------------------------------------------------------
+
+
+def test_energy_quiet_arms_silence_from_a_live_partial() -> None:
+    """The wait starts when the tap falls, not when Moonshine closes the line."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    presence.answer = False
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga what's next?")))
+
+    listener.on_energy_quiet()
+
+    assert listener.timer is not None
+    assert listener.timer.interval == CLEAR_TURN_SILENCE
+    assert listener.pending == []
+    assert listener._partial == "Taga what's next?"
+    listener.close()
+
+
+def test_late_partials_do_not_cancel_an_energy_armed_wait() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status")))
+    listener.on_energy_quiet()
+    generation = listener.timer_generation
+
+    # Tap still quiet: STT catching up must not throw the wait away.
+    presence.answer = False
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status now?")))
+
+    assert listener.timer_generation == generation
+    assert listener.timer is not None
+    assert listener._partial == "Taga status now?"
+    listener.close()
+
+
+def test_a_quiet_line_start_keeps_an_energy_armed_wait() -> None:
+    """Moonshine opening a new line after the tap fell is catch-up, not resume."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("first bit")))
+    generation = listener.timer_generation
+    presence.answer = False
+
+    listener.on_line_started(SimpleNamespace(line=line()))
+
+    assert listener.timer_generation == generation
+    assert listener.timer is not None
+    assert listener.pending == ["first bit"]
+    listener.close()
+
+
+def test_a_quiet_line_start_does_not_drop_a_partial_only_turn() -> None:
+    """Clearing the live partial on quiet catch-up would flush an empty turn."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+    listener.on_energy_quiet()
+    presence.answer = False
+
+    listener.on_line_started(SimpleNamespace(line=line()))
+    listener.flush_now()
+
+    assert listener.submitted == [("Voice", "Taga status?")]
+    listener.close()
+
+
+def test_energy_loud_cancels_a_wait_when_the_speaker_resumes() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("hold that thought")))
+    presence.answer = True
+
+    listener.on_energy_loud()
+
+    assert listener.timer is None
+    assert listener.pending == ["hold that thought"]
+    listener.close()
+
+
+def test_suppressed_loudness_does_not_cancel_a_wait() -> None:
+    """TTS / far-end on the mic must not look like the user resuming."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("ready when you are")))
+    assert listener.timer is not None
+    generation = listener.timer_generation
+    # Tap rose, but presence (suppressors) still says this is not the speaker.
+    presence.answer = False
+
+    listener.on_energy_loud()
+
+    assert listener.timer_generation == generation
+    assert listener.timer is not None
+    listener.close()
+
+
+def test_a_clear_question_uses_the_short_silence_window() -> None:
+    listener, _ = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("What is the status?")))
+
+    assert listener.timer.interval == CLEAR_TURN_SILENCE
+    listener.close()
+
+
+def test_an_incomplete_tail_keeps_the_full_silence_window() -> None:
+    listener, _ = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("I was going to say and")))
+
+    assert listener.timer.interval == 1.25
+    listener.close()
+
+
+def test_energy_quiet_prefires_the_live_partial() -> None:
+    guess = RecordingPrefire(delay=0.2)
+    listener, _ = listening_for_speech(speaking=False, window=1.25, prefire=guess)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga ship it?")))
+    listener.on_energy_quiet()
+
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+
+    assert guess.started == [("Voice", "Taga ship it?")]
+    assert listener.prefired is True
+    listener.close()
+
+
+def test_a_material_stt_revision_restarts_a_stale_prefire() -> None:
+    guess = RecordingPrefire(delay=0.2)
+    listener, presence = listening_for_speech(
+        speaking=False, window=1.25, prefire=guess
+    )
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga open one")))
+    listener.on_energy_quiet()
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    assert guess.started == [("Voice", "Taga open one")]
+
+    presence.answer = False
+    listener.on_line_completed(SimpleNamespace(line=line("Taga open two files?")))
+
+    assert guess.cancelled == ["Voice"]
+    assert listener.prefired is False
+    # Fresh speculate is armed on the revised text.
+    assert listener.prefire_timer is not None
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    assert guess.started[-1] == ("Voice", "Taga open two files?")
+    listener.close()
+
+
+def test_flushing_a_partial_only_turn_commits_it_to_the_transcript() -> None:
+    listener, _ = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("send this now")))
+    listener.on_energy_quiet()
+
+    listener.flush_now()
+
+    assert listener.submitted == [("Voice", "send this now")]
+    assert listener.recorded.commits == [("Voice", "send this now")]
+    assert listener.recorded.finished == ["Voice"]
+    listener.close()
+
+
+def test_end_turn_flushes_the_named_speaker() -> None:
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    listener = RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(1.25),
+        speaker="Voice",
+        submit=lambda speaker, text: submitted.append((speaker, text)),
+        presentation=display,
+    )
+    submitter = TranscriptSubmitter(None, SpeakerGate({"Voice"}, {"Voice"}), None)
+    submitter.add_listener(listener)
+    listener.on_line_completed(SimpleNamespace(line=line("done talking")))
+
+    submitter.end_turn("Audio")
+    assert submitted == []
+
+    submitter.end_turn("Voice")
+
+    assert submitted == [("Voice", "done talking")]
+    listener.close()
+
+
+def test_energy_hooks_ignore_mute_and_empty_buffers() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.set_muted(True)
+    listener.on_energy_quiet()
+    listener.on_energy_loud()
+    assert listener.timer is None
+
+    listener.set_muted(False)
+    presence.answer = True
+    listener.on_energy_quiet()  # still audible — do not arm
+    assert listener.timer is None
+
+    presence.answer = False
+    listener.on_energy_quiet()  # quiet but nothing buffered
+    assert listener.timer is None
+    listener.close()
+
+
+def test_energy_quiet_keeps_a_matching_prefire() -> None:
+    """A quiet re-arm with the same text must not cancel a good guess."""
+    guess = RecordingPrefire(delay=0.2)
+    listener, _ = listening_for_speech(speaking=False, window=1.25, prefire=guess)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga ship it?")))
+    listener.on_energy_quiet()
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    assert listener.prefired is True
+    generation = listener.timer_generation
+
+    listener.on_energy_quiet()
+
+    assert guess.cancelled == []
+    assert listener.prefired is True
+    assert listener.timer_generation == generation
+    listener.close()
+
+
+def test_a_late_line_close_after_partial_flush_is_not_a_second_turn() -> None:
+    """Energy flush of a partial must not let Moonshine's close re-submit it."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("send this now")))
+    listener.on_energy_quiet()
+    listener.flush_now()
+    assert listener.submitted == [("Voice", "send this now")]
+
+    presence.answer = False
+    listener.on_line_completed(SimpleNamespace(line=line("send this now")))
+
+    assert listener.submitted == [("Voice", "send this now")]
+    assert listener.timer is None
+    assert listener.pending == []
+    listener.close()
+
+
+def test_a_late_close_is_absorbed_even_after_the_speaker_resumes() -> None:
+    """Matching STT catch-up must not become a new turn if the user spoke again."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("first question")))
+    listener.flush_now()
+    presence.answer = True
+    listener.on_energy_loud()
+    listener.on_line_text_changed(SimpleNamespace(line=line("and a follow up")))
+
+    presence.answer = False
+    listener.on_line_completed(SimpleNamespace(line=line("first question")))
+
+    assert listener.submitted == [("Voice", "first question")]
+    assert listener.pending == []
+    assert listener._partial == "and a follow up"
+    assert listener.timer is None
+    listener.close()
+
+
+def test_flushed_catch_up_does_not_block_new_speech_under_tts_suppressors() -> None:
+    """Presence quiet from TTS must not swallow a new utterance after a flush."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+    listener.flush_now()
+    # TTS / far-end suppressors keep presence quiet even while the user talks.
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("brand new question?")))
+    listener.on_energy_quiet()
+
+    assert listener.timer is not None
+    assert listener._partial == "brand new question?"
+    listener.flush_now()
+    assert listener.submitted == [
+        ("Voice", "already sent"),
+        ("Voice", "brand new question?"),
+    ]
+    listener.close()
+
+
+def test_late_partials_matching_a_flush_do_not_rearm_silence() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+    listener.flush_now()
+    presence.answer = False
+    generation_before = listener.timer_generation
+
+    listener.on_energy_quiet()
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+
+    assert listener.timer is None
+    assert listener.timer_generation == generation_before
+    assert listener.submitted == [("Voice", "already sent")]
+    listener.close()
+
+
+def test_energy_quiet_ignores_a_buffer_that_only_echoes_the_flush() -> None:
+    """If STT puts the flushed words back, quiet must not start another wait."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+    listener.flush_now()
+    presence.answer = False
+    with listener.lock:
+        listener._partial = "already sent"
+
+    listener.on_energy_quiet()
+
+    assert listener.timer is None
+    assert listener.submitted == [("Voice", "already sent")]
+    listener.close()
+
+
+def test_late_close_with_added_punctuation_is_still_absorbed() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("what's the status")))
+    listener.flush_now()
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("what's the status?")))
+
+    assert listener.submitted == [("Voice", "what's the status")]
+    assert listener.pending == []
+    assert listener.timer is None
+    listener.close()
+
+
+def test_punctuation_only_stt_is_not_treated_as_flush_catch_up() -> None:
+    listener, _ = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("hello")))
+    listener.flush_now()
+    with listener.lock:
+        assert listener._late_stt_for_flush("???") is False
+    listener.close()
+
+
+def test_flushing_pending_plus_partial_absorbs_the_trailing_segment() -> None:
+    """A late close of only the partial must not become a second turn."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("first sentence")))
+    listener.on_line_text_changed(SimpleNamespace(line=line("trailing bit")))
+    listener.flush_now()
+    assert listener.submitted == [("Voice", "first sentence trailing bit")]
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("trailing bit")))
+
+    assert listener.submitted == [("Voice", "first sentence trailing bit")]
+    assert listener.pending == []
+    assert listener.timer is None
+    listener.close()
+
+
+def test_a_quiet_partial_that_becomes_a_clear_ending_shortens_the_wait() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("I was going to say and")))
+    listener.on_energy_quiet()
+    assert listener.timer.interval == 1.25
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+
+    assert listener.timer is not None
+    assert listener.timer.interval == CLEAR_TURN_SILENCE
+    listener.close()
+
+
+def test_completing_the_same_words_after_a_partial_prefire_keeps_the_guess() -> None:
+    """Matching line close must not cancel a prefire that already had those words."""
+    guess = RecordingPrefire(delay=0.2)
+    listener, presence = listening_for_speech(
+        speaking=False, window=1.25, prefire=guess
+    )
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga ship it?")))
+    listener.on_energy_quiet()
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("Taga ship it?")))
+
+    assert guess.cancelled == []
+    assert listener.prefired is True
+    listener.close()
+
+
+def test_a_quiet_partial_revision_cancels_a_stale_prefire() -> None:
+    guess = RecordingPrefire(delay=0.2)
+    listener, presence = listening_for_speech(
+        speaking=False, window=1.25, prefire=guess
+    )
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga open one")))
+    listener.on_energy_quiet()
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+
+    presence.answer = False
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga open two?")))
+
+    assert guess.cancelled == ["Voice"]
+    assert listener.prefired is False
+    assert listener.prefire_timer is not None
+    listener.close()
+
+
+def test_energy_quiet_cancels_when_the_buffer_diverged_offline() -> None:
+    """A quiet re-arm after an out-of-band buffer edit drops the stale guess."""
+    guess = RecordingPrefire(delay=0.2)
+    listener, _ = listening_for_speech(speaking=False, window=1.25, prefire=guess)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga one")))
+    listener.on_energy_quiet()
+    listener.prefire_timer.cancel()
+    listener._speculate(listener.timer_generation)
+    with listener.lock:
+        listener._partial = "Taga two files?"
+
+    listener.on_energy_quiet()
+
+    assert guess.cancelled == ["Voice"]
+    listener.close()
+
+
+def test_line_close_keeps_an_energy_armed_wait() -> None:
+    """Completing the same clear turn must not restart the silence clock."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+    listener.on_energy_quiet()
+    generation = listener.timer_generation
+    interval = listener.timer.interval
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("Taga status?")))
+
+    assert listener.timer is not None
+    assert listener.timer_generation == generation
+    assert listener.timer.interval == interval
+    assert listener.pending == ["Taga status?"]
+    listener.close()
+
+
+def test_a_rejected_echo_flush_does_not_arm_catch_up() -> None:
+    """Echo drops must not leave a flush marker that blocks the real turn."""
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    drop_once = {"echo": True}
+
+    def submit(_speaker, text):
+        if drop_once["echo"] and text == "please ignore this echo":
+            drop_once["echo"] = False
+            return False
+        submitted.append((_speaker, text))
+        return True
+
+    presence = StubPresence(False)
+    listener = RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(1.25),
+        speaker="Voice",
+        submit=submit,
+        presentation=display,
+        presence=presence,
+    )
+    listener.on_line_text_changed(SimpleNamespace(line=line("please ignore this echo")))
+    listener.flush_now()
+
+    assert submitted == []
+    with listener.lock:
+        assert listener._flushed_text == ""
+        assert listener._flushed_partial == ""
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("please ignore this echo")))
+    listener.on_energy_quiet()
+    assert listener.timer is not None
+    listener.flush_now()
+    assert submitted == [("Voice", "please ignore this echo")]
+    listener.close()
+
+
+def test_a_new_phrase_that_is_a_flushed_suffix_is_not_absorbed() -> None:
+    """Only exact flush / flushed-partial matches are catch-up, not suffixes."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("please open the file")))
+    listener.flush_now()
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("the file")))
+    listener.on_energy_quiet()
+
+    assert listener._partial == "the file"
+    assert listener.timer is not None
+    listener.flush_now()
+    assert listener.submitted == [
+        ("Voice", "please open the file"),
+        ("Voice", "the file"),
+    ]
+    listener.close()

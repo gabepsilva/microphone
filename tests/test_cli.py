@@ -497,6 +497,7 @@ def test_closing_a_microphone_unregisters_its_listener() -> None:
 
     listener = Listener()
     transcriber = Transcriber()
+    activity = SimpleNamespace(on_transition=lambda active: None)
     parts = SimpleNamespace(
         submitter=SimpleNamespace(
             remove_listener=lambda removed: events.append(
@@ -505,8 +506,9 @@ def test_closing_a_microphone_unregisters_its_listener() -> None:
         )
     )
 
-    cli.close_microphone_channel(parts, transcriber, listener)
+    cli.close_microphone_channel(parts, activity, transcriber, listener)
 
+    assert activity.on_transition is None
     assert events == [
         "stop capture",
         "stop stream",
@@ -516,6 +518,26 @@ def test_closing_a_microphone_unregisters_its_listener() -> None:
         "unregister listener",
     ]
     assert transcriber._sd_stream is None
+
+
+def test_energy_transition_binding_forwards_loud_and_quiet() -> None:
+    events: list[str] = []
+
+    class Listener:
+        def on_energy_loud(self):
+            events.append("loud")
+
+        def on_energy_quiet(self):
+            events.append("quiet")
+
+    activity = SimpleNamespace(on_transition=None)
+    cli.bind_energy_transitions(activity, Listener())
+    activity.on_transition(True)
+    activity.on_transition(False)
+    cli.clear_energy_transitions(activity)
+
+    assert events == ["loud", "quiet"]
+    assert activity.on_transition is None
 
 
 def test_a_microphone_opened_while_muted_starts_muted() -> None:

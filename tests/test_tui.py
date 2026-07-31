@@ -109,6 +109,8 @@ def test_empty_transcript_shows_a_welcome_until_the_first_entry(tui) -> None:
     assert "PROMPT" in welcome
     assert "SESSION" in welcome
     for key, label in tui.SHORTCUTS_PROMPT + tui.SHORTCUTS_SESSION:
+        if not key and not label:
+            continue
         assert key in welcome, key
         assert label in welcome, label
     # Two columns means a prompt key and a session key share a rendered line.

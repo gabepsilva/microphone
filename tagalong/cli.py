@@ -206,6 +206,7 @@ def open_audio_channel(parts, activity, tap):
         # not that its voice is filtered off this channel — it never reaches it.
         presence=SpeakerPresence(activity),
     )
+    bind_energy_transitions(activity, listener)
     transcriber = ApplicationStreamTranscriber(
         model_path=parts.model_path,
         model_arch=parts.model_arch,
@@ -244,11 +245,29 @@ def open_microphone_channel(parts, activity, presence, device_index):
     except Exception:
         transcriber.close()
         raise
+    bind_energy_transitions(activity, listener)
     transcriber.add_listener(listener)
     return transcriber, listener
 
 
-def close_microphone_channel(parts, transcriber, listener):
+def bind_energy_transitions(activity, listener):
+    """Arm and cancel silence from level-tap transitions on ``listener``."""
+
+    def on_transition(active: bool) -> None:
+        if active:
+            listener.on_energy_loud()
+        else:
+            listener.on_energy_quiet()
+
+    activity.on_transition = on_transition
+
+
+def clear_energy_transitions(activity):
+    """Drop a channel's energy hook so a closed listener is never called."""
+    activity.on_transition = None
+
+
+def close_microphone_channel(parts, activity, transcriber, listener):
     """Retire one microphone without leaving its listener registered.
 
     Capture is stopped first, then the PortAudio stream is released before the
@@ -256,6 +275,7 @@ def close_microphone_channel(parts, transcriber, listener):
     switch into a delayed crash: the callback keeps firing into a freed
     Moonshine model until the process dies.
     """
+    clear_energy_transitions(activity)
     transcriber.stop()
     release_microphone_input(transcriber)
     listener.close()
@@ -263,13 +283,14 @@ def close_microphone_channel(parts, transcriber, listener):
     parts.submitter.remove_listener(listener)
 
 
-def close_audio_channel(parts, transcriber, listener):
+def close_audio_channel(parts, activity, transcriber, listener):
     """Retire the far end's channel in the order the session's shutdown uses.
 
     Nothing may reach a listener after it has flushed, and the listener is
     unregistered last so no reply can sweep a closed channel's buffer in as
     context for a far end nobody is listening to any more.
     """
+    clear_energy_transitions(activity)
     transcriber.stop()
     listener.close()
     transcriber.close()
@@ -750,6 +771,7 @@ def main():
             PrefirePlan(conversation.latency) if args.codex_prefire else None
         ),
     )
+    tui.hooks.on_end_turn = submitter.end_turn
 
     # Built before the listeners because each one reads the other's tap: the
     # microphone has to know when the far end is playing to tell its voice
@@ -780,7 +802,7 @@ def main():
             mic_activity,
             microphone_presence(mic_activity, audio_activity, tts),
         ),
-        partial(close_microphone_channel, parts),
+        partial(close_microphone_channel, parts, mic_activity),
         devices=initial_devices,
     )
     desired_microphone = (
@@ -795,7 +817,7 @@ def main():
         tui,
         gate,
         partial(open_audio_channel, parts, audio_activity),
-        partial(close_audio_channel, parts),
+        partial(close_audio_channel, parts, audio_activity),
     )
     them.start()
     applications = ApplicationRefresher(tui)

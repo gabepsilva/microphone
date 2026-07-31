@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tagalong.domain import (
+    CLEAR_TURN_SILENCE,
     CodexRequest,
     EchoMatcher,
     EchoMemory,
@@ -19,6 +20,8 @@ from tagalong.domain import (
     markdown_to_speech,
     parse_turn_silence,
     resolve_response_policy,
+    same_turn_text,
+    silence_for_turn,
     speech_sink,
 )
 
@@ -680,6 +683,27 @@ def test_a_typed_window_is_read_back(typed, expected) -> None:
 def test_a_value_the_field_cannot_use_is_refused(typed) -> None:
     """Refused rather than clamped: a silent correction looks like a dropped key."""
     assert parse_turn_silence(typed) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "configured", "expected"),
+    [
+        ("Taga, what's the status?", 1.25, CLEAR_TURN_SILENCE),
+        ("Stop the build!", 3.0, CLEAR_TURN_SILENCE),
+        ("Taga open the file", 1.25, CLEAR_TURN_SILENCE),
+        ("I was going to say and", 1.25, 1.25),
+        ("the report covers several open items from last week", 1.25, 1.25),
+        ("", 1.25, 1.25),
+        ("Ready?", 0.3, 0.3),  # already below CLEAR; stay at configured
+    ],
+)
+def test_clear_turn_endings_shorten_silence(text, configured, expected) -> None:
+    assert silence_for_turn(text, configured) == expected
+
+
+def test_same_turn_text_ignores_case_and_spacing() -> None:
+    assert same_turn_text("Taga  status?", "taga status?")
+    assert not same_turn_text("Taga one", "Taga two")
 
 
 def test_an_engine_with_nothing_queued_is_not_speaking() -> None:
