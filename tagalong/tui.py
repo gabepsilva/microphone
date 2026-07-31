@@ -2306,6 +2306,36 @@ class VoiceCodexApp(App):
 # --------------------------------------------------------------------------
 
 
+class OrderedDeltaBuffer:
+    """Join ordered text deltas and say when a flush should be scheduled.
+
+    Stream workers publish faster than the display needs. Callers append
+    freely; ``append`` returns True only for the first delta of a batch so at
+    most one flush is queued. ``take`` clears that batch for the flush.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[str] = []
+        self._pending = False
+        self._lock = threading.Lock()
+
+    def append(self, delta: str) -> bool:
+        """Append ``delta``. Return True when the caller should schedule a flush."""
+        with self._lock:
+            self._chunks.append(delta)
+            already_pending = self._pending
+            self._pending = True
+        return not already_pending
+
+    def take(self) -> str:
+        """Return and clear every buffered delta."""
+        with self._lock:
+            chunks = self._chunks
+            self._chunks = []
+            self._pending = False
+        return "".join(chunks)
+
+
 class VoiceCodexTUI:
     """Thread-safe control surface over :class:`VoiceCodexApp`.
 
@@ -2334,18 +2364,13 @@ class VoiceCodexTUI:
         # "newest text + maybe schedule" step atomic across capture threads.
         self._partial_pending = False
         self._partial_lock = threading.Lock()
-        # Codex token deltas are the same shape of problem: arrive faster than
-        # the row needs updating, and must not block the stream worker on
-        # layout. Chunks stay ordered; at most one flush is queued.
-        self._codex_chunks: list[str] = []
-        self._codex_pending = False
-        self._codex_lock = threading.Lock()
-        self._reasoning_chunks: list[str] = []
-        self._reasoning_pending = False
-        self._reasoning_lock = threading.Lock()
+        # Answer and reasoning tokens share one buffer shape: ordered chunks,
+        # at most one posted flush, drained before end-of-turn or interrupt.
+        self._answer_deltas = OrderedDeltaBuffer()
+        self._reasoning_deltas = OrderedDeltaBuffer()
         # Interrupt runs on the app thread and must see text that is still
         # sitting in the buffer, so the cut-off mark lands on the full answer.
-        self.app.apply_pending_stream_text = self._apply_buffered_codex_text
+        self.app.apply_pending_stream_text = self._flush_answer_deltas
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -2416,7 +2441,9 @@ class VoiceCodexTUI:
         self._show_partial(speaker, text)
 
     def finish_turn(self, speaker: str) -> None:
-        if self.state.partial_source == speaker:
+        with self._partial_lock:
+            clear = self.state.partial_source == speaker
+        if clear:
             self._clear_partial()
 
     def close_speaker(self, speaker: str) -> None:
@@ -2465,28 +2492,12 @@ class VoiceCodexTUI:
         order and flushed together so the stream worker is never stalled on
         layout, and ``text +=`` runs once per flush rather than once per token.
         """
-        with self._codex_lock:
-            self._codex_chunks.append(delta)
-            already_pending = self._codex_pending
-            self._codex_pending = True
-        if not already_pending:
-            self._post(self._flush_codex_deltas)
+        if self._answer_deltas.append(delta):
+            self._post(self._flush_answer_deltas)
 
-    def _take_codex_chunks(self) -> str:
-        with self._codex_lock:
-            chunks = self._codex_chunks
-            self._codex_chunks = []
-            self._codex_pending = False
-        return "".join(chunks)
-
-    def _flush_codex_deltas(self) -> None:
-        text = self._take_codex_chunks()
-        if text:
-            self._codex_delta_impl(text)
-
-    def _apply_buffered_codex_text(self) -> None:
-        """Apply any buffered deltas; caller must already be on the app thread."""
-        text = self._take_codex_chunks()
+    def _flush_answer_deltas(self) -> None:
+        """Apply buffered answer text; caller must already be on the app thread."""
+        text = self._answer_deltas.take()
         if text:
             self._codex_delta_impl(text)
 
@@ -2515,7 +2526,7 @@ class VoiceCodexTUI:
     def _codex_finish_impl(self) -> None:
         # Drain first so a turn that ends with deltas still in the buffer
         # does not close on a truncated answer.
-        self._apply_buffered_codex_text()
+        self._flush_answer_deltas()
         self._codex_end_impl()
 
     def _codex_end_impl(self) -> None:
@@ -2549,27 +2560,11 @@ class VoiceCodexTUI:
 
     def reasoning_delta(self, delta: str) -> None:
         """Append thinking text without waiting on a repaint."""
-        with self._reasoning_lock:
-            self._reasoning_chunks.append(delta)
-            already_pending = self._reasoning_pending
-            self._reasoning_pending = True
-        if not already_pending:
+        if self._reasoning_deltas.append(delta):
             self._post(self._flush_reasoning_deltas)
 
-    def _take_reasoning_chunks(self) -> str:
-        with self._reasoning_lock:
-            chunks = self._reasoning_chunks
-            self._reasoning_chunks = []
-            self._reasoning_pending = False
-        return "".join(chunks)
-
     def _flush_reasoning_deltas(self) -> None:
-        text = self._take_reasoning_chunks()
-        if text:
-            self._reasoning_delta_impl(text)
-
-    def _apply_buffered_reasoning_text(self) -> None:
-        text = self._take_reasoning_chunks()
+        text = self._reasoning_deltas.take()
         if text:
             self._reasoning_delta_impl(text)
 
@@ -2595,7 +2590,7 @@ class VoiceCodexTUI:
         self._call(self._reasoning_finish_impl, elapsed)
 
     def _reasoning_finish_impl(self, elapsed: float | None) -> None:
-        self._apply_buffered_reasoning_text()
+        self._flush_reasoning_deltas()
         self._reasoning_end_impl(elapsed)
 
     def _reasoning_end_impl(self, elapsed: float | None) -> None:

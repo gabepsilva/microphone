@@ -531,6 +531,27 @@ def test_feeding_enough_audio_refreshes_transcription() -> None:
     assert stream._last_update_time == stream._stream_time
 
 
+def test_a_moonshine_api_mismatch_falls_back_to_the_list_path() -> None:
+    """Private stream shape can change; audio must still reach the recognizer."""
+    received: list[tuple] = []
+
+    class Lib:
+        @staticmethod
+        def moonshine_transcribe_add_audio_to_stream(*_args):
+            raise AttributeError("unexpected stream layout")
+
+    stream = types.SimpleNamespace(
+        _lib=Lib(),
+        _transcriber=types.SimpleNamespace(_handle=object()),
+        _handle=object(),
+        add_audio=lambda samples, rate: received.append((samples, rate)),
+    )
+
+    feed_stream_audio(stream, np.array([0.5], dtype=np.float32), 16000)
+
+    assert received == [([0.5], 16000)]
+
+
 def test_an_empty_queue_yields_only_the_first_chunk() -> None:
     raw, stop_requested = drain_audio_queue(queue.Queue(), object(), b"only")
 

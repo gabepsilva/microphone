@@ -15,7 +15,17 @@ from textual import events
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Markdown, Static
 
-from tagalong.tui import EntryRow, PromptInput
+from tagalong.tui import EntryRow, OrderedDeltaBuffer, PromptInput
+
+
+def test_an_ordered_delta_buffer_schedules_one_flush_per_batch() -> None:
+    buffer = OrderedDeltaBuffer()
+
+    assert buffer.append("one ") is True
+    assert buffer.append("two") is False
+    assert buffer.take() == "one two"
+    assert buffer.append("three") is True
+    assert buffer.take() == "three"
 
 
 def drive(facade, body):
@@ -1940,10 +1950,8 @@ def test_rapid_codex_deltas_coalesce_into_one_append(tui) -> None:
         facade.codex_delta("two ")
         facade.codex_delta("three")
         assert len(scheduled) == 1
-        assert facade._codex_chunks == ["one ", "two ", "three"]
         fn, args = scheduled[0]
         fn(*args)
-        assert facade._codex_chunks == []
         assert entry_texts(facade) == ["one two three"]
         await pilot.pause()
 

@@ -278,36 +278,47 @@ def to_mono(samples, channels):
 def feed_stream_audio(stream, samples, sample_rate):
     """Push float samples into a transcription stream without a Python list.
 
-    Moonshine's ``Stream.add_audio`` builds its ``ctypes`` buffer by unpacking
-    a ``list[float]`` — one Python float per sample, on every capture block.
-    Real streams expose the same C entry point, so a contiguous float32 view
-    can be handed over with ``from_buffer``. Fakes and any stream without the
-    library handle keep the list path.
+    Moonshine's public ``Stream.add_audio`` only accepts ``list[float]``, and
+    builds its ctypes buffer by unpacking that list — one Python float per
+    sample, on every capture block. When the stream still has the same private
+    shape ``add_audio`` uses, a contiguous float32 view can be handed over with
+    ``from_buffer``. Anything else, including test fakes, falls back to the
+    list path so audio is never dropped for an API mismatch.
     """
     audio = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
-    lib = getattr(stream, "_lib", None)
-    if lib is None:
+    if not _feed_moonshine_buffer(stream, audio, sample_rate):
         stream.add_audio(audio.tolist(), sample_rate)
-        return
+
+
+def _feed_moonshine_buffer(stream, audio, sample_rate) -> bool:
+    """Return True when ``audio`` was accepted through Moonshine's C entry point.
+
+    Mirrors ``Stream.add_audio`` closely enough that the stream clock and
+    update cadence stay correct. Attribute or type errors mean this Moonshine
+    build is not the one we know; the caller must fall back rather than lose
+    the block.
+    """
+    lib = getattr(stream, "_lib", None)
+    if lib is None or audio.size == 0:
+        return False
     count = int(audio.size)
-    if count == 0:
-        return
-    error = lib.moonshine_transcribe_add_audio_to_stream(
-        stream._transcriber._handle,
-        stream._handle,
-        (ctypes.c_float * count).from_buffer(audio),
-        count,
-        int(sample_rate),
-        0,
-    )
-    check_error(error)
-    # Mirror Stream.add_audio: advance the stream clock and refresh when the
-    # update interval has elapsed, otherwise partials stall until the next
-    # list-based call.
-    stream._stream_time += count / sample_rate
-    if stream._stream_time - stream._last_update_time >= stream._update_interval:
-        stream.update_transcription(stream._transcribe_flags)
-        stream._last_update_time = stream._stream_time
+    try:
+        error = lib.moonshine_transcribe_add_audio_to_stream(
+            stream._transcriber._handle,
+            stream._handle,
+            (ctypes.c_float * count).from_buffer(audio),
+            count,
+            int(sample_rate),
+            0,
+        )
+        check_error(error)
+        stream._stream_time += count / sample_rate
+        if stream._stream_time - stream._last_update_time >= stream._update_interval:
+            stream.update_transcription(stream._transcribe_flags)
+            stream._last_update_time = stream._stream_time
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return True
 
 
 def drain_audio_queue(audio_queue, stop_item, first):
