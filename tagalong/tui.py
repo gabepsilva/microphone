@@ -42,7 +42,7 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widget import Widget
-from textual.widgets import Checkbox, Input, Link, Select, Static, TextArea
+from textual.widgets import Checkbox, Input, Link, Markdown, Select, Static, TextArea
 
 from .attachments import (
     DEFAULT_IMAGE_CLIPBOARD,
@@ -241,8 +241,39 @@ def render_reasoning_body(entry: Entry) -> Text:
     return body
 
 
+CUT_OFF_LINE = "cut off — user started speaking"
+
+
+def cut_off_mark() -> Text:
+    """UI chrome for a turn the user interrupted. Not part of the model text."""
+    mark = Text()
+    mark.append("  ⊥", style="#c96a5c")
+    mark.append(f"\n{CUT_OFF_LINE}", style="#c96a5c")
+    return mark
+
+
+def uses_markdown_body(entry: Entry) -> bool:
+    """Finished Taga answers mount clickable Textual Markdown; nothing else does.
+
+    Streaming stays plain Text so half-open fences do not reflow under the
+    cursor. Voice, Text, and Audio stay literal so transcription noise cannot
+    restyle asterisks. Empty finished rows have nothing to parse.
+    """
+    return (
+        entry.kind == "speech"
+        and entry.source == TAGA
+        and not entry.streaming
+        and bool(entry.text)
+    )
+
+
 def render_entry_body(entry: Entry) -> Text:
-    """Render an entry's selectable body without its timestamp and source."""
+    """Plain body for a :class:`Static` row (notes, reasoning, commands, speech).
+
+    Finished Taga answers are not drawn through this function: the row mounts
+    :class:`~textual.widgets.Markdown` instead so links can open. Call
+    :func:`uses_markdown_body` before choosing a host widget.
+    """
     if entry.kind == "note":
         return Text(entry.text, style="#6f757e")
 
@@ -260,9 +291,10 @@ def render_entry_body(entry: Entry) -> Text:
     body = Text(entry.text, style=BODY_STYLE)
     if entry.streaming:
         body.append(" ▌", style="#6cc06c")
-    if entry.interrupted:
-        body.append("  ⊥", style="#c96a5c")
-        body.append("\ncut off — user started speaking", style="#c96a5c")
+    # Cut-off chrome for markdown rows is a sibling widget (see EntryRow).
+    # Static-only rows carry it here so one host is enough.
+    if entry.interrupted and not uses_markdown_body(entry):
+        body.append_text(cut_off_mark())
     return body
 
 
@@ -722,6 +754,16 @@ class EntryRow(Vertical):
         if entry.kind == "command":
             self.add_class("command")
 
+    def _content_body(self) -> Widget:
+        """Model text host: Markdown when finished Taga, Static otherwise."""
+        if uses_markdown_body(self.entry):
+            return Markdown(
+                self.entry.text,
+                classes="entry-body",
+                open_links=True,
+            )
+        return Static(render_entry_body(self.entry), classes="entry-body")
+
     def compose(self) -> ComposeResult:
         if self.entry.kind == "command":
             yield Static(render_entry_body(self.entry), classes="entry-body")
@@ -733,7 +775,24 @@ class EntryRow(Vertical):
                 Text(source, style=SOURCE_STYLES.get(source, "#5a6068")),
                 classes="entry-source",
             )
-            yield Static(render_entry_body(self.entry), classes="entry-body")
+            # entry-main owns content + optional cut-off chrome so interrupt
+            # state never has to be baked into the markdown source.
+            with Vertical(classes="entry-main"):
+                yield self._content_body()
+                if self.entry.interrupted:
+                    yield Static(cut_off_mark(), classes="entry-cutoff")
+
+    def _sync_cutoff(self, main: Widget) -> None:
+        """Keep cut-off chrome in sync without rewriting the answer text."""
+        existing = list(main.query(".entry-cutoff").results(Static))
+        if self.entry.interrupted:
+            if existing:
+                existing[0].update(cut_off_mark())
+            else:
+                main.mount(Static(cut_off_mark(), classes="entry-cutoff"))
+            return
+        for cutoff in existing:
+            cutoff.remove()
 
     def sync(self) -> None:
         """Re-render this row in place.
@@ -741,9 +800,39 @@ class EntryRow(Vertical):
         A row mounted in the same frame has not composed its children yet.
         ``compose`` renders the entry as it stands then, so there is nothing
         to update and querying for a body that does not exist would raise.
+
+        Streaming Taga rows start as :class:`Static` and become
+        :class:`~textual.widgets.Markdown` when the turn closes so links can
+        open. That is a widget swap, not an in-place ``update``.
         """
-        for body in self.query(".entry-body").results(Static):
+        if self.entry.kind == "command":
+            for body in self.query(".entry-body").results(Static):
+                body.update(render_entry_body(self.entry))
+            return
+
+        mains = list(self.query(".entry-main"))
+        if not mains:
+            return
+        main = mains[0]
+
+        bodies = list(main.query(".entry-body"))
+        if not bodies:
+            return
+        body = bodies[0]
+        want_markdown = uses_markdown_body(self.entry)
+        if want_markdown and isinstance(body, Markdown):
+            body.update(self.entry.text)
+        elif not want_markdown and isinstance(body, Static):
             body.update(render_entry_body(self.entry))
+        else:
+            cutoffs = list(main.query(".entry-cutoff"))
+            body.remove()
+            if cutoffs:
+                main.mount(self._content_body(), before=cutoffs[0])
+            else:
+                main.mount(self._content_body())
+
+        self._sync_cutoff(main)
 
 
 class Transcript(VerticalScroll):
@@ -1339,7 +1428,23 @@ class VoiceCodexApp(App):
         width: 11;
         padding-right: 1;
     }
+    EntryRow .entry-main {
+        width: 1fr;
+        height: auto;
+    }
     EntryRow .entry-body { width: 1fr; height: auto; }
+    EntryRow .entry-cutoff { width: 1fr; height: auto; color: #c96a5c; }
+    /* Textual Markdown pads like a document; the transcript wants chat density. */
+    EntryRow Markdown.entry-body {
+        width: 1fr;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    EntryRow Markdown.entry-body > * {
+        margin-top: 0;
+        margin-bottom: 0;
+    }
     EntryRow.command {
         margin: 0 0 1 20;
         padding-left: 1;
