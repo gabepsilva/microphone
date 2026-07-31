@@ -16,6 +16,11 @@ from .domain import same_turn_text, silence_for_turn
 from .presentation import TranscriptSink
 
 
+def _flush_match_key(text: str) -> str:
+    """Normalize transcript text for post-flush STT catch-up matching."""
+    return " ".join(text.split()).casefold().rstrip("?.!,;:")
+
+
 class ConversationListener(TranscriptEventListener):
     # A deadline reached while its speaker is still audible is pushed back by
     # this much rather than by another whole window: the transcription that
@@ -130,12 +135,19 @@ class ConversationListener(TranscriptEventListener):
     def _late_stt_for_flush(self, text: str) -> bool:
         """True when ``text`` is catch-up for the turn already submitted.
 
-        Caller holds the lock. Exact match (modulo whitespace/case) only: a
-        real follow-up that merely shares a prefix must be allowed through,
-        and the marker stays until this match arrives even if the user has
-        already started speaking again.
+        Caller holds the lock. Matches the full flushed string, or its trailing
+        segment when a flush joined completed lines with a live partial. Trailing
+        sentence punctuation is ignored so ``hello`` and ``hello?`` still match.
+        The marker stays until this match arrives even if the user has already
+        started speaking again.
         """
-        return bool(self._flushed_text) and same_turn_text(text, self._flushed_text)
+        if not self._flushed_text or not text:
+            return False
+        flushed = _flush_match_key(self._flushed_text)
+        current = _flush_match_key(text)
+        if not current:
+            return False
+        return flushed == current or flushed.endswith(" " + current)
 
     def _clear_flush_marker(self) -> None:
         """Caller holds the lock."""
@@ -414,11 +426,13 @@ class ConversationListener(TranscriptEventListener):
                     cancel_wait = True
                 elif self.timer is not None:
                     text = self._buffered_text()
-                    if self._revise_prefire_if_stale(text):
-                        # Re-arm so a fresh speculate can follow the revised text.
-                        cancel_prefire = True
+                    cancel_prefire = self._revise_prefire_if_stale(text)
+                    desired = self._wait_for(text)
+                    # Re-arm when speculation is stale, or when adaptive silence
+                    # for the revised partial no longer matches the armed wait.
+                    if cancel_prefire or desired != self.timer.interval:
                         self.extensions = 0
-                        self._start_timer(self._wait_for(text))
+                        self._start_timer(desired)
         if late:
             return
         self.presentation.update(self.speaker, partial)

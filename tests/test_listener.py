@@ -1337,6 +1337,60 @@ def test_energy_quiet_ignores_a_buffer_that_only_echoes_the_flush() -> None:
     listener.close()
 
 
+def test_late_close_with_added_punctuation_is_still_absorbed() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("what's the status")))
+    listener.flush_now()
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("what's the status?")))
+
+    assert listener.submitted == [("Voice", "what's the status")]
+    assert listener.pending == []
+    assert listener.timer is None
+    listener.close()
+
+
+def test_punctuation_only_stt_is_not_treated_as_flush_catch_up() -> None:
+    listener, _ = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("hello")))
+    listener.flush_now()
+    with listener.lock:
+        assert listener._late_stt_for_flush("???") is False
+    listener.close()
+
+
+def test_flushing_pending_plus_partial_absorbs_the_trailing_segment() -> None:
+    """A late close of only the partial must not become a second turn."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_completed(SimpleNamespace(line=line("first sentence")))
+    listener.on_line_text_changed(SimpleNamespace(line=line("trailing bit")))
+    listener.flush_now()
+    assert listener.submitted == [("Voice", "first sentence trailing bit")]
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("trailing bit")))
+
+    assert listener.submitted == [("Voice", "first sentence trailing bit")]
+    assert listener.pending == []
+    assert listener.timer is None
+    listener.close()
+
+
+def test_a_quiet_partial_that_becomes_a_clear_ending_shortens_the_wait() -> None:
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("I was going to say and")))
+    listener.on_energy_quiet()
+    assert listener.timer.interval == 1.25
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+
+    assert listener.timer is not None
+    assert listener.timer.interval == CLEAR_TURN_SILENCE
+    listener.close()
+
+
 def test_completing_the_same_words_after_a_partial_prefire_keeps_the_guess() -> None:
     """Matching line close must not cancel a prefire that already had those words."""
     guess = RecordingPrefire(delay=0.2)
