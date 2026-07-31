@@ -2327,6 +2327,19 @@ class OrderedDeltaBuffer:
             self._pending = True
         return not already_pending
 
+    def abandon_schedule(self) -> None:
+        """Drop the pending flag without taking chunks.
+
+        Used when a flush could not be posted yet (UI not ready). Chunks stay
+        buffered so a later append, or the ready-time drain, can schedule again.
+        """
+        with self._lock:
+            self._pending = False
+
+    def buffered(self) -> bool:
+        with self._lock:
+            return bool(self._chunks)
+
     def take(self) -> str:
         """Return and clear every buffered delta."""
         with self._lock:
@@ -2376,8 +2389,28 @@ class VoiceCodexTUI:
 
     def run(self) -> None:
         self._app_thread = threading.get_ident()
-        self.app.call_later(self._ready.set)
+        self.app.call_later(self._on_app_ready)
         self.app.run()
+
+    def _on_app_ready(self) -> None:
+        """Mark the façade live and paint anything that arrived while mounting.
+
+        Partials and streamed deltas can beat the ready flag. They keep state
+        updated, but must not leave a sticky pending bit that blocks later
+        flushes — and whatever landed early has to appear once the app can
+        draw.
+        """
+        self._ready.set()
+        with self._partial_lock:
+            flush_partial = bool(self.state.partial_text) and not self._partial_pending
+            if flush_partial:
+                self._partial_pending = True
+        if flush_partial:
+            self._flush_partial()
+        if self._answer_deltas.buffered():
+            self._flush_answer_deltas()
+        if self._reasoning_deltas.buffered():
+            self._flush_reasoning_deltas()
 
     def wait_ready(self, timeout: float = 10.0) -> bool:
         return self._ready.wait(timeout)
@@ -2420,9 +2453,14 @@ class VoiceCodexTUI:
         with self._partial_lock:
             self.state.partial_source = source
             self.state.partial_text = text
-            already_pending = self._partial_pending
-            self._partial_pending = True
-        if not already_pending:
+            # Only claim the pending bit when a flush can actually be posted.
+            # Setting it while the app is still mounting would stick forever:
+            # later partials would see pending and never schedule, and the
+            # early text would never paint.
+            schedule = not self._partial_pending and self._ready.is_set()
+            if schedule:
+                self._partial_pending = True
+        if schedule:
             self._post(self._flush_partial)
 
     def _flush_partial(self) -> None:
@@ -2492,8 +2530,12 @@ class VoiceCodexTUI:
         order and flushed together so the stream worker is never stalled on
         layout, and ``text +=`` runs once per flush rather than once per token.
         """
-        if self._answer_deltas.append(delta):
+        if not self._answer_deltas.append(delta):
+            return
+        if self._ready.is_set():
             self._post(self._flush_answer_deltas)
+        else:
+            self._answer_deltas.abandon_schedule()
 
     def _flush_answer_deltas(self) -> None:
         """Apply buffered answer text; caller must already be on the app thread."""
@@ -2560,8 +2602,12 @@ class VoiceCodexTUI:
 
     def reasoning_delta(self, delta: str) -> None:
         """Append thinking text without waiting on a repaint."""
-        if self._reasoning_deltas.append(delta):
+        if not self._reasoning_deltas.append(delta):
+            return
+        if self._ready.is_set():
             self._post(self._flush_reasoning_deltas)
+        else:
+            self._reasoning_deltas.abandon_schedule()
 
     def _flush_reasoning_deltas(self) -> None:
         text = self._reasoning_deltas.take()

@@ -28,6 +28,16 @@ def test_an_ordered_delta_buffer_schedules_one_flush_per_batch() -> None:
     assert buffer.take() == "three"
 
 
+def test_abandoning_a_schedule_keeps_chunks_and_allows_another_flush() -> None:
+    buffer = OrderedDeltaBuffer()
+
+    assert buffer.append("early ") is True
+    buffer.abandon_schedule()
+    assert buffer.buffered() is True
+    assert buffer.append("late") is True
+    assert buffer.take() == "early late"
+
+
 def drive(facade, body):
     """Run ``body`` against a mounted app with the façade marked ready."""
 
@@ -1893,6 +1903,40 @@ def test_a_partial_update_never_waits_on_the_application_thread(tui) -> None:
 
     assert waited == []
     assert facade.state.partial_text == "half a sen"
+
+
+def test_partials_before_ready_still_paint_when_the_app_starts(tui) -> None:
+    """A sticky pending bit before mount would leave the live line blank."""
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade._ready.clear()
+        facade.update(tui.VOICE, "early")
+        facade.update(tui.VOICE, "early more")
+        assert facade._partial_pending is False
+        assert facade.state.partial_text == "early more"
+        facade._on_app_ready()
+        await pilot.pause()
+        assert "early more" in facade.app.query_one("#partial", Static).content.plain
+
+    drive(facade, body)
+
+
+def test_deltas_before_ready_still_land_when_the_app_starts(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._ready.clear()
+        facade.codex_delta("buffered ")
+        facade.codex_delta("answer")
+        assert facade._answer_deltas.buffered() is True
+        facade._on_app_ready()
+        await pilot.pause()
+        assert entry_texts(facade) == ["buffered answer"]
+
+    drive(facade, body)
 
 
 def test_rapid_partials_coalesce_into_one_repaint(tui) -> None:
