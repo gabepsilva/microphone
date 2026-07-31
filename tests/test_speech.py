@@ -21,7 +21,6 @@ from tagalong.speech import (
     SwitchableSpeech,
     build_speech_engine,
     default_voice,
-    provider_switch,
 )
 
 WAIT_SECONDS = 10
@@ -184,6 +183,27 @@ def test_a_switch_speaks_with_the_new_provider_default_voice(engines) -> None:
     assert engines[1].voice == default_voice("edge")
 
 
+def test_a_switch_keeps_the_silence_the_session_was_in() -> None:
+    """Muting is the session's, not one engine's: a new engine inherits it."""
+    speech, built = started("piper")
+    speech.set_enabled(False)
+
+    speech.set_provider("edge")
+
+    assert wait_until(lambda: speech.provider == "edge")
+    assert built[1].enabled == [False]
+
+
+def test_a_switch_leaves_a_speaking_session_speaking() -> None:
+    """Nothing silences an engine that was never asked to be silent."""
+    speech, built = started("piper")
+
+    speech.set_provider("edge")
+
+    assert wait_until(lambda: speech.provider == "edge")
+    assert built[1].enabled == []
+
+
 def test_a_switch_keeps_playing_through_the_session_output() -> None:
     speech, built = started("piper", output_sink="meeting.sink")
 
@@ -282,14 +302,10 @@ def test_closing_shuts_the_installed_engine_down() -> None:
     assert built[0].closed is True
 
 
-def test_the_interface_switch_reports_a_session_without_speech() -> None:
-    assert provider_switch(None)("edge") is False
-
-
 def test_the_interface_switch_drives_the_session_speech() -> None:
     speech, _ = started("piper")
 
-    assert provider_switch(speech)("edge") is True
+    assert speech.set_provider("edge") is True
     assert wait_until(lambda: speech.provider == "edge")
 
 

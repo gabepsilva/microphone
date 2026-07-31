@@ -18,7 +18,6 @@ from .choosers import (
     NO_AUDIO_STREAM,
     choose_audio_stream,
     choose_taga_after,
-    choose_tts,
     choose_tts_output,
     input_devices,
     select_microphone,
@@ -30,7 +29,6 @@ from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
 DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
 DEFAULT_CODEX_EFFORT = "low"
-DEFAULT_TTS = "on"
 DEFAULT_AUDIO_STREAM = NO_AUDIO_STREAM
 DEFAULT_TAGA_AFTER = "both"
 
@@ -147,11 +145,6 @@ def build_parser():
         ),
     )
     parser.add_argument(
-        "--tts",
-        choices=("on", "off"),
-        help=f"Speak Taga's responses (default: {DEFAULT_TTS})",
-    )
-    parser.add_argument(
         "--tts-provider",
         choices=PROVIDERS,
         help=(f"Speech synthesizer for Taga's responses (default: {DEFAULT_PROVIDER})"),
@@ -196,7 +189,6 @@ def _resolve_defaults(args):
     provider, which the config file may only have supplied a moment ago.
     """
     for option, fallback in (
-        ("tts", DEFAULT_TTS),
         ("audio_stream", DEFAULT_AUDIO_STREAM),
         ("taga_after", DEFAULT_TAGA_AFTER),
         ("tts_provider", DEFAULT_PROVIDER),
@@ -214,8 +206,6 @@ def _resolve_defaults(args):
 
 def _validate_startup_args(parser, args):
     """Reject values argparse cannot constrain, including config-file values."""
-    if args.tts not in (None, "on", "off"):
-        parser.error("startup config 'tts' must be 'on' or 'off'")
     if args.tts_provider is not None and args.tts_provider not in PROVIDERS:
         allowed = ", ".join(repr(name) for name in PROVIDERS)
         parser.error(f"startup config 'tts_provider' must be one of {allowed}")
@@ -276,7 +266,6 @@ class StartupSelection:
 
     device_index: int | None
     device: dict | None
-    tts_enabled: bool
     tts_provider: str
     audio_stream: str | None
     tts_output: dict | None
@@ -291,7 +280,6 @@ def startup_settings(selection, args):
             if selection.device is not None
             else args.microphone
         ),
-        "tts": "on" if selection.tts_enabled else "off",
         "tts_provider": selection.tts_provider,
         "audio_stream": (
             NO_AUDIO_STREAM
@@ -323,11 +311,8 @@ def print_startup_summary(args, selection, stream=sys.stderr):
     print(f"Voice turn silence: {args.turn_silence:.1f}s", file=stream)
     print(f"Codex speed: {'Fast' if args.codex_fast else 'Standard'}", file=stream)
     print(f"Codex command access: {args.sandbox}", file=stream)
-    if selection.tts_enabled:
-        engine = PROVIDER_LABELS[selection.tts_provider]
-        print(f"Taga audio: {engine} ({args.tts_voice})", file=stream)
-    else:
-        print("Taga audio: Off", file=stream)
+    engine = PROVIDER_LABELS[selection.tts_provider]
+    print(f"Taga audio: {engine} ({args.tts_voice})", file=stream)
     if tts_output is not None:
         print(f"Taga speaks through: {tts_output['description']}", file=stream)
     print(f"Loading Moonshine {args.model} model...", file=stream)
@@ -354,13 +339,11 @@ def resolve_startup_selection(args):
                 "select one from the sidebar after startup.",
                 file=sys.stderr,
             )
-    tts_enabled = choose_tts(args.tts)
     audio_stream = choose_audio_stream(args.audio_stream)
     policy = choose_taga_after(args.taga_after)
     return StartupSelection(
         device_index=device_index,
         device=device,
-        tts_enabled=tts_enabled,
         tts_provider=args.tts_provider,
         audio_stream=audio_stream,
         tts_output=choose_tts_output(args.tts_output),
@@ -383,7 +366,6 @@ def build_session_state(args, selection, models: list[CodexModelOption] | None =
             else args.microphone
         ),
         policy=selection.policy.name,
-        tts_enabled=selection.tts_enabled,
         tts_provider=selection.tts_provider,
         tts_voice=args.tts_voice,
         turn_silence=args.turn_silence,

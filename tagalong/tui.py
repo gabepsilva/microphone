@@ -1211,11 +1211,13 @@ class Sidebar(VerticalScroll):
     def _provider_selected(self, value: str) -> None:
         """Ask the host to change how Taga answers — either engine, or silence.
 
-        The picker only moves if the host accepts, so a session started
-        without speech shows the silence it is actually in rather than an
-        engine it never built. Choosing an engine while silent does both
-        things at once: the engine is switched first, because a session that
-        cannot switch should not be turned audible on the wrong one.
+        Choosing an engine while silent does both things at once: the switch
+        is asked for first, so a host that refuses it leaves the session as
+        silent as it was rather than audible on an engine it never got. The
+        unmute that follows is the session's, not one engine's, so it holds
+        for whichever engine the switch finishes with.
+
+        "No voice reply" only stops generation; the engine stays.
         """
         if value == self._speech_selection():
             return
@@ -2254,14 +2256,17 @@ class VoiceCodexApp(App):
         self.set_tts_enabled(not self.state.tts_enabled)
 
     def set_tts_enabled(self, enabled: bool) -> bool:
-        """Speak Taga's responses or stop; report whether the session could.
+        """Generate spoken replies or stop; report whether the host accepted.
 
         Both the key binding and the sidebar's "No voice reply" arrive here,
         so the note and the picker say the same thing however the voice was
-        turned off.
+        turned off. Off means no speech is generated; the engine stays in
+        place, which is why the session's host has no reason to refuse. The
+        refusal is still honoured rather than assumed away: a host that says
+        no leaves the interface showing the voice it actually has.
         """
         if self.hooks.on_tts and self.hooks.on_tts(enabled) is False:
-            self.add_entry(Entry(kind="note", text="tts unavailable for this session"))
+            self.add_entry(Entry(kind="note", text="tts could not be changed"))
             return False
         self.state.tts_enabled = enabled
         self.refresh_sidebar()

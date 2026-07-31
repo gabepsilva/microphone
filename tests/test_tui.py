@@ -726,7 +726,7 @@ def test_textual_tts_control_stays_off_when_the_runtime_refuses_it(tui) -> None:
     asyncio.run(exercise())
 
     assert app.state.tts_enabled is False
-    assert app.entries[-1].text == "tts unavailable for this session"
+    assert app.entries[-1].text == "tts could not be changed"
 
 
 def test_the_sidebar_picker_offers_every_defined_policy(tui) -> None:
@@ -972,32 +972,29 @@ def test_choosing_an_engine_again_gives_the_session_its_voice_back(tui) -> None:
     assert state.tts_voice == default_voice("edge")
 
 
-def test_a_silent_session_cannot_be_given_a_voice_by_the_picker(tui) -> None:
-    from tagalong.speech import NO_VOICE
+def test_a_silenced_session_can_be_given_a_voice_by_the_picker(tui) -> None:
+    from tagalong.speech import default_voice
 
-    shown: list[str] = []
-    # Started with --tts off: there is no engine to switch or unmute, and both
-    # hooks say so.
+    toggled: list[bool] = []
+    # Silenced from the sidebar or Ctrl-T: the engine is there and muted, so
+    # picking a provider unmutes generation without rebuilding anything.
     state = tui.SessionState(tts_provider="piper", tts_enabled=False)
     app = tui.VoiceCodexApp(
         state,
-        tui.TuiHooks(
-            on_tts=lambda _enabled: False,
-            on_tts_provider=lambda _provider: False,
-        ),
+        tui.TuiHooks(on_tts=lambda enabled: toggled.append(enabled) or True),
     )
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
             app.query_one("#speech-select", Select).value = "piper"
             await pilot.pause()
-            shown.append(str(app.query_one("#speech-select", Select).value))
 
     asyncio.run(exercise())
 
-    assert state.tts_enabled is False
-    assert shown == [NO_VOICE]
-    assert app.entries[-1].text == "tts unavailable for this session"
+    assert toggled == [True]
+    assert state.tts_enabled is True
+    assert state.tts_provider == "piper"
+    assert state.tts_voice == default_voice("piper")
 
 
 def test_the_speech_picker_starts_on_local_synthesis(tui) -> None:

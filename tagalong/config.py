@@ -15,7 +15,6 @@ from pathlib import Path
 
 STARTUP_CONFIG_KEYS = (
     "microphone",
-    "tts",
     "tts_provider",
     "audio_stream",
     "tts_output",
