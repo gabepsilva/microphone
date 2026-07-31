@@ -1714,6 +1714,9 @@ class VoiceCodexApp(App):
         # Injectable for tests; production uses the system clipboard and the
         # TagAlong attachments cache. The prompt widget holds the live draft.
         self.prompt_ports = PromptPorts()
+        # Filled by VoiceCodexTUI so Ctrl-X can apply buffered stream text
+        # before the cut-off mark is drawn.
+        self.apply_pending_stream_text: Callable[[], None] | None = None
 
     # -- layout ------------------------------------------------------------
 
@@ -1749,15 +1752,22 @@ class VoiceCodexApp(App):
 
     # -- chrome ------------------------------------------------------------
 
-    def _sync_partial(self) -> None:
+    def _sync_partial(
+        self,
+        *,
+        partial_source: str | None = None,
+        partial_text: str | None = None,
+    ) -> None:
         state = self.state
-        if state.partial_text:
+        source = state.partial_source if partial_source is None else partial_source
+        text = state.partial_text if partial_text is None else partial_text
+        if text:
             line = Text("◌ ", style="#5a6068")
             line.append(
-                f"{state.partial_source}  ",
-                style=SOURCE_STYLES.get(state.partial_source, "#6f757e"),
+                f"{source}  ",
+                style=SOURCE_STYLES.get(source, "#6f757e"),
             )
-            line.append(state.partial_text, style="#8a929c")
+            line.append(text, style="#8a929c")
         elif state.mic.muted and state.audio.muted:
             line = Text(
                 "◌ mic and speaker muted, nothing transcribing", style="#6f757e"
@@ -2262,6 +2272,8 @@ class VoiceCodexApp(App):
         return True
 
     def action_interrupt(self) -> None:
+        if self.apply_pending_stream_text is not None:
+            self.apply_pending_stream_text()
         if self.hooks.on_interrupt:
             self.hooks.on_interrupt()
         if self._streaming is not None:
@@ -2301,6 +2313,49 @@ class VoiceCodexApp(App):
 # --------------------------------------------------------------------------
 
 
+class OrderedDeltaBuffer:
+    """Join ordered text deltas and say when a flush should be scheduled.
+
+    Stream workers publish faster than the display needs. Callers append
+    freely; ``append`` returns True only for the first delta of a batch so at
+    most one flush is queued. ``take`` clears that batch for the flush.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[str] = []
+        self._pending = False
+        self._lock = threading.Lock()
+
+    def append(self, delta: str) -> bool:
+        """Append ``delta``. Return True when the caller should schedule a flush."""
+        with self._lock:
+            self._chunks.append(delta)
+            already_pending = self._pending
+            self._pending = True
+        return not already_pending
+
+    def abandon_schedule(self) -> None:
+        """Drop the pending flag without taking chunks.
+
+        Used when a flush could not be posted yet (UI not ready). Chunks stay
+        buffered so a later append, or the ready-time drain, can schedule again.
+        """
+        with self._lock:
+            self._pending = False
+
+    def buffered(self) -> bool:
+        with self._lock:
+            return bool(self._chunks)
+
+    def take(self) -> str:
+        """Return and clear every buffered delta."""
+        with self._lock:
+            chunks = self._chunks
+            self._chunks = []
+            self._pending = False
+        return "".join(chunks)
+
+
 class VoiceCodexTUI:
     """Thread-safe control surface over :class:`VoiceCodexApp`.
 
@@ -2324,13 +2379,45 @@ class VoiceCodexTUI:
         # When the open reasoning section started, or None when none is open.
         # Only the Codex stream worker touches it, one turn at a time.
         self._thinking_started: float | None = None
+        # Recognition publishes partials far faster than the live line needs to
+        # repaint. The flag keeps at most one sync queued; the lock makes the
+        # "newest text + maybe schedule" step atomic across capture threads.
+        self._partial_pending = False
+        self._partial_lock = threading.Lock()
+        # Answer and reasoning tokens share one buffer shape: ordered chunks,
+        # at most one posted flush, drained before end-of-turn or interrupt.
+        self._answer_deltas = OrderedDeltaBuffer()
+        self._reasoning_deltas = OrderedDeltaBuffer()
+        # Interrupt runs on the app thread and must see text that is still
+        # sitting in the buffer, so the cut-off mark lands on the full answer.
+        self.app.apply_pending_stream_text = self._apply_pending_stream_text
 
     # -- lifecycle ---------------------------------------------------------
 
     def run(self) -> None:
         self._app_thread = threading.get_ident()
-        self.app.call_later(self._ready.set)
+        self.app.call_later(self._on_app_ready)
         self.app.run()
+
+    def _on_app_ready(self) -> None:
+        """Mark the façade live and paint anything that arrived while mounting.
+
+        Partials and streamed deltas can beat the ready flag. They keep state
+        updated, but must not leave a sticky pending bit that blocks later
+        flushes — and whatever landed early has to appear once the app can
+        draw.
+        """
+        self._ready.set()
+        with self._partial_lock:
+            flush_partial = bool(self.state.partial_text) and not self._partial_pending
+            if flush_partial:
+                self._partial_pending = True
+        if flush_partial:
+            self._flush_partial()
+        if self._answer_deltas.buffered():
+            self._flush_answer_deltas()
+        if self._reasoning_deltas.buffered():
+            self._flush_reasoning_deltas()
 
     def wait_ready(self, timeout: float = 10.0) -> bool:
         return self._ready.wait(timeout)
@@ -2364,10 +2451,31 @@ class VoiceCodexTUI:
     # -- transcript --------------------------------------------------------
 
     def _show_partial(self, source: str, text: str) -> None:
-        """Show revisable partial text for ``source`` on the live line."""
-        self.state.partial_source = source
-        self.state.partial_text = text
-        self._call(self.app._sync_partial)
+        """Show revisable partial text for ``source`` on the live line.
+
+        Partials arrive from recognition threads much faster than the display
+        needs them. State always holds the newest text; at most one repaint is
+        queued, and it is posted so the recognizer never waits on layout.
+        """
+        with self._partial_lock:
+            self.state.partial_source = source
+            self.state.partial_text = text
+            # Only claim the pending bit when a flush can actually be posted.
+            # Setting it while the app is still mounting would stick forever:
+            # later partials would see pending and never schedule, and the
+            # early text would never paint.
+            schedule = not self._partial_pending and self._ready.is_set()
+            if schedule:
+                self._partial_pending = True
+        if schedule:
+            self._post(self._flush_partial)
+
+    def _flush_partial(self) -> None:
+        with self._partial_lock:
+            self._partial_pending = False
+            source = self.state.partial_source
+            text = self.state.partial_text
+        self.app._sync_partial(partial_source=source, partial_text=text)
 
     def _clear_partial(self) -> None:
         self._show_partial("", "")
@@ -2380,7 +2488,9 @@ class VoiceCodexTUI:
         self._show_partial(speaker, text)
 
     def finish_turn(self, speaker: str) -> None:
-        if self.state.partial_source == speaker:
+        with self._partial_lock:
+            clear = self.state.partial_source == speaker
+        if clear:
             self._clear_partial()
 
     def close_speaker(self, speaker: str) -> None:
@@ -2388,8 +2498,9 @@ class VoiceCodexTUI:
 
     def commit(self, speaker: str, text: str) -> None:
         """Append a finished turn and clear the live line."""
-        self.state.partial_source = ""
-        self.state.partial_text = ""
+        with self._partial_lock:
+            self.state.partial_source = ""
+            self.state.partial_text = ""
         self._call(self._commit_impl, speaker, text)
 
     def _commit_impl(self, speaker: str, text: str) -> None:
@@ -2402,14 +2513,22 @@ class VoiceCodexTUI:
 
     def reset_transcript(self) -> None:
         """Clear the transcript without changing the session's controls."""
-        self.state.partial_source = ""
-        self.state.partial_text = ""
+        with self._partial_lock:
+            self.state.partial_source = ""
+            self.state.partial_text = ""
+        self._answer_deltas.take()
+        self._reasoning_deltas.take()
         self._call(self.app.clear_transcript)
 
     # -- Codex turn --------------------------------------------------------
 
     def begin_codex(self) -> None:
         self._clear_partial()
+        # A stale turn's end_codex may be dropped when the session generation
+        # moves on; discard any buffered stream text so the next turn cannot
+        # merge with or flush orphaned chunks.
+        self._answer_deltas.take()
+        self._reasoning_deltas.take()
 
     def codex_message_open(self, reply_to: str) -> None:
         self.state.codex_state = f"replying to {reply_to}"
@@ -2421,7 +2540,29 @@ class VoiceCodexTUI:
         self.app.refresh_sidebar()
 
     def codex_delta(self, delta: str) -> None:
-        self._call(self._codex_delta_impl, delta)
+        """Append streamed answer text without waiting on a repaint.
+
+        Tokens arrive faster than the row needs updating. They are joined in
+        order and flushed together so the stream worker is never stalled on
+        layout, and ``text +=`` runs once per flush rather than once per token.
+        """
+        if not self._answer_deltas.append(delta):
+            return
+        if self._ready.is_set():
+            self._post(self._flush_answer_deltas)
+        else:
+            self._answer_deltas.abandon_schedule()
+
+    def _flush_answer_deltas(self) -> None:
+        """Apply buffered answer text; caller must already be on the app thread."""
+        text = self._answer_deltas.take()
+        if text:
+            self._codex_delta_impl(text)
+
+    def _apply_pending_stream_text(self) -> None:
+        """Drain coalesced answer and reasoning text before interrupt or cut-off."""
+        self._flush_answer_deltas()
+        self._flush_reasoning_deltas()
 
     def codex_message_close(self) -> None:
         """Keep the row open until the Codex turn itself has completed."""
@@ -2443,7 +2584,13 @@ class VoiceCodexTUI:
         # item completed on its own.
         self.reasoning_completed()
         self.state.codex_state = "idle"
-        self._call(self._codex_end_impl)
+        self._call(self._codex_finish_impl)
+
+    def _codex_finish_impl(self) -> None:
+        # Drain first so a turn that ends with deltas still in the buffer
+        # does not close on a truncated answer.
+        self._flush_answer_deltas()
+        self._codex_end_impl()
 
     def _codex_end_impl(self) -> None:
         # An interrupted turn is marked by the interrupt itself, which clears
@@ -2475,7 +2622,18 @@ class VoiceCodexTUI:
         self.app.refresh_sidebar()
 
     def reasoning_delta(self, delta: str) -> None:
-        self._call(self._reasoning_delta_impl, delta)
+        """Append thinking text without waiting on a repaint."""
+        if not self._reasoning_deltas.append(delta):
+            return
+        if self._ready.is_set():
+            self._post(self._flush_reasoning_deltas)
+        else:
+            self._reasoning_deltas.abandon_schedule()
+
+    def _flush_reasoning_deltas(self) -> None:
+        text = self._reasoning_deltas.take()
+        if text:
+            self._reasoning_delta_impl(text)
 
     def _reasoning_delta_impl(self, delta: str) -> None:
         row = self.app._reasoning_row
@@ -2496,7 +2654,11 @@ class VoiceCodexTUI:
             else time.monotonic() - self._thinking_started
         )
         self._thinking_started = None
-        self._call(self._reasoning_end_impl, elapsed)
+        self._call(self._reasoning_finish_impl, elapsed)
+
+    def _reasoning_finish_impl(self, elapsed: float | None) -> None:
+        self._flush_reasoning_deltas()
+        self._reasoning_end_impl(elapsed)
 
     def _reasoning_end_impl(self, elapsed: float | None) -> None:
         row = self.app._reasoning_row

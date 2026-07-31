@@ -9,6 +9,7 @@ on the recorder or on the model when the interface quits.
 
 from __future__ import annotations
 
+import ctypes
 import queue
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 import numpy as np
-from moonshine_voice.transcriber import Transcriber
+from moonshine_voice.transcriber import Transcriber, check_error
 
 from .session import tagged_environment
 from .streams import require_pipewire
@@ -271,7 +272,57 @@ def to_mono(samples, channels):
     if channels == 1:
         return samples
     usable = samples.size - samples.size % channels
-    return samples[:usable].reshape(-1, channels).mean(axis=1)
+    return samples[:usable].reshape(-1, channels).mean(axis=1, dtype=np.float32)
+
+
+def feed_stream_audio(stream, samples, sample_rate):
+    """Push float samples into a transcription stream without a Python list.
+
+    Moonshine's public ``Stream.add_audio`` only accepts ``list[float]``, and
+    builds its ctypes buffer by unpacking that list — one Python float per
+    sample, on every capture block. When the stream still has the same private
+    shape ``add_audio`` uses, a contiguous float32 view can be handed over with
+    ``from_buffer``. Anything else, including test fakes, falls back to the
+    list path so audio is never dropped for an API mismatch.
+    """
+    audio = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
+    if not _feed_moonshine_buffer(stream, audio, sample_rate):
+        stream.add_audio(audio.tolist(), sample_rate)
+
+
+def _feed_moonshine_buffer(stream, audio, sample_rate) -> bool:
+    """Return True when ``audio`` was accepted through Moonshine's C entry point.
+
+    Mirrors ``Stream.add_audio`` closely enough that the stream clock and
+    update cadence stay correct. Attribute or type errors mean this Moonshine
+    build is not the one we know; the caller must fall back rather than lose
+    the block. Once the native add succeeds, return True even if later
+    bookkeeping fails — otherwise the list fallback would feed the same audio
+    twice.
+    """
+    lib = getattr(stream, "_lib", None)
+    if lib is None or audio.size == 0:
+        return False
+    count = int(audio.size)
+    fed = False
+    try:
+        error = lib.moonshine_transcribe_add_audio_to_stream(
+            stream._transcriber._handle,
+            stream._handle,
+            (ctypes.c_float * count).from_buffer(audio),
+            count,
+            int(sample_rate),
+            0,
+        )
+        check_error(error)
+        fed = True
+        stream._stream_time += count / sample_rate
+        if stream._stream_time - stream._last_update_time >= stream._update_interval:
+            stream.update_transcription(stream._transcribe_flags)
+            stream._last_update_time = stream._stream_time
+    except (AttributeError, TypeError, ValueError):
+        return fed
+    return True
 
 
 def drain_audio_queue(audio_queue, stop_item, first):
@@ -295,6 +346,45 @@ def drain_audio_queue(audio_queue, stop_item, first):
     return b"".join(chunks), stop_requested
 
 
+def queued_chunk_limit(capture, backlog_seconds):
+    """How many capture blocks fit in ``backlog_seconds`` of audio."""
+    seconds_per_chunk = capture.blocksize / capture.samplerate
+    return max(1, int(backlog_seconds / seconds_per_chunk))
+
+
+def offer_audio_chunk(audio_queue, chunk, stop_item):
+    """Enqueue ``chunk``, dropping the oldest audio when the backlog is full.
+
+    Preferring recent far-end audio over an unbounded backlog keeps
+    transcription interactive when recognition falls behind. The stop
+    sentinel is never discarded: if it is the oldest item, it is put back
+    and the new chunk is abandoned so shutdown still wins.
+    """
+    while True:
+        try:
+            audio_queue.put_nowait(chunk)
+            return True
+        except queue.Full:
+            try:
+                dropped = audio_queue.get_nowait()
+            except queue.Empty:
+                continue
+            if dropped is stop_item:
+                audio_queue.put(stop_item)
+                return False
+
+
+def deliver_stop_item(audio_queue, stop_item):
+    """Ensure the worker sees ``stop_item`` even when the queue is full."""
+    while True:
+        try:
+            audio_queue.put_nowait(stop_item)
+            return
+        except queue.Full:
+            with suppress(queue.Empty):
+                audio_queue.get_nowait()
+
+
 class ApplicationStreamTranscriber:
     """Feed one application's PipeWire playback into a Moonshine stream.
 
@@ -308,6 +398,10 @@ class ApplicationStreamTranscriber:
     # discovering it at the first silent read. A tap with nothing linked yet is
     # a different thing entirely, and reads as silence on purpose.
     STARTUP_GRACE_SECONDS = 0.05
+    # When recognition lags, keep only this much recent far-end audio. Older
+    # blocks are dropped so the transcript stays near live speech instead of
+    # growing a backlog nobody will wait for.
+    MAX_BACKLOG_SECONDS = 2.0
 
     def __init__(
         self,
@@ -328,7 +422,9 @@ class ApplicationStreamTranscriber:
         self.process = None
         self.reader = None
         self.worker = None
-        self.audio_queue = queue.Queue()
+        self.audio_queue = queue.Queue(
+            maxsize=queued_chunk_limit(capture, self.MAX_BACKLOG_SECONDS)
+        )
         self.stop_item = object()
         self.started = False
         self.mute_gate = MuteGate()
@@ -352,9 +448,9 @@ class ApplicationStreamTranscriber:
                 )
                 if not chunk:
                     break
-                self.audio_queue.put(chunk)
+                offer_audio_chunk(self.audio_queue, chunk, self.stop_item)
         finally:
-            self.audio_queue.put(self.stop_item)
+            deliver_stop_item(self.audio_queue, self.stop_item)
 
     def _process_audio(self):
         while True:
@@ -372,7 +468,7 @@ class ApplicationStreamTranscriber:
                 self.level_reporter.update(audio)
             audio = self.mute_gate.apply(audio)
             try:
-                self.stream.add_audio(audio.tolist(), self.capture.samplerate)
+                feed_stream_audio(self.stream, audio, self.capture.samplerate)
             except Exception as error:
                 print(
                     f"Audio transcription error: {error}",

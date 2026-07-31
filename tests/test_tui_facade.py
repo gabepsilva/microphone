@@ -15,7 +15,27 @@ from textual import events
 from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
 from textual.widgets import Markdown, Static
 
-from tagalong.tui import EntryRow, PromptInput
+from tagalong.tui import EntryRow, OrderedDeltaBuffer, PromptInput
+
+
+def test_an_ordered_delta_buffer_schedules_one_flush_per_batch() -> None:
+    buffer = OrderedDeltaBuffer()
+
+    assert buffer.append("one ") is True
+    assert buffer.append("two") is False
+    assert buffer.take() == "one two"
+    assert buffer.append("three") is True
+    assert buffer.take() == "three"
+
+
+def test_abandoning_a_schedule_keeps_chunks_and_allows_another_flush() -> None:
+    buffer = OrderedDeltaBuffer()
+
+    assert buffer.append("early ") is True
+    buffer.abandon_schedule()
+    assert buffer.buffered() is True
+    assert buffer.append("late") is True
+    assert buffer.take() == "early late"
 
 
 def drive(facade, body):
@@ -991,7 +1011,13 @@ def test_a_streaming_taga_answer_stays_plain_until_the_turn_closes(tui) -> None:
     async def body(pilot):
         facade.codex_message_open(tui.VOICE)
         facade.codex_delta("Hello **bold**")
-        await pilot.pause()
+        for _ in range(20):
+            await pilot.pause()
+            if facade.app.entries and facade.app.entries[0].text == "Hello **bold**":
+                break
+        else:
+            raise AssertionError("streamed text did not land on the entry")
+        facade.app.flush_stream()
         row = next(r for r in mounted_rows(facade) if r.entry.source == tui.TAGA)
         streaming_body = next(iter(row.query(".entry-body")))
         kinds.append(type(streaming_body).__name__)
@@ -1860,3 +1886,167 @@ def test_a_sound_report_never_waits_on_the_application_thread(tui) -> None:
 
     assert waited == []
     assert facade.state.mic.active is True
+
+
+def test_a_partial_update_never_waits_on_the_application_thread(tui) -> None:
+    """Partials come from recognition; waiting there stalls transcription."""
+    facade = tui.VoiceCodexTUI()
+    waited: list[str] = []
+
+    async def body(pilot):
+        facade._app_thread = -1
+        facade.app.call_from_thread = lambda *a, **k: waited.append("blocked")
+        facade.update(tui.VOICE, "half a sen")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert waited == []
+    assert facade.state.partial_text == "half a sen"
+
+
+def test_partials_before_ready_still_paint_when_the_app_starts(tui) -> None:
+    """A sticky pending bit before mount would leave the live line blank."""
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade._ready.clear()
+        facade.update(tui.VOICE, "early")
+        facade.update(tui.VOICE, "early more")
+        assert facade._partial_pending is False
+        assert facade.state.partial_text == "early more"
+        facade._on_app_ready()
+        await pilot.pause()
+        assert "early more" in facade.app.query_one("#partial", Static).content.plain
+
+    drive(facade, body)
+
+
+def test_deltas_before_ready_still_land_when_the_app_starts(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._ready.clear()
+        facade.codex_delta("buffered ")
+        facade.codex_delta("answer")
+        assert facade._answer_deltas.buffered() is True
+        facade._on_app_ready()
+        await pilot.pause()
+        assert entry_texts(facade) == ["buffered answer"]
+
+    drive(facade, body)
+
+
+def test_begin_codex_discards_orphaned_stream_buffers(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    facade._answer_deltas.append("stale answer")
+    facade._reasoning_deltas.append("stale thought")
+
+    facade.begin_codex()
+
+    assert facade._answer_deltas.buffered() is False
+    assert facade._reasoning_deltas.buffered() is False
+
+
+def test_interrupt_drains_buffered_reasoning_as_well_as_answers(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.reasoning_started()
+        await pilot.pause()
+        facade._app_thread = -1
+        facade.app.call_later = lambda fn, *args: None
+        facade.reasoning_delta("still thinking")
+        facade._app_thread = threading.get_ident()
+        assert facade._reasoning_deltas.buffered() is True
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert facade._reasoning_deltas.buffered() is False
+        assert any(entry.text == "still thinking" for entry in facade.app.entries)
+
+    drive(facade, body)
+
+
+def test_rapid_partials_coalesce_into_one_repaint(tui) -> None:
+    """Only the newest text matters; queueing every revision wastes layout."""
+    facade = tui.VoiceCodexTUI()
+    scheduled: list[tuple] = []
+
+    async def body(pilot):
+        facade._app_thread = -1
+        facade.app.call_later = lambda fn, *args: scheduled.append((fn, args))
+        facade.update(tui.VOICE, "a")
+        facade.update(tui.VOICE, "ab")
+        facade.update(tui.VOICE, "abc")
+        assert len(scheduled) == 1
+        assert facade.state.partial_text == "abc"
+        assert facade._partial_pending is True
+        fn, args = scheduled[0]
+        fn(*args)
+        assert facade._partial_pending is False
+        await pilot.pause()
+
+    drive(facade, body)
+
+
+def test_a_codex_delta_never_waits_on_the_application_thread(tui) -> None:
+    """Token deltas come from the stream worker; waiting there stalls replies."""
+    facade = tui.VoiceCodexTUI()
+    waited: list[str] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._app_thread = -1
+        facade.app.call_from_thread = lambda *a, **k: waited.append("blocked")
+        facade.codex_delta("Hello")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert waited == []
+    assert entry_texts(facade) == ["Hello"]
+
+
+def test_rapid_codex_deltas_coalesce_into_one_append(tui) -> None:
+    """Tokens stay ordered; joining them once beats ``text +=`` per token."""
+    facade = tui.VoiceCodexTUI()
+    scheduled: list[tuple] = []
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._app_thread = -1
+        facade.app.call_later = lambda fn, *args: scheduled.append((fn, args))
+        facade.codex_delta("one ")
+        facade.codex_delta("two ")
+        facade.codex_delta("three")
+        assert len(scheduled) == 1
+        fn, args = scheduled[0]
+        fn(*args)
+        assert entry_texts(facade) == ["one two three"]
+        await pilot.pause()
+
+    drive(facade, body)
+
+
+def test_rapid_reasoning_deltas_coalesce_into_one_append(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    scheduled: list[tuple] = []
+
+    async def body(pilot):
+        facade.reasoning_started()
+        await pilot.pause()
+        facade._app_thread = -1
+        facade.app.call_later = lambda fn, *args: scheduled.append((fn, args))
+        facade.reasoning_delta("one ")
+        facade.reasoning_delta("two")
+        assert len(scheduled) == 1
+        fn, args = scheduled[0]
+        fn(*args)
+        assert entry_texts(facade) == ["one two"]
+        await pilot.pause()
+
+    drive(facade, body)

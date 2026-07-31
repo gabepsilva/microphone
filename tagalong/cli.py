@@ -307,6 +307,9 @@ class MicrophoneChannel:
         self.worker = None
         self._discovery_error = None
         self._open_error = None
+        # Empty rather than unknown: the sidebar starts with no microphones,
+        # so a first pass that finds none has nothing to report either.
+        self.offered = []
 
     @staticmethod
     def _by_name(devices):
@@ -332,7 +335,12 @@ class MicrophoneChannel:
         return True
 
     def refresh(self):
-        """Publish currently available inputs and retry the desired one."""
+        """Publish currently available inputs, only when the list changed.
+
+        Every report repaints the sidebar, and the list is the same on almost
+        every pass, so an unconditional one would redraw the interface every
+        few seconds for the whole session.
+        """
         try:
             devices = self.discover()
         except RuntimeError as error:
@@ -344,7 +352,12 @@ class MicrophoneChannel:
         else:
             self._discovery_error = None
         self.devices = self._by_name(devices)
-        self.tui.set_microphones(self._options(devices))
+        offered = self._options(devices)
+        if offered == self.offered:
+            return False
+        self.offered = offered
+        self.tui.set_microphones(offered)
+        return True
 
     def _serve(self):
         while not self.stopping.is_set():
