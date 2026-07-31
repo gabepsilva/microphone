@@ -215,6 +215,24 @@ def test_continuing_sound_is_reported_once() -> None:
     assert reports == [True]
 
 
+def test_activity_transitions_notify_an_optional_hook() -> None:
+    """Energy-aware turn closure arms from these edges, not from every block."""
+    transitions: list[bool] = []
+    clock = iter([0.0, 1.0]).__next__
+    reporter = SoundActivityReporter(
+        _recording_display([]),
+        "mic",
+        release=0.35,
+        clock=clock,
+    )
+    reporter.on_transition = transitions.append
+
+    reporter.update(np.full(64, 0.1, dtype=np.float32))  # loud
+    reporter.update(np.zeros(64, dtype=np.float32))  # quiet after release
+
+    assert transitions == [True, False]
+
+
 def test_continuing_silence_is_never_reported() -> None:
     reports: list[bool] = []
     reporter = SoundActivityReporter(_recording_display(reports), "audio")

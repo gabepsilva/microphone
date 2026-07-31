@@ -68,6 +68,10 @@ class SoundActivityReporter:
         self.threshold = threshold
         self.release = release
         self.clock = clock
+        # Optional: listener hooks for energy-aware turn closure. Set after
+        # the channel opens; cleared when it closes. Loud/quiet transitions
+        # are what let silence arm before STT catches up.
+        self.on_transition = None
         self.active = False
         self.loud_until = float("-inf")
 
@@ -80,6 +84,8 @@ class SoundActivityReporter:
             return
         self.active = active
         self.display.set_audio(self.channel, active=active)
+        if self.on_transition is not None:
+            self.on_transition(active)
 
     @property
     def hearing_sound(self) -> bool:

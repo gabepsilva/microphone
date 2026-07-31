@@ -606,6 +606,50 @@ class PrefirePlan:
         return max(self.minimum_delay, window - lead)
 
 
+# A finished-looking turn does not need the full silence window. Short enough
+# that a clear Voice command feels snappy; long enough that a trailing breath
+# or a late STT revision can still cancel before Codex commits.
+CLEAR_TURN_SILENCE = 0.55
+
+# Trailing glue that usually means the speaker is mid-phrase, not done.
+_INCOMPLETE_TAIL = re.compile(
+    r"(?:\b(?:and|or|but|so|because|if|when|while|the|a|an|to|for|with|of)\b"
+    r"|[,:;…]|\.\.\.)$",
+    re.IGNORECASE,
+)
+_TAGA_ADDRESS = re.compile(r"\btaga\b", re.IGNORECASE)
+
+
+def same_turn_text(left: str, right: str) -> bool:
+    """True when two speculative transcripts target the same answer."""
+    return " ".join(left.split()).casefold() == " ".join(right.split()).casefold()
+
+
+def silence_for_turn(text: str, configured: float) -> float:
+    """Pick a silence wait for ``text``, never longer than ``configured``.
+
+    The configured window stays the ceiling for ambiguous speech. Clear
+    endings — a question mark, an exclamation, or a short address to Taga —
+    take the shorter ``CLEAR_TURN_SILENCE`` instead, so command-style Voice
+    turns stop waiting out a meeting-length pause. Incomplete tails keep the
+    full window.
+    """
+    configured = TurnSilence.clamp(configured)
+    stripped = text.strip()
+    if not stripped:
+        return configured
+    if _INCOMPLETE_TAIL.search(stripped):
+        return configured
+    short = min(configured, CLEAR_TURN_SILENCE)
+    short = max(TurnSilence.MINIMUM, short)
+    if stripped.endswith(("?", "!")):
+        return short
+    words = stripped.split()
+    if _TAGA_ADDRESS.search(stripped) and len(words) <= 12:
+        return short
+    return configured
+
+
 def parse_turn_silence(text: str) -> float | None:
     """Read a typed turn-silence value, or None when it is not one.
 

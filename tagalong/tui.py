@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import zip_longest
 from typing import ClassVar, cast
 
 # These must precede Textual imports. Textual needs Ctrl-C as an application
@@ -213,6 +214,7 @@ class TuiHooks:
     on_tts_provider: Callable[[str], bool | None] | None = None
     on_turn_silence: Callable[[float], float | None] | None = None
     on_interrupt: Callable[[], None] | None = None
+    on_end_turn: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
     on_quit: Callable[[], None] | None = None
 
@@ -394,6 +396,7 @@ SHORTCUTS_SESSION: tuple[tuple[str, str], ...] = (
     ("^K", "Mute microphone"),
     ("^T", "Toggle voice reply"),
     ("^X", "Interrupt Taga"),
+    ("^D", "End voice turn"),
     ("^B", "Toggle sidebar"),
     ("^S", "Save transcript"),
     ("^⇧C", "Copy selection"),
@@ -430,6 +433,8 @@ def empty_transcript_content() -> RenderableType:
     # Key and label share one cell so a narrow pane ellipsizes the label
     # instead of letting Rich drop the key column outright.
     def cell(key: str, label: str) -> Text:
+        if not key and not label:
+            return Text("")
         return Text.assemble(
             (key.rjust(SHORTCUT_KEY_WIDTH), "#9aa3ad"),
             "  ",
@@ -443,7 +448,9 @@ def empty_transcript_content() -> RenderableType:
         Text(" " * (SHORTCUT_KEY_WIDTH + 2) + "PROMPT", style="bold #6f757e"),
         Text(" " * (SHORTCUT_KEY_WIDTH + 2) + "SESSION", style="bold #6f757e"),
     )
-    for left, right in zip(SHORTCUTS_PROMPT, SHORTCUTS_SESSION, strict=True):
+    for left, right in zip_longest(
+        SHORTCUTS_PROMPT, SHORTCUTS_SESSION, fillvalue=("", "")
+    ):
         shortcuts.add_row(cell(*left), cell(*right))
 
     panel = Table.grid(padding=(0, 0, 1, 0))
@@ -1636,6 +1643,7 @@ class VoiceCodexApp(App):
         Binding("ctrl+k", "toggle_mute", "mute mic", priority=True),
         Binding("ctrl+t", "toggle_tts", "tts", priority=True),
         Binding("ctrl+x", "interrupt", "interrupt codex", priority=True),
+        Binding("ctrl+d", "end_turn", "end voice turn", priority=True),
         Binding("ctrl+s", "save", "save transcript", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "sidebar", priority=True),
         Binding("escape", "dismiss_overlay", "dismiss", show=False),
@@ -2286,6 +2294,11 @@ class VoiceCodexApp(App):
         self.flush_stream()
         self.state.codex_state = "idle"
         self.refresh_sidebar()
+
+    def action_end_turn(self) -> None:
+        """Flush the Voice buffer now — skip the remaining silence wait."""
+        if self.hooks.on_end_turn:
+            self.hooks.on_end_turn()
 
     def action_toggle_sidebar(self) -> None:
         """Show or hide the whole settings column."""

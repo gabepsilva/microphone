@@ -463,6 +463,19 @@ def test_interrupting_marks_the_streaming_row_and_calls_back(tui) -> None:
     assert facade.state.codex_state == "idle"
 
 
+def test_ending_a_voice_turn_calls_the_flush_hook(tui) -> None:
+    ended: list[bool] = []
+    facade = tui.VoiceCodexTUI(on_end_turn=lambda: ended.append(True))
+
+    async def body(pilot):
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert ended == [True]
+
+
 def test_saving_hands_over_the_entries_and_notes_the_count(tui) -> None:
     saved: list[list] = []
     facade = tui.VoiceCodexTUI(on_save=saved.append)
