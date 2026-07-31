@@ -1073,7 +1073,21 @@ def test_a_quiet_line_start_keeps_an_energy_armed_wait() -> None:
 
     assert listener.timer_generation == generation
     assert listener.timer is not None
-    assert listener._partial == ""
+    assert listener.pending == ["first bit"]
+    listener.close()
+
+
+def test_a_quiet_line_start_does_not_drop_a_partial_only_turn() -> None:
+    """Clearing the live partial on quiet catch-up would flush an empty turn."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+    listener.on_energy_quiet()
+    presence.answer = False
+
+    listener.on_line_started(SimpleNamespace(line=line()))
+    listener.flush_now()
+
+    assert listener.submitted == [("Voice", "Taga status?")]
     listener.close()
 
 
@@ -1251,7 +1265,47 @@ def test_a_late_line_close_after_partial_flush_is_not_a_second_turn() -> None:
     listener.close()
 
 
-def test_absorbing_stt_ignores_quiet_edges_and_late_partials() -> None:
+def test_a_late_close_is_absorbed_even_after_the_speaker_resumes() -> None:
+    """Matching STT catch-up must not become a new turn if the user spoke again."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("first question")))
+    listener.flush_now()
+    presence.answer = True
+    listener.on_energy_loud()
+    listener.on_line_text_changed(SimpleNamespace(line=line("and a follow up")))
+
+    presence.answer = False
+    listener.on_line_completed(SimpleNamespace(line=line("first question")))
+
+    assert listener.submitted == [("Voice", "first question")]
+    assert listener.pending == []
+    assert listener._partial == "and a follow up"
+    assert listener.timer is None
+    listener.close()
+
+
+def test_flushed_catch_up_does_not_block_new_speech_under_tts_suppressors() -> None:
+    """Presence quiet from TTS must not swallow a new utterance after a flush."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+    listener.flush_now()
+    # TTS / far-end suppressors keep presence quiet even while the user talks.
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("brand new question?")))
+    listener.on_energy_quiet()
+
+    assert listener.timer is not None
+    assert listener._partial == "brand new question?"
+    listener.flush_now()
+    assert listener.submitted == [
+        ("Voice", "already sent"),
+        ("Voice", "brand new question?"),
+    ]
+    listener.close()
+
+
+def test_late_partials_matching_a_flush_do_not_rearm_silence() -> None:
     listener, presence = listening_for_speech(speaking=False, window=1.25)
     listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
     listener.flush_now()
@@ -1259,10 +1313,26 @@ def test_absorbing_stt_ignores_quiet_edges_and_late_partials() -> None:
     generation_before = listener.timer_generation
 
     listener.on_energy_quiet()
-    listener.on_line_text_changed(SimpleNamespace(line=line("already sent late")))
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
 
     assert listener.timer is None
     assert listener.timer_generation == generation_before
+    assert listener.submitted == [("Voice", "already sent")]
+    listener.close()
+
+
+def test_energy_quiet_ignores_a_buffer_that_only_echoes_the_flush() -> None:
+    """If STT puts the flushed words back, quiet must not start another wait."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("already sent")))
+    listener.flush_now()
+    presence.answer = False
+    with listener.lock:
+        listener._partial = "already sent"
+
+    listener.on_energy_quiet()
+
+    assert listener.timer is None
     assert listener.submitted == [("Voice", "already sent")]
     listener.close()
 

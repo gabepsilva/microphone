@@ -64,9 +64,11 @@ class ConversationListener(TranscriptEventListener):
         self.extensions = 0
         self.speech_callback_triggered = False
         self.muted = False
-        # After a turn is sent while STT still owes a line close, later
-        # completions must not open a second turn from the same utterance.
-        self._absorbing_stt = False
+        # Text of the turn last submitted while STT still owed a line close.
+        # Later completions/partials that still match this are catch-up for
+        # that utterance, not a new turn — matched by content so TTS suppressors
+        # cannot blanket-block a real follow-up while absorption is pending.
+        self._flushed_text = ""
 
     def _stop_counting(self):
         """Take this speaker off the countdown the interface is showing."""
@@ -105,7 +107,7 @@ class ConversationListener(TranscriptEventListener):
             if muted:
                 self.pending.clear()
                 self._partial = ""
-                self._absorbing_stt = False
+                self._flushed_text = ""
                 self._stop_timers()
                 self.extensions = 0
         if muted:
@@ -125,9 +127,19 @@ class ConversationListener(TranscriptEventListener):
         """
         return self.presence is None or self.presence.speaking()
 
-    def _hear_speech(self) -> None:
-        """Clear post-flush STT absorption; the speaker is audibly going again."""
-        self._absorbing_stt = False
+    def _late_stt_for_flush(self, text: str) -> bool:
+        """True when ``text`` is catch-up for the turn already submitted.
+
+        Caller holds the lock. Exact match (modulo whitespace/case) only: a
+        real follow-up that merely shares a prefix must be allowed through,
+        and the marker stays until this match arrives even if the user has
+        already started speaking again.
+        """
+        return bool(self._flushed_text) and same_turn_text(text, self._flushed_text)
+
+    def _clear_flush_marker(self) -> None:
+        """Caller holds the lock."""
+        self._flushed_text = ""
 
     def _text(self, line):
         if line.words:
@@ -199,7 +211,7 @@ class ConversationListener(TranscriptEventListener):
                 self.timer = None
                 if text:
                     # STT may still close the line we just sent as a partial.
-                    self._absorbing_stt = True
+                    self._flushed_text = text
             prefired = self.prefired
             self.prefired = False
             self._prefired_text = ""
@@ -344,10 +356,11 @@ class ConversationListener(TranscriptEventListener):
             return
         cancel = False
         with self.lock:
-            if self._absorbing_stt:
-                return
             text = self._buffered_text()
             if not text:
+                return
+            if self._late_stt_for_flush(text):
+                # Buffer still only holds catch-up for the turn already sent.
                 return
             # Already waiting on this turn: a second quiet edge must not
             # restart the clock. Only a stale prefire forces a re-arm.
@@ -365,23 +378,19 @@ class ConversationListener(TranscriptEventListener):
             # Tap rose, but suppressors say it is not this speaker (echo /
             # far end / TTS). Leaving the wait alone avoids answering mid-play.
             return
-        with self.lock:
-            self._hear_speech()
         self.speech_callback_triggered = False
         self._cancel_timer()
 
     def on_line_started(self, event):  # noqa: ARG002 - Textual/Codex callback signature is fixed
-        # Speech has resumed. Keep all completed lines buffered and wait for
-        # this new line to finish before considering the turn complete.
-        # When the tap is already quiet, a new line is usually STT catching
-        # up — cancelling would throw away an energy-armed wait for nothing.
+        # When the tap says the speaker is going again, this is a new utterance:
+        # clear the live partial and cancel any wait. When the tap is quiet, a
+        # new line is usually STT segmenting the same utterance — leave the
+        # partial and the energy-armed wait alone so a flush still has text.
         if self._is_muted():
             return
-        with self.lock:
-            self._partial = ""
         if self._speaker_audible():
             with self.lock:
-                self._hear_speech()
+                self._partial = ""
             self.speech_callback_triggered = False
             self._cancel_timer()
 
@@ -394,17 +403,14 @@ class ConversationListener(TranscriptEventListener):
         partial = self._text(event.line)
         cancel_wait = False
         cancel_prefire = False
-        absorbing = False
+        late = False
         with self.lock:
-            if self._absorbing_stt and not self._speaker_audible():
-                # Late STT for a turn already sent — keep the live line in
-                # sync for the eye, but do not re-open the turn.
-                self._partial = partial
-                absorbing = True
+            if self._late_stt_for_flush(partial):
+                # Catch-up for a turn already sent — do not re-open it.
+                late = True
             else:
                 self._partial = partial
                 if self._speaker_audible():
-                    self._hear_speech()
                     cancel_wait = True
                 elif self.timer is not None:
                     text = self._buffered_text()
@@ -413,8 +419,7 @@ class ConversationListener(TranscriptEventListener):
                         cancel_prefire = True
                         self.extensions = 0
                         self._start_timer(self._wait_for(text))
-        if absorbing:
-            # The turn already left the live line; do not put it back.
+        if late:
             return
         self.presentation.update(self.speaker, partial)
         if cancel_wait:
@@ -434,11 +439,12 @@ class ConversationListener(TranscriptEventListener):
         text = self._text(event.line)
         cancel = False
         with self.lock:
-            self._partial = ""
-            if self._absorbing_stt and not self._speaker_audible():
-                # The line close for a partial we already flushed. Absorb it
-                # so the same utterance cannot become a second Codex turn.
+            if self._late_stt_for_flush(text):
+                # Line close for a partial we already flushed. Leave any newer
+                # partial/pending (a follow-up already in progress) alone.
+                self._clear_flush_marker()
                 return
+            self._partial = ""
             if text:
                 self.pending.append(text)
             buffered = self._buffered_text()
@@ -455,7 +461,7 @@ class ConversationListener(TranscriptEventListener):
         with self.lock:
             self._stop_timers()
             self._partial = ""
-            self._absorbing_stt = False
+            self._flushed_text = ""
         self._drop_prefire()
         self._stop_counting()
         self.presentation.close_speaker(self.speaker)
