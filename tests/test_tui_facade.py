@@ -474,6 +474,461 @@ def test_a_slash_command_is_routed_to_the_command_hook(tui) -> None:
     assert commands == ["/save"]
 
 
+def _catalog(*names_and_descriptions: tuple[str, str]):
+    from tagalong.commands import CommandSpec
+
+    specs = tuple(
+        CommandSpec(name=name, description=description)
+        for name, description in names_and_descriptions
+    )
+    return lambda: specs
+
+
+def test_typing_a_slash_opens_the_command_palette(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh session"), ("help", "List commands"))
+    )
+    seen: list[tuple[bool, list[str]]] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.value = "/"
+        facade.app._sync_command_palette(prompt.value)
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        seen.append((palette.is_open, [spec.name for spec in palette.items]))
+
+    drive(facade, body)
+
+    assert seen == [(True, ["new", "help"])]
+
+
+def test_the_palette_drops_down_over_the_shortcut_strip(tui) -> None:
+    """Open menu sits under the prompt and hides the key-hint row."""
+    from textual.widgets import Static
+
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"))
+    )
+    layout: list[tuple[str, ...]] = []
+    keys_visible: list[bool] = []
+
+    async def body(pilot):
+        left = facade.app.query_one("#left")
+        child_ids = tuple(child.id for child in left.children if child.id)
+        layout.append(child_ids)
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        keys_visible.append(bool(facade.app.query_one("#keys", Static).display))
+        facade.app._sync_command_palette("")
+        await pilot.pause()
+        keys_visible.append(bool(facade.app.query_one("#keys", Static).display))
+
+    drive(facade, body)
+
+    assert layout[0].index("promptbar") < layout[0].index("command-palette")
+    assert layout[0].index("command-palette") < layout[0].index("keys")
+    assert keys_visible == [False, True]
+
+
+def test_the_palette_filters_as_the_prompt_changes(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"), ("note", "Write"))
+    )
+    names: list[list[str]] = []
+
+    async def body(pilot):
+        facade.app._sync_command_palette("/ne")
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        names.append([spec.name for spec in palette.items])
+
+    drive(facade, body)
+
+    assert names == [["new", "note"]]
+
+
+def test_enter_on_a_partial_slash_runs_the_highlighted_command(tui) -> None:
+    ran: list[str] = []
+    closed: list[bool] = []
+    facade = tui.VoiceCodexTUI(
+        on_command=ran.append,
+        list_commands=_catalog(("new", "Fresh session"), ("help", "List commands")),
+    )
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        prompt.value = "/ne"
+        facade.app._sync_command_palette(prompt.value)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        closed.append(
+            not facade.app.query_one("#command-palette", tui.CommandPalette).is_open
+        )
+
+    drive(facade, body)
+
+    assert ran == ["/new"]
+    assert closed == [True]
+
+
+def test_arrow_keys_move_the_palette_highlight(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"))
+    )
+    selected: list[str] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        prompt.value = "/"
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        assert palette.selected() is not None
+        selected.append(palette.selected().name)
+
+    drive(facade, body)
+
+    assert selected == ["help"]
+
+
+def test_tab_completes_the_highlighted_command_name(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"))
+    )
+    completed: list[str] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        prompt.value = "/h"
+        facade.app._sync_command_palette("/h")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        completed.append(facade.app.query_one("#input", PromptInput).value)
+
+    drive(facade, body)
+
+    assert completed == ["/help"]
+
+
+def test_escape_closes_the_palette_without_submitting(tui) -> None:
+    ran: list[str] = []
+    facade = tui.VoiceCodexTUI(
+        on_command=ran.append,
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        ),
+    )
+    snapshot: list[tuple[bool, str]] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        prompt.value = "/"
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        snapshot.append((palette.is_open, prompt.value))
+
+    drive(facade, body)
+
+    assert snapshot == [(False, "/")]
+    assert ran == []
+
+
+def test_the_palette_stays_closed_without_a_catalog(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    open_states: list[bool] = []
+
+    async def body(pilot):
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        open_states.append(
+            facade.app.query_one("#command-palette", tui.CommandPalette).is_open
+        )
+
+    drive(facade, body)
+
+    assert open_states == [False]
+
+
+def test_no_matches_shows_an_empty_state_and_submits_the_typed_command(tui) -> None:
+    ran: list[str] = []
+    empty: list[str] = []
+    facade = tui.VoiceCodexTUI(
+        on_command=ran.append,
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        ),
+    )
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        prompt.value = "/zzzz"
+        facade.app._sync_command_palette(prompt.value)
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        empty.append(str(palette.render()))
+        await pilot.press("enter")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert "no matching commands" in empty[0]
+    assert ran == ["/zzzz"]
+
+
+def test_palette_keeps_the_highlighted_row_when_filtering(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"), ("halt", "Stop"))
+    )
+    selected: list[str] = []
+
+    async def body(pilot):
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        palette.move(1)  # help
+        facade.app._sync_command_palette("/h")
+        await pilot.pause()
+        assert palette.selected() is not None
+        selected.append(palette.selected().name)
+        selected.append(str(palette.index))
+
+    drive(facade, body)
+
+    assert selected[0] == "help"
+    assert selected[1] == "0"  # help is first among /h matches (help, halt)
+
+
+def test_palette_window_scrolls_when_the_catalog_is_long(tui) -> None:
+    specs = tuple((f"cmd{index:02d}", f"Command {index}") for index in range(12))
+    facade = tui.VoiceCodexTUI(list_commands=_catalog(*specs))
+    window: list[tuple[int, int]] = []
+
+    async def body(pilot):
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        for _ in range(10):
+            palette.move(1)
+        window.append(palette._window())
+        # Empty list is a no-op for move; exercise the early return.
+        palette.show(())
+        palette.move(1)
+        assert palette.selected() is None
+
+    drive(facade, body)
+
+    start, end = window[0]
+    assert end - start == tui.CommandPalette.MAX_VISIBLE
+    assert start > 0
+
+
+def test_render_command_palette_is_pure(tui) -> None:
+    from tagalong.commands import CommandSpec
+
+    empty = tui.render_command_palette((), 0)
+    filled = tui.render_command_palette(
+        (CommandSpec("new", "Fresh"), CommandSpec("help", "List")),
+        1,
+    )
+
+    assert "no matching commands" in str(empty)
+    assert "▸ /help" in str(filled)
+    assert "  /new" in str(filled)
+
+
+def test_palette_actions_skip_when_the_menu_is_closed(tui) -> None:
+    from textual.actions import SkipAction
+
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        )
+    )
+    skipped: list[str] = []
+
+    async def body(_pilot):
+        try:
+            facade.app.action_palette_move(1)
+        except SkipAction:
+            skipped.append("move")
+        try:
+            facade.app.action_palette_complete()
+        except SkipAction:
+            skipped.append("complete")
+
+    drive(facade, body)
+
+    assert skipped == ["move", "complete"]
+
+
+def test_prompt_changes_sync_the_palette_through_textual(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(("new", "Fresh"), ("help", "List"))
+    )
+    opened: list[bool] = []
+    filtered: list[list[str]] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        await pilot.press("/")
+        await pilot.pause()
+        opened.append(
+            facade.app.query_one("#command-palette", tui.CommandPalette).is_open
+        )
+        await pilot.press("n")
+        await pilot.pause()
+        filtered.append(
+            [
+                spec.name
+                for spec in facade.app.query_one(
+                    "#command-palette", tui.CommandPalette
+                ).items
+            ]
+        )
+
+    drive(facade, body)
+
+    assert opened == [True]
+    assert filtered == [["new"]]
+
+
+def test_palette_paints_commands_that_have_no_description(tui) -> None:
+    from tagalong.commands import CommandSpec
+
+    facade = tui.VoiceCodexTUI(list_commands=lambda: (CommandSpec("quiet", ""),))
+    painted: list[str] = []
+
+    async def body(pilot):
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        painted.append(str(palette.render()))
+
+    drive(facade, body)
+
+    assert "/quiet" in painted[0]
+    assert "no matching" not in painted[0]
+
+
+def test_palette_prefer_unknown_falls_back_to_the_first_row(tui) -> None:
+    from tagalong.commands import CommandSpec
+
+    facade = tui.VoiceCodexTUI(
+        list_commands=lambda: (
+            CommandSpec("new", "Fresh"),
+            CommandSpec("help", "List"),
+        )
+    )
+    selected: list[str] = []
+
+    async def body(pilot):
+        palette = facade.app.query_one("#command-palette", tui.CommandPalette)
+        palette.show(
+            (
+                CommandSpec("new", "Fresh"),
+                CommandSpec("help", "List"),
+            ),
+            prefer="missing",
+        )
+        await pilot.pause()
+        assert palette.selected() is not None
+        selected.append(palette.selected().name)
+
+    drive(facade, body)
+
+    assert selected == ["new"]
+
+
+def test_tab_on_empty_matches_is_skipped(tui) -> None:
+    from textual.actions import SkipAction
+
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        )
+    )
+    skipped: list[bool] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.focus()
+        facade.app._sync_command_palette("/zzzz")
+        await pilot.pause()
+        try:
+            facade.app.action_palette_complete()
+        except SkipAction:
+            skipped.append(True)
+
+    drive(facade, body)
+
+    assert skipped == [True]
+
+
+def test_non_prompt_text_area_changes_do_not_touch_the_palette(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        )
+    )
+    open_states: list[bool] = []
+
+    async def body(pilot):
+        class _Area:
+            id = "other"
+            text = "/"
+
+        class _Event:
+            text_area = _Area()
+
+        facade.app.on_text_area_changed(_Event())  # type: ignore[arg-type]
+        await pilot.pause()
+        open_states.append(
+            facade.app.query_one("#command-palette", tui.CommandPalette).is_open
+        )
+
+    drive(facade, body)
+
+    assert open_states == [False]
+
+
+def test_clearing_the_prompt_closes_the_palette(tui) -> None:
+    facade = tui.VoiceCodexTUI(
+        list_commands=_catalog(
+            ("new", "Fresh"),
+        )
+    )
+    open_states: list[bool] = []
+
+    async def body(pilot):
+        prompt = facade.app.query_one("#input", PromptInput)
+        prompt.value = "/"
+        facade.app._sync_command_palette("/")
+        await pilot.pause()
+        facade.app.action_clear_input_or_quit()
+        await pilot.pause()
+        open_states.append(
+            facade.app.query_one("#command-palette", tui.CommandPalette).is_open
+        )
+
+    drive(facade, body)
+
+    assert open_states == [False]
+
+
 def test_blank_input_submits_nothing(tui) -> None:
     typed: list[str] = []
     facade = tui.VoiceCodexTUI(on_user_text=lambda message: typed.append(message.text))

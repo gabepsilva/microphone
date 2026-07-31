@@ -8,7 +8,11 @@ import threading
 from types import SimpleNamespace
 
 from tagalong import codex as codex_module
-from tagalong.cli import reset_codex_session
+from tagalong.cli import (
+    build_command_router,
+    reset_codex_session,
+    show_command_help,
+)
 from tagalong.codex import (
     CODEX_DEVELOPER_INSTRUCTIONS,
     CodexConversation,
@@ -373,3 +377,59 @@ def test_new_command_clears_the_transcript_without_changing_controls() -> None:
         facade.state.turn_silence,
         facade.state.tts_enabled,
     ) == (saved_controls)
+
+
+def test_build_command_router_registers_new_and_help() -> None:
+    class Conversation:
+        def new_session(self) -> bool:
+            return True
+
+    class Tui:
+        def __init__(self) -> None:
+            self.notes: list[str] = []
+            self.resets = 0
+
+        def note(self, text: str) -> None:
+            self.notes.append(text)
+
+        def reset_transcript(self) -> None:
+            self.resets += 1
+
+    tui = Tui()
+    commands = build_command_router(tui, Conversation())
+
+    assert [spec.name for spec in commands.specs()] == ["new", "help"]
+    commands.handle("/help")
+    assert tui.notes
+    assert tui.notes[0].startswith("commands:")
+    assert "/new" in tui.notes[0]
+    assert "/help" in tui.notes[0]
+
+    commands.handle("/clear")
+    assert tui.resets == 1
+
+
+def test_help_for_one_command_names_aliases_and_unknowns() -> None:
+    class Tui:
+        def __init__(self) -> None:
+            self.notes: list[str] = []
+
+        def note(self, text: str) -> None:
+            self.notes.append(text)
+
+    tui = Tui()
+    commands = CommandRouter(tui)
+    commands.register(
+        "new",
+        lambda _command: None,
+        description="Fresh session",
+        aliases=("clear",),
+    )
+
+    show_command_help(Command("help", ("clear",)), commands, tui)
+    show_command_help(Command("help", ("missing",)), commands, tui)
+
+    assert tui.notes == [
+        "/new (aliases: /clear) — Fresh session",
+        "unknown command: /missing",
+    ]
