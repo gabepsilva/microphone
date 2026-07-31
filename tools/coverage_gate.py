@@ -50,6 +50,8 @@ FLOORS = {
     # Wiring only, and every connection it makes is asserted in tests/test_cli.py.
     # Raised 2026-07-28 from 98.
     "tagalong/cli.py": 99.0,
+    # Recorded 2026-07-30 with the slash-command palette catalog and matcher.
+    "tagalong/commands.py": 100.0,
     "tagalong/codex.py": 99.0,
     "tagalong/config.py": 100.0,
     "tagalong/domain.py": 98.0,
