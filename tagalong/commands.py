@@ -39,13 +39,13 @@ class CommandSpec:
 
     def listing_line(self) -> str:
         """One indented catalog row for ``/help`` with no argument."""
-        detail = f" — {self.description}" if self.description else ""
+        detail = f": {self.description}" if self.description else ""
         return f"  /{self.name}{self.alias_suffix()}{detail}"
 
     def detail_line(self) -> str:
         """One-line description for ``/help <name>``."""
         description = self.description or "no description"
-        return f"/{self.name}{self.alias_suffix(detailed=True)} — {description}"
+        return f"/{self.name}{self.alias_suffix(detailed=True)}: {description}"
 
 
 def command_query(text: str) -> str | None:

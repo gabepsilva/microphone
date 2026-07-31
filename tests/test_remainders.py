@@ -71,9 +71,7 @@ def test_a_usable_model_is_parsed_with_its_efforts() -> None:
 
     assert option.slug == "gpt-5.6-luna"
     assert option.label == "Luna"
-    # ``none`` is offered on top of the catalog, which lists no model as
-    # accepting it; the catalog's own default is untouched by that.
-    assert option.efforts == ("none", "low", "high")
+    assert option.efforts == ("low", "high")
     assert option.default_effort == "high"
 
 
@@ -133,7 +131,7 @@ def test_an_invalid_reasoning_level_does_not_hide_a_later_valid_one() -> None:
         )
     )
 
-    assert option.efforts == ("none", "high")
+    assert option.efforts == ("high",)
     assert option.default_effort == "high"
 
 
@@ -189,17 +187,3 @@ def test_the_committed_example_config_is_valid_for_a_first_run() -> None:
     assert load_startup_config(ROOT / "tagalong.example.yaml") == dict.fromkeys(
         STARTUP_CONFIG_KEYS
     )
-
-
-def test_a_model_already_listing_the_unlisted_effort_is_not_given_it_twice() -> None:
-    """No catalog lists it today, but one that starts to must not be doubled."""
-    (option,) = _parse_codex_model_catalog(
-        catalog(
-            model(
-                supported_reasoning_levels=[{"effort": "none"}, {"effort": "low"}],
-                default_reasoning_level="low",
-            )
-        )
-    )
-
-    assert option.efforts == ("none", "low")

@@ -163,7 +163,7 @@ class SessionState:
     codex_effort: str = "low"
     codex_tier: str = "standard"
     codex_sandbox: str = "full-access"
-    codex_thread: str = "—"
+    codex_thread: str = "none"
     codex_state: str = "idle"
     # Whether speech is still coming out of the speakers. Tracked apart from
     # codex_state because the two end at different moments: the text stream
@@ -241,7 +241,7 @@ def render_reasoning_body(entry: Entry) -> Text:
     return body
 
 
-CUT_OFF_LINE = "cut off — user started speaking"
+CUT_OFF_LINE = "cut off: user started speaking"
 
 
 def cut_off_mark() -> Text:
@@ -373,6 +373,34 @@ def _kv(rows: list[tuple[RenderableType, RenderableType]]) -> Table:
     return grid
 
 
+# Every binding the app answers to, split by what it acts on. Kept beside the
+# BINDINGS lists on PromptInput and VoiceCodexApp — add there, add here.
+SHORTCUTS_PROMPT: tuple[tuple[str, str], ...] = (
+    ("↵", "Send message"),
+    ("⇧↵", "New line"),
+    ("^V", "Paste text or image"),
+    ("/", "Open command palette"),
+    ("↑↓", "Browse commands"),
+    ("⇥", "Complete command"),
+    ("⎋", "Dismiss overlay"),
+    ("^C", "Clear input, then quit"),
+)
+
+# Widest key glyph run is "^⇧C"; pad every key to it so labels line up.
+SHORTCUT_KEY_WIDTH = 3
+
+SHORTCUTS_SESSION: tuple[tuple[str, str], ...] = (
+    ("^P", "Cycle response policy"),
+    ("^K", "Mute microphone"),
+    ("^T", "Toggle voice reply"),
+    ("^X", "Interrupt Taga"),
+    ("^B", "Toggle sidebar"),
+    ("^S", "Save transcript"),
+    ("^⇧C", "Copy selection"),
+    ("^Q", "Quit"),
+)
+
+
 def empty_transcript_content() -> RenderableType:
     """Welcome pane for an empty transcript, Grok-style mark + shortcuts.
 
@@ -392,29 +420,31 @@ def empty_transcript_content() -> RenderableType:
         title,
     )
 
-    callout = Text()
-    callout.append("Ready when you are.\n", style="bold #d7b562")
-    callout.append(
-        "Speak, type below, or pick a meeting stream in the sidebar.",
-        style="#6f757e",
-    )
+    # Deliberately blank: one row of the space the callout used to occupy
+    # stays as breathing room between the brand mark and the shortcut table.
+    callout = Text("")
 
-    shortcuts = Table.grid(padding=(0, 6))
-    shortcuts.add_column(no_wrap=True)
-    shortcuts.add_column(justify="right", no_wrap=True)
-    for label, key in (
-        ("Cycle response policy", "^P"),
-        ("Mute microphone", "^K"),
-        ("Toggle voice reply", "^T"),
-        ("Interrupt Taga", "^X"),
-        ("Toggle sidebar", "^B"),
-        ("Save transcript", "^S"),
-        ("Send message", "↵"),
-    ):
-        shortcuts.add_row(
-            Text(label, style="#cdd6e4"),
-            Text(key, style="#5a6068"),
+    # Two balanced columns: everything that acts on the prompt on the left,
+    # everything that acts on the running session on the right. Each side is
+    # the full binding set for its half, so this screen is the key reference.
+    # Key and label share one cell so a narrow pane ellipsizes the label
+    # instead of letting Rich drop the key column outright.
+    def cell(key: str, label: str) -> Text:
+        return Text.assemble(
+            (key.rjust(SHORTCUT_KEY_WIDTH), "#9aa3ad"),
+            "  ",
+            (label, "#cdd6e4"),
         )
+
+    shortcuts = Table.grid(padding=(0, 3))
+    shortcuts.add_column(overflow="ellipsis", no_wrap=True)
+    shortcuts.add_column(overflow="ellipsis", no_wrap=True)
+    shortcuts.add_row(
+        Text(" " * (SHORTCUT_KEY_WIDTH + 2) + "PROMPT", style="bold #6f757e"),
+        Text(" " * (SHORTCUT_KEY_WIDTH + 2) + "SESSION", style="bold #6f757e"),
+    )
+    for left, right in zip(SHORTCUTS_PROMPT, SHORTCUTS_SESSION, strict=True):
+        shortcuts.add_row(cell(*left), cell(*right))
 
     panel = Table.grid(padding=(0, 0, 1, 0))
     panel.add_column()
@@ -672,7 +702,7 @@ class CommandPalette(Static):
     through :attr:`TuiHooks.list_commands`. Choosing a row becomes a ``/name``
     submitted through the same path as a typed command.
 
-    Open/close of the surrounding key strip is the app's job via
+    Open/close is the app's job via
     :meth:`VoiceCodexApp._consume_palette` — the widget does not reach for
     siblings.
     """
@@ -1360,7 +1390,7 @@ class Sidebar(VerticalScroll):
     def _bottom(self) -> list[RenderableType]:
         state = self.state
         voice = Text(
-            state.tts_voice if state.tts_enabled else "—",
+            state.tts_voice if state.tts_enabled else "off",
             style="#9aa3ad" if state.tts_enabled else "#5a6068",
         )
         blocks: list[RenderableType] = [_kv([("voice", voice)]), Text()]
@@ -1408,7 +1438,9 @@ class VoiceCodexApp(App):
     #transcript-area { height: 1fr; }
     #transcript {
         height: 1fr;
-        padding: 1 1 0 1;
+        /* The bar is laid out inside the padding box, so right padding would
+           show up as blank cells to the right of it rather than breathing room. */
+        padding: 1 0 0 1;
         scrollbar-size-vertical: 1;
         scrollbar-background: #0f1113;
         scrollbar-color: #2f343b;
@@ -1419,7 +1451,9 @@ class VoiceCodexApp(App):
         content-align: center middle;
         color: #6f757e;
     }
-    EntryRow { height: auto; margin-bottom: 1; }
+    /* Right margin, not container padding: it is the gap between text and the
+       scrollbar lane, and padding would land on the far side of the bar. */
+    EntryRow { height: auto; margin-bottom: 1; margin-right: 1; }
     EntryRow > .transcript-entry { height: auto; }
     EntryRow .entry-stamp {
         width: 9;
@@ -1448,7 +1482,7 @@ class VoiceCodexApp(App):
         margin-bottom: 0;
     }
     EntryRow.command {
-        margin: 0 0 1 20;
+        margin: 0 1 1 20;
         padding-left: 1;
         border-left: solid #2f343b;
     }
@@ -1461,8 +1495,8 @@ class VoiceCodexApp(App):
         border-top: solid #23272b;
     }
 
-    /* Drops down from the prompt over the shortcut strip. Closed state is
-       Widget.display=False so the keys row keeps its usual floor. */
+    /* Drops down below the prompt. Closed state is Widget.display=False so
+       the row takes no height at all. */
     #command-palette {
         height: auto;
         max-height: 10;
@@ -1506,18 +1540,12 @@ class VoiceCodexApp(App):
     #silence-input.invalid { color: #c96a5c; background: #2a1a1a; }
     #silence-unit { width: auto; color: #6f757e; }
 
-    #keys {
-        height: 6;
-        padding: 1 1 0 1;
-        color: #6f757e;
-        border-top: solid #23272b;
-    }
-
     #sidebar {
         width: 34;
         height: 1fr;
-        /* Extra right padding so pickers sit clear of the scrollbar lane. */
-        padding: 1 2 1 1;
+        /* No right padding: the stable gutter below is the only right-hand
+           lane, so the bar hugs the edge instead of floating two cells in. */
+        padding: 1 0 1 1;
         border-left: solid #23272b;
         color: #9aa3ad;
         overflow-y: auto;
@@ -1573,6 +1601,10 @@ class VoiceCodexApp(App):
         color: #cdd6e4;
         text-style: underline;
     }
+    /* Last among the sidebar rules on purpose: the per-row margins above are
+       equally specific, and this has to win to keep the gap uniform. Only
+       direct children, so the bar clears every panel by the same cell. */
+    #sidebar > * { margin-right: 1; }
     #sidebar Select {
         width: 1fr;
         margin: 0;
@@ -1703,13 +1735,11 @@ class VoiceCodexApp(App):
                     )
                     yield PromptInput(id="input", ports=self.prompt_ports)
                     yield Static("Text always gets a reply", id="input-hint")
-                # Expands downward over the shortcut strip while open.
+                # Expands downward below the prompt while open.
                 yield CommandPalette(id="command-palette")
-                yield Static(id="keys")
             yield Sidebar(self.state, self.hooks, id="sidebar")
 
     def on_mount(self) -> None:
-        self.query_one("#keys", Static).update(self._keys_text())
         self._sync_empty_transcript()
         self._sync_partial()
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
@@ -1718,41 +1748,6 @@ class VoiceCodexApp(App):
         self.query_one("#input", PromptInput).focus()
 
     # -- chrome ------------------------------------------------------------
-
-    def _keys_text(self) -> Text:
-        keys = Text()
-        pairs = [
-            ("^P", "policy"),
-            ("^K", "mute mic"),
-            ("^T", "tts"),
-            ("^X", "interrupt codex"),
-            ("^B", "sidebar"),
-            ("/", "commands"),
-        ]
-        for index, (key, label) in enumerate(pairs):
-            if index:
-                keys.append("  ")
-            keys.append(key, style="#9aa3ad")
-            keys.append(f" {label}")
-        keys.append("\n")
-        keys.append("^S", style="#9aa3ad")
-        keys.append(" save transcript")
-        keys.append("  ")
-        keys.append("^Q", style="#9aa3ad")
-        keys.append(" quit")
-        keys.append("\n")
-        keys.append("^⇧C", style="#9aa3ad")
-        keys.append(" copy")
-        keys.append("  ")
-        keys.append("^V", style="#9aa3ad")
-        keys.append(" paste text/image")
-        keys.append("\n")
-        keys.append("↵", style="#9aa3ad")
-        keys.append(" send")
-        keys.append("  ")
-        keys.append("⇧↵", style="#9aa3ad")
-        keys.append(" newline")
-        return keys
 
     def _sync_partial(self) -> None:
         state = self.state
@@ -1765,14 +1760,14 @@ class VoiceCodexApp(App):
             line.append(state.partial_text, style="#8a929c")
         elif state.mic.muted and state.audio.muted:
             line = Text(
-                "◌ mic and speaker muted — nothing transcribing", style="#6f757e"
+                "◌ mic and speaker muted, nothing transcribing", style="#6f757e"
             )
         elif state.mic.muted:
-            line = Text("◌ mic muted — Audio still transcribing", style="#6f757e")
+            line = Text("◌ mic muted, Audio still transcribing", style="#6f757e")
         elif state.audio.muted:
-            line = Text("◌ speaker muted — mic still hot", style="#6f757e")
+            line = Text("◌ speaker muted, mic still hot", style="#6f757e")
         else:
-            line = Text("◌ silence — mic hot, nothing pending", style="#6f757e")
+            line = Text("◌ silence: mic hot, nothing pending", style="#6f757e")
         self.query_one("#partial", Static).update(line)
 
     def _tick_countdown(self) -> None:
@@ -2063,8 +2058,8 @@ class VoiceCodexApp(App):
     # -- slash-command palette ---------------------------------------------
     #
     # Lifecycle is intentional: every open goes through ``_sync_command_palette``
-    # and every close through ``_consume_palette``. That pair owns the key-strip
-    # visibility so dismiss / submit / clear cannot leave the chrome half-open.
+    # and every close through ``_consume_palette``, so dismiss / submit / clear
+    # cannot leave the menu half-open.
 
     def _command_catalog(self) -> tuple[CommandSpec, ...]:
         if self.hooks.list_commands is None:
@@ -2085,13 +2080,8 @@ class VoiceCodexApp(App):
             return self.query_one("#input", PromptInput).has_focus
         return False
 
-    def _set_keys_visible(self, visible: bool) -> None:
-        """Show or hide the shortcut strip the palette drops over."""
-        with suppress(NoMatches):
-            self.query_one("#keys", Static).display = visible
-
     def _consume_palette(self) -> tuple[bool, CommandSpec | None]:
-        """Close the menu if open; restore the key strip.
+        """Close the menu if open.
 
         Returns ``(was_open, selection)``. ``selection`` is only meaningful
         when ``was_open`` is true, and may still be ``None`` when the list was
@@ -2102,7 +2092,6 @@ class VoiceCodexApp(App):
             return False, None
         selected = palette.selected()
         palette.close()
-        self._set_keys_visible(True)
         return True, selected
 
     def _sync_command_palette(self, text: str) -> None:
@@ -2119,7 +2108,6 @@ class VoiceCodexApp(App):
         if palette.is_open and (selected := palette.selected()) is not None:
             prefer = selected.name
         palette.show(match_commands(catalog, query), prefer=prefer)
-        self._set_keys_visible(False)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "input":

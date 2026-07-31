@@ -16,7 +16,7 @@ from typing import Protocol
 # the interface returns to rather than only a value it starts in. It lives here
 # because the runtime sets it and the interface draws it, and the runtime must
 # not import the interface to name it.
-NO_DEVICE = "—"
+NO_DEVICE = "none"
 
 
 class TranscriptSink(Protocol):

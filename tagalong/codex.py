@@ -308,12 +308,12 @@ class CodexSettings:
     prefire: bool = True
 
 
-# The effort to retreat to when the chosen one is refused. ``none`` is the
-# fastest effort the API accepts, but no catalog advertises it — neither
-# ``codex debug models`` nor ``model/list`` lists it for any model — so a
-# model that does not take it can only be discovered by being told no. The
-# refusal arrives as a streamed error and produces no reply at all, which
-# would be a silent session rather than a slow one.
+# The effort to retreat to when the chosen one is refused. The catalog and the
+# API do not agree on every model — the catalog advertises ``ultra``, which the
+# CLI sends as ``max``, and not every model takes that — so an effort read
+# straight from ``codex debug models`` can still be told no. The refusal
+# arrives as a streamed error and produces no reply at all, which would be a
+# silent session rather than a slow one.
 FALLBACK_EFFORT = "low"
 _EFFORT_REFUSAL = ('"param": "reasoning.effort"', "unsupported_value")
 

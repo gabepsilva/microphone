@@ -473,7 +473,7 @@ def stream_label(stream):
     title = stream.title
     if len(title) > TITLE_LIMIT:
         title = f"{title[: TITLE_LIMIT - 1]}…"
-    return f"{stream.application} — {title} ({state})"
+    return f"{stream.application}: {title} ({state})"
 
 
 class ApplicationRefresher:
