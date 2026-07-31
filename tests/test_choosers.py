@@ -324,7 +324,7 @@ STREAMS = [
 @pytest.mark.parametrize(
     ("stream", "expected"),
     [
-        (STREAMS[0], "Chromium — Playback (playing)"),
+        (STREAMS[0], "Chromium: Playback (playing)"),
         (STREAMS[1], "ZOOM VoiceEngine (idle)"),
     ],
 )

@@ -430,6 +430,6 @@ def test_help_for_one_command_names_aliases_and_unknowns() -> None:
     show_command_help(Command("help", ("missing",)), commands, tui)
 
     assert tui.notes == [
-        "/new (aliases: /clear) — Fresh session",
+        "/new (aliases: /clear): Fresh session",
         "unknown command: /missing",
     ]

@@ -191,9 +191,9 @@ def test_command_spec_formats_help_lines() -> None:
     full = CommandSpec("new", "Fresh session", aliases=("clear",))
 
     assert bare.listing_line() == "  /status"
-    assert bare.detail_line() == "/status — no description"
-    assert full.listing_line() == "  /new (/clear) — Fresh session"
-    assert full.detail_line() == "/new (aliases: /clear) — Fresh session"
+    assert bare.detail_line() == "/status: no description"
+    assert full.listing_line() == "  /new (/clear): Fresh session"
+    assert full.detail_line() == "/new (aliases: /clear): Fresh session"
 
 
 def test_router_match_lookup_and_specs_mirror_registration() -> None:

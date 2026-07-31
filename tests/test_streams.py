@@ -648,7 +648,7 @@ PLAYING = [node(1, application="Brave", state="running", **{"media.name": "Playb
 
 
 def test_the_offered_list_is_labelled_and_paired_with_what_the_tap_follows() -> None:
-    assert offered_applications(PLAYING) == [("Brave — Playback (playing)", "Brave")]
+    assert offered_applications(PLAYING) == [("Brave: Playback (playing)", "Brave")]
 
 
 def test_a_long_title_is_cut_rather_than_widening_the_sidebar() -> None:
@@ -657,7 +657,7 @@ def test_a_long_title_is_cut_rather_than_widening_the_sidebar() -> None:
 
     label = stream_label(stream)
 
-    assert label == "mpv — /home/someone/very/long/path/to… (idle)"
+    assert label == "mpv: /home/someone/very/long/path/to… (idle)"
     assert len(label) < len(stream.title)
 
 
@@ -666,7 +666,7 @@ def test_a_refresh_tells_the_display_what_is_playing() -> None:
     refresher = ApplicationRefresher(display, dump=lambda: PLAYING)
 
     assert refresher.refresh() is True
-    assert display.offered == [[("Brave — Playback (playing)", "Brave")]]
+    assert display.offered == [[("Brave: Playback (playing)", "Brave")]]
 
 
 IDLE_DAEMON = [node(2, application="speech-dispatcher-dummy", state="idle")]
@@ -701,7 +701,7 @@ def test_an_application_heard_once_stays_offered_while_it_is_quiet() -> None:
 
     refresher.refresh()
 
-    assert display.offered[-1] == [("Brave — Playback (idle)", "Brave")]
+    assert display.offered[-1] == [("Brave: Playback (idle)", "Brave")]
 
 
 def test_an_unchanged_list_is_not_reported_again() -> None:

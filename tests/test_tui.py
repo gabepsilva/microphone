@@ -98,10 +98,24 @@ def test_sidebar_scrolls_when_its_content_overflows(tui) -> None:
 
 def test_empty_transcript_shows_a_welcome_until_the_first_entry(tui) -> None:
     app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
-    welcome = _rendered(tui.empty_transcript_content())
+    # Wider than the sidebar default: the welcome pane owns the transcript
+    # column, and both shortcut columns need room to print in full.
+    welcome = _rendered(tui.empty_transcript_content(), width=72)
     assert "TagAlong" in welcome
-    assert "Ready when you are." in welcome
     assert "T»" in welcome
+    # The old callout is gone, but its two rows stay as blank spacing.
+    assert "Ready when you are." not in welcome
+    # The welcome screen is the full key reference, laid out in two columns.
+    assert "PROMPT" in welcome
+    assert "SESSION" in welcome
+    for key, label in tui.SHORTCUTS_PROMPT + tui.SHORTCUTS_SESSION:
+        assert key in welcome, key
+        assert label in welcome, label
+    # Two columns means a prompt key and a session key share a rendered line.
+    assert any(
+        "Send message" in line and "Cycle response policy" in line
+        for line in welcome.splitlines()
+    )
 
     async def exercise() -> None:
         async with app.run_test(size=(100, 30)):
@@ -173,7 +187,7 @@ def test_a_quiet_channel_dims_its_dot_instead_of_colouring_it(tui) -> None:
 
 
 def test_quiet_response_policy_is_labeled_stay_silent(tui) -> None:
-    assert tui.POLICIES["quiet"] == "stay silent"
+    assert tui.POLICIES["quiet"] == "Stay silent"
 
 
 def test_facade_updates_state_before_the_app_starts(tui) -> None:
@@ -562,16 +576,6 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
             assert "copy this" in (app.screen.get_selected_text() or "")
 
     asyncio.run(exercise())
-
-
-def test_keyboard_shortcut_legend_includes_copy_paste_and_quit(tui) -> None:
-    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
-
-    legend = app._keys_text().plain
-    assert "^B sidebar" in legend
-    assert legend.endswith(
-        "^S save transcript  ^Q quit\n^⇧C copy  ^V paste text/image\n↵ send  ⇧↵ newline"
-    )
 
 
 def test_ctrl_c_clears_text_before_quitting_the_application(tui) -> None:
@@ -1630,10 +1634,10 @@ def test_the_live_line_names_which_channels_are_muted(tui) -> None:
     asyncio.run(exercise())
 
     assert lines == [
-        "◌ silence — mic hot, nothing pending",
-        "◌ mic muted — Audio still transcribing",
-        "◌ speaker muted — mic still hot",
-        "◌ mic and speaker muted — nothing transcribing",
+        "◌ silence: mic hot, nothing pending",
+        "◌ mic muted, Audio still transcribing",
+        "◌ speaker muted, mic still hot",
+        "◌ mic and speaker muted, nothing transcribing",
     ]
 
 

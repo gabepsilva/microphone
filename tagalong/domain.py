@@ -64,7 +64,7 @@ RESPONSE_POLICIES = {
     ),
     "voice": ResponsePolicy("voice", "Voice", "Voice", frozenset({VOICE})),
     "quiet": ResponsePolicy(
-        "quiet", "Taga will be quiet for voice", "stay silent", frozenset()
+        "quiet", "Taga will be quiet for voice", "Stay silent", frozenset()
     ),
 }
 POLICY_NAMES = tuple(RESPONSE_POLICIES)

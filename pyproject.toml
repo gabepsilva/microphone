@@ -2,7 +2,7 @@
 name = "tagalong"
 version = "0.1.0"
 description = "An always-on local assistant that hears both sides of your meeting and answers in your ear."
-readme = "features.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "edge-tts==7.2.8",
@@ -48,6 +48,9 @@ dev = [
     "pre-commit>=4.0,<5",
     "pytest>=9,<10",
     "pytest-cov>=7,<8",
+    # Parallel collection/execution for make test / make ci. Mutmut opts out
+    # below: forking workers per mutant is slower than serial short runs.
+    "pytest-xdist>=3,<4",
     "ruff>=0.16.0,<0.17",
     "ty>=0.0.14,<0.1",
 ]
@@ -102,6 +105,9 @@ addopts = [
     "--strict-markers",
     "--tb=short",
     "--cov-fail-under=95",
+    # Use every core. Override with -n0 for a serial run (debugger, mutmut).
+    "-n",
+    "auto",
 ]
 testpaths = ["tests"]
 filterwarnings = ["error"]
@@ -156,7 +162,7 @@ pytest_add_cli_args_test_selection = [
 ]
 # Coverage thresholds must not decide mutant survival; a run scoped to one
 # test file would fail the global floor and mark every mutant killed.
-pytest_add_cli_args = ["--no-cov", "-p", "no:cacheprovider"]
+pytest_add_cli_args = ["--no-cov", "-p", "no:cacheprovider", "-n0"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv-moonshine"]

@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0a0a; overflow-x: hidden; }
+  body { font-family: "Archivo", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #d7ff3e; text-decoration: none; }
+  a:hover { color: #0a0a0a; background: #d7ff3e; }
+  ::selection { background: #d7ff3e; color: #0a0a0a; }
+  @keyframes om-marquee { from { transform: translateX(0) } to { transform: translateX(-50%) } }
+  @keyframes om-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+  @keyframes om-live { 0%, 100% { opacity: 1 } 50% { opacity: 0.2 } }
+</style>
+</helmet>
+
+<div style="background: #0a0a0a; color: #f4f2ec; min-height: 100vh; overflow: hidden;">
+
+  <div style="position: sticky; top: 0; z-index: 9; background: #0a0a0a; border-bottom: 2px solid #f4f2ec; display: flex; align-items: stretch; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;">
+    <div style="padding: 10px 18px; border-right: 2px solid #f4f2ec; display: flex; align-items: center; gap: 9px; font-weight: 500;">
+      <span style="color: #d7ff3e; animation: om-live 1.6s ease-in-out infinite;">●</span>VOICE-CODEX
+    </div>
+    <a href="#proof" style="padding: 10px 18px; border-right: 1px solid #2c2c2c; color: #8f8d86; display: flex; align-items: center;">01 proof</a>
+    <a href="#kit" style="padding: 10px 18px; border-right: 1px solid #2c2c2c; color: #8f8d86; display: flex; align-items: center;">02 what it does</a>
+    <a href="#rules" style="padding: 10px 18px; border-right: 1px solid #2c2c2c; color: #8f8d86; display: flex; align-items: center;">03 rules</a>
+    <div style="flex: 1;"></div>
+    <a href="#install" style="padding: 10px 22px; border-left: 2px solid #f4f2ec; background: #d7ff3e; color: #0a0a0a; font-weight: 500; display: flex; align-items: center;">INSTALL ↓</a>
+  </div>
+
+  <div style="border-bottom: 2px solid #f4f2ec; padding: 54px 40px 0; position: relative;">
+    <div style="position: absolute; inset: 0; pointer-events: none; display: flex; align-items: flex-end; gap: 3px; padding: 0 40px 0; opacity: 0.16;">
+      <sc-for list="{{ waveform }}" as="bar" hint-placeholder-count="80">
+        <div style="flex: 1; background: #d7ff3e; height: {{ bar.h }};"></div>
+      </sc-for>
+    </div>
+    <div style="position: relative; max-width: 1400px; margin: 0 auto;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; color: #d7ff3e; padding-bottom: 14px;">It is in the call with you</div>
+      <h1 style="margin: 0; font-size: 156px; line-height: 0.86; font-weight: 900; font-stretch: 108%; letter-spacing: -0.045em; text-transform: uppercase; text-wrap: balance;">Talk.<br>It talks<br><span style="color: #d7ff3e;">back.</span></h1>
+      <div style="display: grid; grid-template-columns: 1fr 46ch; gap: 60px; align-items: end; padding: 34px 0 40px;">
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;">
+            <span style="border: 1px solid #3a3a37; padding: 5px 11px; color: #b8b5ad;">on-device ASR</span>
+            <span style="border: 1px solid #3a3a37; padding: 5px 11px; color: #b8b5ad;">two speakers, kept apart</span>
+            <span style="border: 1px solid #3a3a37; padding: 5px 11px; color: #b8b5ad;">interrupt by speaking</span>
+            <span style="border: 1px solid #3a3a37; padding: 5px 11px; color: #b8b5ad;">MIT</span>
+          </div>
+          <div style="display: flex; gap: 12px; align-items: stretch; font-family: 'IBM Plex Mono', monospace; font-size: 14px;">
+            <a href="#install" style="background: #d7ff3e; color: #0a0a0a; padding: 14px 22px; font-weight: 500; letter-spacing: 0.04em;" style-hover="background: #f4f2ec; color: #0a0a0a;">pipx install voice-codex</a>
+            <a href="https://github.com" style="border: 2px solid #f4f2ec; color: #f4f2ec; padding: 14px 22px; letter-spacing: 0.04em;" style-hover="background: #f4f2ec; color: #0a0a0a;">github →</a>
+          </div>
+        </div>
+        <div style="font-size: 22px; line-height: 32px; color: #b8b5ad; border-top: 2px solid #d7ff3e; padding-top: 16px; text-wrap: pretty;">A terminal app that hears <strong style="color: #f4f2ec; font-weight: 700;">your mic</strong> and <strong style="color: #f4f2ec; font-weight: 700;">the far end of the call</strong> as separate voices, transcribes both locally, and speaks Codex's answer into the meeting. Start talking and it shuts up mid-word.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="border-bottom: 2px solid #f4f2ec; background: #d7ff3e; color: #0a0a0a; overflow: hidden; white-space: nowrap;">
+    <div style="display: inline-flex; animation: om-marquee 26s linear infinite; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 500; padding: 9px 0;">
+      <span>&nbsp;LISTENS TO BOTH SIDES ✦ ANSWERS OUT LOUD ✦ CUT IT OFF BY TALKING ✦ NEVER HEARS ITSELF ✦ AUDIO NEVER LEAVES YOUR MACHINE ✦ RUNS REAL COMMANDS ✦&nbsp;</span>
+      <span>&nbsp;LISTENS TO BOTH SIDES ✦ ANSWERS OUT LOUD ✦ CUT IT OFF BY TALKING ✦ NEVER HEARS ITSELF ✦ AUDIO NEVER LEAVES YOUR MACHINE ✦ RUNS REAL COMMANDS ✦&nbsp;</span>
+    </div>
+  </div>
+
+  <div id="install" style="border-bottom: 2px solid #f4f2ec; display: grid; grid-template-columns: 1fr 44ch;">
+    <div style="padding: 42px 40px 48px; display: flex; flex-direction: column; gap: 22px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #d7ff3e;">04 — install</div>
+      <div style="font-size: 78px; line-height: 0.9; font-weight: 900; font-stretch: 108%; letter-spacing: -0.04em; text-transform: uppercase;">Two lines</div>
+      <div style="border: 2px solid #f4f2ec; font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 26px;">
+        <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 2px;">
+          <div style="color: #6f6d67;"># pipewire on linux, blackhole on macos</div>
+          <div><span style="color: #4d4b46;">$ </span><span style="color: #d7ff3e;">pipx install voice-codex</span></div>
+          <div><span style="color: #4d4b46;">$ </span><span style="color: #d7ff3e;">voice-codex</span></div>
+        </div>
+        <div style="border-top: 1px solid #262624; padding: 12px 20px; color: #8f8d86; font-size: 13px;">The wizard picks devices, builds the meeting sink, writes ~/.voice-codex.yaml, and tears it all down on exit.</div>
+      </div>
+      <div style="font-size: 17px; line-height: 26px; color: #8f8d86;">Needs an authenticated <span style="color: #f4f2ec;">codex</span> CLI and Python 3.11+. First run pulls the speech model once, then never phones home.</div>
+    </div>
+    <div style="border-left: 2px solid #f4f2ec; padding: 42px 34px 48px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #8f8d86;">keys, mid-session</div>
+      <div style="display: grid; grid-template-columns: 7ch 1fr; gap: 8px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; line-height: 22px; padding-top: 4px;">
+        <span style="color: #d7ff3e;">^P</span><span style="color: #b8b5ad;">cycle who gets answered</span>
+        <span style="color: #d7ff3e;">^M</span><span style="color: #b8b5ad;">mute the mic</span>
+        <span style="color: #d7ff3e;">^T</span><span style="color: #b8b5ad;">toggle spoken replies</span>
+        <span style="color: #d7ff3e;">^X</span><span style="color: #b8b5ad;">interrupt Codex</span>
+        <span style="color: #d7ff3e;">^S</span><span style="color: #b8b5ad;">save transcript</span>
+        <span style="color: #d7ff3e;">/</span><span style="color: #b8b5ad;">slash commands</span>
+      </div>
+      <div style="flex: 1; min-height: 16px;"></div>
+      <a href="Voice Codex TUI.dc.html" style="border: 2px solid #f4f2ec; color: #f4f2ec; padding: 13px 18px; text-align: center; font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase;" style-hover="background: #f4f2ec; color: #0a0a0a;">see the whole interface →</a>
+    </div>
+  </div>
+
+    <div id="proof" style="border-bottom: 2px solid #f4f2ec; display: grid; grid-template-columns: 40ch 1fr;">
+    <div style="border-right: 2px solid #f4f2ec; padding: 44px 34px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #d7ff3e;">01 — proof</div>
+      <div style="font-size: 56px; line-height: 0.94; font-weight: 900; font-stretch: 108%; letter-spacing: -0.035em; text-transform: uppercase;">One real turn</div>
+      <div style="font-size: 18px; line-height: 28px; color: #b8b5ad; text-wrap: pretty;">Release-planning call. Watch the partial revise itself, the reply get cut off when the user speaks, and a command run with its output inline.</div>
+      <div style="display: flex; flex-direction: column; gap: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding-top: 4px;">
+        <div style="display: flex; gap: 10px; align-items: baseline;"><span style="width: 1ch; color: #6ea8ff;">■</span><span style="color: #8f8d86;">you, out loud</span></div>
+        <div style="display: flex; gap: 10px; align-items: baseline;"><span style="width: 1ch; color: #e8b04a;">■</span><span style="color: #8f8d86;">them, over the call</span></div>
+        <div style="display: flex; gap: 10px; align-items: baseline;"><span style="width: 1ch; color: #d7ff3e;">■</span><span style="color: #8f8d86;">codex</span></div>
+      </div>
+      <div style="flex: 1; min-height: 12px;"></div>
+      <div style="display: flex; align-items: center; gap: 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;">
+        <span style="color: {{ stateColor }};">{{ codexState }}</span>
+        <span style="flex: 1;"></span>
+        <button type="button" onClick="{{ replay }}" style="font-family: inherit; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; background: transparent; border: 1px solid #3a3a37; color: #b8b5ad; padding: 6px 12px; cursor: pointer;" style-hover="border-color: #d7ff3e; color: #d7ff3e;">↻ replay</button>
+      </div>
+    </div>
+
+    <div style="background: #0f0f0e; display: flex; flex-direction: column;">
+      <div style="height: 424px; overflow: hidden; padding: 26px 32px; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px;">
+        <sc-for list="{{ lines }}" as="line" hint-placeholder-count="4">
+          <sc-if value="{{ line.isSpeech }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex; flex-direction: column; gap: 3px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: {{ line.color }};">{{ line.label }}</div>
+              <div style="font-size: 27px; line-height: 34px; font-weight: 500; letter-spacing: -0.015em; color: {{ line.textColor }}; text-wrap: pretty;">{{ line.text }}<sc-if value="{{ line.streaming }}" hint-placeholder-val="{{ false }}"><span style="background: #d7ff3e; color: #0f0f0e; animation: om-caret 1s steps(1) infinite;">&nbsp;&nbsp;</span></sc-if></div>
+              <sc-if value="{{ line.interrupted }}" hint-placeholder-val="{{ false }}">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #ff6a45; padding-top: 2px;">⟂ cut off — you started talking</div>
+              </sc-if>
+            </div>
+          </sc-if>
+          <sc-if value="{{ line.isCmd }}" hint-placeholder-val="{{ false }}">
+            <div style="border-left: 3px solid #d7ff3e; padding: 4px 0 4px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 21px;">
+              <div style="color: #f4f2ec;">$ {{ line.cmd }}</div>
+              <sc-for list="{{ line.output }}" as="out" hint-placeholder-count="2">
+                <div style="color: #6f6d67;">{{ out }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </sc-for>
+      </div>
+      <div style="border-top: 1px solid #262624; padding: 12px 32px; display: flex; align-items: baseline; gap: 14px; min-height: 26px; font-family: 'IBM Plex Mono', monospace; font-size: 14px;">
+        <sc-if value="{{ hasPartial }}" hint-placeholder-val="{{ true }}">
+          <span style="color: {{ partialColor }}; animation: om-live 1.3s ease-in-out infinite; flex: none;">◉</span>
+          <span style="color: {{ partialColor }}; flex: none; letter-spacing: 0.1em; text-transform: uppercase; font-size: 11px;">{{ partialLabel }}</span>
+          <span style="color: #6f6d67; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ partialText }}</span>
+        </sc-if>
+        <sc-if value="{{ isIdle }}" hint-placeholder-val="{{ false }}">
+          <span style="color: #3a3a37;">◌</span><span style="color: #4d4b46;">silence — mic hot, nothing pending</span>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+
+  <div id="kit" style="border-bottom: 2px solid #f4f2ec;">
+    <div style="padding: 40px 40px 26px; display: flex; align-items: flex-end; gap: 40px; border-bottom: 2px solid #f4f2ec;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: #d7ff3e; padding-bottom: 10px;">02</div>
+      <div style="font-size: 78px; line-height: 0.9; font-weight: 900; font-stretch: 108%; letter-spacing: -0.04em; text-transform: uppercase;">What it does</div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr);">
+      <sc-for list="{{ features }}" as="f" hint-placeholder-count="6">
+        <div style="border-right: 1px solid #262624; border-bottom: 1px solid #262624; padding: 26px 26px 30px; display: flex; flex-direction: column; gap: 12px; min-height: 220px;" style-hover="background: #131312;">
+          <div style="font-size: 40px; line-height: 1; font-weight: 900; color: #2c2c29;">{{ f.num }}</div>
+          <div style="font-size: 26px; line-height: 30px; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance;">{{ f.title }}</div>
+          <div style="font-size: 17px; line-height: 26px; color: #8f8d86; text-wrap: pretty;">{{ f.body }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div id="rules" style="border-bottom: 2px solid #f4f2ec; background: #ff6a45; color: #180a05; display: grid; grid-template-columns: 1fr 1fr;">
+    <div style="padding: 42px 40px 46px; display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;">03 — read this part</div>
+      <div style="font-size: 62px; line-height: 0.9; font-weight: 900; font-stretch: 108%; letter-spacing: -0.04em; text-transform: uppercase; text-wrap: balance;">It records people. Tell them.</div>
+    </div>
+    <div style="padding: 42px 40px 46px; border-left: 2px solid #180a05; display: flex; flex-direction: column; gap: 14px; font-size: 18px; line-height: 27px;">
+      <div style="text-wrap: pretty;">Transcribing the other side of a call is regulated in plenty of places and impolite everywhere else. voice-codex prints a consent reminder before the first turn.</div>
+      <div style="display: flex; flex-direction: column; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; line-height: 22px; padding-top: 4px;">
+        <div style="display: flex; gap: 12px;"><span style="flex: none;">→</span><span>Transcripts stay on disk, yours to delete.</span></div>
+        <div style="display: flex; gap: 12px;"><span style="flex: none;">→</span><span>Remote speech is untrusted context. It can never issue instructions or run commands.</span></div>
+        <div style="display: flex; gap: 12px;"><span style="flex: none;">→</span><span>Every command Codex runs is printed with its exit code.</span></div>
+      </div>
+    </div>
+  </div>
+
+<div style="padding: 26px 40px 40px; display: flex; align-items: baseline; gap: 26px; flex-wrap: wrap; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #4d4b46;">
+    <span style="color: #d7ff3e;">●</span><span style="color: #b8b5ad;">voice-codex</span>
+    <span style="flex: 1;"></span>
+    <a href="https://github.com" style="color: #6f6d67;">source</a>
+    <a href="https://github.com" style="color: #6f6d67;">issues</a>
+    <a href="https://github.com" style="color: #6f6d67;">changelog</a>
+    <span>MIT</span>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;loopDemo&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Demo&quot;},&quot;demoSpeed&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;min&quot;:0.5,&quot;max&quot;:3,&quot;step&quot;:0.25,&quot;default&quot;:1,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Demo&quot;}}">
+const COLORS = { "User Voice": "#6ea8ff", "User Text": "#5f86c9", Them: "#e8b04a", Codex: "#d7ff3e" };
+
+const FEATURES = [
+  { num: "01", title: "Two ears, never crossed", body: "Your mic on one channel, the call on a dedicated sink. Nobody's words land under the wrong name." },
+  { num: "02", title: "Interrupt by talking", body: "The instant your mic goes hot the speech queue is flushed and the reply is marked cut in the transcript." },
+  { num: "03", title: "It can't hear itself", body: "Spoken replies are fingerprinted and dropped if they return through the meeting sink. No feedback loops." },
+  { num: "04", title: "You pick who it answers", body: "You, the room, both, or nobody until you type. Turns close after a silence gap you set." },
+  { num: "05", title: "Commands in the open", body: "Every tool call Codex makes prints inline with its output and exit code. Nothing runs off-screen." },
+  { num: "06", title: "Type when you can't speak", body: "The input bar always gets a reply regardless of policy, and takes slash commands mid-conversation." },
+];
+
+class Component extends DCLogic {
+  state = { lines: [], partial: null, codexState: "idle", wave: [], policy: "Them" };
+
+  componentDidMount() {
+    this.alive = true;
+    this.gen = 0;
+    this.runGen = 0;
+    this.setState({ wave: Array.from({ length: 84 }, () => 0.08 + Math.random() * 0.1) });
+    this.meter = setInterval(() => {
+      if (!this.alive) return;
+      const hot = !!this.state.partial || this.state.codexState === "streaming";
+      this.setState((s) => ({
+        wave: s.wave.map((v, i) => {
+          const target = hot ? 0.12 + Math.random() * (0.55 + 0.4 * Math.sin(i / 6 + Date.now() / 400)) : 0.05 + Math.random() * 0.12;
+          return v + (Math.abs(target) - v) * 0.45;
+        }),
+      }));
+    }, 260);
+    this.run();
+  }
+
+  componentWillUnmount() {
+    this.alive = false;
+    this.gen++;
+    clearInterval(this.meter);
+  }
+
+  get ok() { return this.alive && this.gen === this.runGen; }
+
+  sleep(ms) {
+    const sp = Number(this.props.demoSpeed) > 0 ? Number(this.props.demoSpeed) : 1;
+    return new Promise((r) => setTimeout(r, ms / sp));
+  }
+
+  push(line) {
+    const id = "l" + Math.random().toString(36).slice(2, 8);
+    this.setState((s) => ({ lines: [...s.lines, { id, ...line }] }));
+    return id;
+  }
+
+  patch(id, changes) {
+    this.setState((s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, ...changes } : l)) }));
+  }
+
+  async partialType(speaker, text) {
+    let shown = "";
+    for (const w of text.split(" ")) {
+      if (!this.ok) return;
+      shown = shown ? shown + " " + w : w;
+      this.setState({ partial: { speaker, text: shown } });
+      await this.sleep(120);
+    }
+  }
+
+  async stream(id, text, cutAt) {
+    let shown = "";
+    for (let i = 0; i < text.length; i += 3) {
+      if (!this.ok) return false;
+      if (cutAt && shown.length >= cutAt) return false;
+      shown += text.slice(i, i + 3);
+      this.patch(id, { text: shown });
+      await this.sleep(34);
+    }
+    return true;
+  }
+
+  async run() {
+    this.runGen = ++this.gen;
+    this.setState({ lines: [], partial: null, codexState: "idle" });
+    await this.sleep(600);
+    if (!this.ok) return;
+
+    await this.partialType("Them", "does the migration still land in the same release if auth slips");
+    if (!this.ok) return;
+    this.push({ kind: "speech", label: "Them", text: "Does the migration still land in the same release if auth slips?" });
+    this.setState({ partial: null });
+    await this.sleep(650);
+    if (!this.ok) return;
+
+    this.setState({ codexState: "streaming" });
+    const a = this.push({ kind: "speech", label: "Codex", text: "", streaming: true });
+    const done = await this.stream(a, "No — the migration is gated on the auth rewrite, so a slip moves both.", 44);
+    if (!this.ok) return;
+    this.patch(a, { streaming: false, interrupted: !done });
+    this.setState({ codexState: "interrupted" });
+
+    await this.partialType("User Voice", "ask about the staging cutover first");
+    if (!this.ok) return;
+    this.push({ kind: "speech", label: "User Voice", text: "Ask about the staging cutover first." });
+    this.setState({ partial: null });
+    await this.sleep(550);
+    if (!this.ok) return;
+
+    this.setState({ codexState: "streaming" });
+    const b = this.push({ kind: "speech", label: "Codex", text: "", streaming: true });
+    await this.stream(b, "Staging is the real blocker — checking the last deploys.");
+    if (!this.ok) return;
+    this.patch(b, { streaming: false });
+    this.setState({ codexState: "running command" });
+    await this.sleep(500);
+    if (!this.ok) return;
+
+    this.push({ kind: "command", cmd: "git log --oneline -2 origin/staging", output: ["4b1c0ad  cut over staging to new auth", "9f22e71  add migration dry-run job"] });
+    await this.sleep(850);
+    if (!this.ok) return;
+
+    this.setState({ codexState: "streaming" });
+    const c = this.push({ kind: "speech", label: "Codex", text: "", streaming: true });
+    await this.stream(c, "Cutover landed three days ago. The date holds if both PRs merge Monday.");
+    if (!this.ok) return;
+    this.patch(c, { streaming: false });
+    this.setState({ codexState: "idle" });
+
+    if (this.props.loopDemo !== false) {
+      await this.sleep(3400);
+      if (this.ok) this.run();
+    }
+  }
+
+  renderVals() {
+    const s = this.state;
+    const p = s.partial;
+    const stateColors = { idle: "#6f6d67", streaming: "#d7ff3e", interrupted: "#ff6a45", "running command": "#e8b04a" };
+    return {
+      features: FEATURES,
+      waveform: s.wave.map((v, i) => ({ id: "w" + i, h: Math.round(30 + v * 330) + "px" })),
+      lines: s.lines.map((l) => ({
+        ...l,
+        isSpeech: l.kind === "speech",
+        isCmd: l.kind === "command",
+        color: COLORS[l.label] || "#8f8d86",
+        textColor: l.label === "Codex" ? "#eaffb0" : "#f4f2ec",
+      })),
+      hasPartial: !!p,
+      partialLabel: p ? p.speaker : "",
+      partialText: p ? p.text : "",
+      partialColor: p ? COLORS[p.speaker] : "#8f8d86",
+      isIdle: !p,
+      codexState: s.codexState,
+      stateColor: stateColors[s.codexState] || "#8f8d86",
+      replay: () => this.run(),
+    };
+  }
+}
+</script>
+</body>
+</html>

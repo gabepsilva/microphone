@@ -131,11 +131,11 @@ def test_probe_codex_models_uses_visible_catalog_entries(monkeypatch) -> None:
     options = probe_codex_models()
 
     assert options == [
-        CodexModelOption("gpt-5.6-luna", "GPT-5.6 Luna", ("none", "low"), "low"),
+        CodexModelOption("gpt-5.6-luna", "GPT-5.6 Luna", ("low",), "low"),
         CodexModelOption(
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
-            ("none", "low", "medium"),
+            ("low", "medium"),
             "medium",
         ),
     ]
@@ -171,7 +171,7 @@ def test_model_probe_uses_the_exact_cli_contract_then_its_bundled_fallback(
     monkeypatch.setattr(subprocess, "run", run)
 
     assert probe_codex_models() == [
-        CodexModelOption("gpt-5.6-luna", "Luna", ("none", "low"), "low")
+        CodexModelOption("gpt-5.6-luna", "Luna", ("low",), "low")
     ]
     assert calls == [
         (

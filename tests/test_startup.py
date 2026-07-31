@@ -246,17 +246,17 @@ def test_the_sidebar_state_uses_each_models_catalog_efforts(tmp_path) -> None:
         ]
     )
     models = [
-        catalog.CodexModelOption("sol", "Sol", ("none", "low", "ultra"), "low"),
-        catalog.CodexModelOption("luna", "Luna", ("none", "low", "medium"), "medium"),
+        catalog.CodexModelOption("sol", "Sol", ("low", "ultra"), "low"),
+        catalog.CodexModelOption("luna", "Luna", ("low", "medium"), "medium"),
     ]
 
     state = build_session_state(args, selection(), models)
 
     assert state.codex_models == [("Sol", "sol"), ("Luna", "luna")]
-    assert state.codex_efforts == ["none", "low", "ultra"]
+    assert state.codex_efforts == ["low", "ultra"]
     assert state.codex_efforts_by_model == {
-        "sol": ["none", "low", "ultra"],
-        "luna": ["none", "low", "medium"],
+        "sol": ["low", "ultra"],
+        "luna": ["low", "medium"],
     }
     assert state.codex_default_effort_by_model == {
         "sol": "low",
@@ -277,16 +277,14 @@ def test_a_reasoning_effort_the_selected_model_does_not_offer_is_rejected(
             "sometimes",
         ]
     )
-    models = [
-        catalog.CodexModelOption("luna", "Luna", ("none", "low", "medium"), "medium")
-    ]
+    models = [catalog.CodexModelOption("luna", "Luna", ("low", "medium"), "medium")]
 
     with pytest.raises(SystemExit, match="2"):
         validate_codex_reasoning(parser, args, models)
 
     assert (
         "startup config 'codex_reasoning' for model 'luna' must be one of "
-        "'none', 'low', 'medium'"
+        "'low', 'medium'"
     ) in capsys.readouterr().err
 
 

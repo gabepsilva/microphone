@@ -503,32 +503,23 @@ def test_typing_a_slash_opens_the_command_palette(tui) -> None:
     assert seen == [(True, ["new", "help"])]
 
 
-def test_the_palette_drops_down_over_the_shortcut_strip(tui) -> None:
-    """Open menu sits under the prompt and hides the key-hint row."""
-    from textual.widgets import Static
-
+def test_the_palette_drops_down_under_the_prompt(tui) -> None:
+    """Open menu sits under the prompt; nothing else lives below it."""
     facade = tui.VoiceCodexTUI(
         list_commands=_catalog(("new", "Fresh"), ("help", "List"))
     )
     layout: list[tuple[str, ...]] = []
-    keys_visible: list[bool] = []
 
     async def body(pilot):
         left = facade.app.query_one("#left")
-        child_ids = tuple(child.id for child in left.children if child.id)
-        layout.append(child_ids)
+        layout.append(tuple(child.id for child in left.children if child.id))
         facade.app._sync_command_palette("/")
         await pilot.pause()
-        keys_visible.append(bool(facade.app.query_one("#keys", Static).display))
-        facade.app._sync_command_palette("")
-        await pilot.pause()
-        keys_visible.append(bool(facade.app.query_one("#keys", Static).display))
 
     drive(facade, body)
 
     assert layout[0].index("promptbar") < layout[0].index("command-palette")
-    assert layout[0].index("command-palette") < layout[0].index("keys")
-    assert keys_visible == [False, True]
+    assert layout[0][-1] == "command-palette"
 
 
 def test_the_palette_filters_as_the_prompt_changes(tui) -> None:

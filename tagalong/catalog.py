@@ -22,14 +22,6 @@ class CodexModelOption:
     default_effort: str
 
 
-# The API accepts this and answers fastest at it, but no catalog lists it:
-# neither `codex debug models` nor the app server's `model/list` names it for
-# any model. So it is offered on top of what the catalog reports rather than
-# read out of it. A model that turns out not to take it says so on the first
-# turn, and ``codex.FALLBACK_EFFORT`` catches that.
-UNLISTED_EFFORT = "none"
-
-
 def _parse_reasoning_efforts(raw_levels: object) -> list[str]:
     """Collect the usable effort names from one model's reasoning levels."""
     if not isinstance(raw_levels, list):
@@ -60,11 +52,6 @@ def _parse_codex_model(model: dict[str, object]):
     default_effort = model.get("default_reasoning_level")
     if not isinstance(default_effort, str) or default_effort not in efforts:
         default_effort = efforts[0]
-    # After the default is settled, so that a catalog entry naming an effort
-    # it does not list falls back to one the catalog vouches for rather than
-    # to the unlisted one.
-    if UNLISTED_EFFORT not in efforts:
-        efforts.insert(0, UNLISTED_EFFORT)
     priority = model.get("priority")
     return (
         priority if isinstance(priority, int) else sys.maxsize,

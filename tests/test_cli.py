@@ -246,13 +246,13 @@ def wiring(monkeypatch, tmp_path):
             CodexModelOption(
                 "gpt-5.6-luna",
                 "GPT-5.6 Luna",
-                ("none", "low", "medium", "high", "xhigh", "max"),
+                ("low", "medium", "high", "xhigh", "max"),
                 "medium",
             ),
             CodexModelOption(
                 "gpt-5.6-sol",
                 "GPT-5.6 Sol",
-                ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+                ("low", "medium", "high", "xhigh", "max", "ultra"),
                 "low",
             ),
         ],
@@ -946,7 +946,6 @@ def test_a_catalog_reasoning_effort_saved_by_the_sidebar_reopens(wiring) -> None
         "ultra",
     )
     assert reopened_tui.session_state.codex_efforts == [
-        "none",
         "low",
         "medium",
         "high",
