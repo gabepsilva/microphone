@@ -69,11 +69,11 @@ class ConversationListener(TranscriptEventListener):
         self.extensions = 0
         self.speech_callback_triggered = False
         self.muted = False
-        # Text of the turn last submitted while STT still owed a line close.
-        # Later completions/partials that still match this are catch-up for
-        # that utterance, not a new turn — matched by content so TTS suppressors
-        # cannot blanket-block a real follow-up while absorption is pending.
+        # Text of the turn last accepted by submit/commit, plus the live
+        # partial portion of that flush when there was one. Later STT that
+        # matches either is catch-up for that utterance, not a new turn.
         self._flushed_text = ""
+        self._flushed_partial = ""
 
     def _stop_counting(self):
         """Take this speaker off the countdown the interface is showing."""
@@ -113,6 +113,7 @@ class ConversationListener(TranscriptEventListener):
                 self.pending.clear()
                 self._partial = ""
                 self._flushed_text = ""
+                self._flushed_partial = ""
                 self._stop_timers()
                 self.extensions = 0
         if muted:
@@ -135,23 +136,32 @@ class ConversationListener(TranscriptEventListener):
     def _late_stt_for_flush(self, text: str) -> bool:
         """True when ``text`` is catch-up for the turn already submitted.
 
-        Caller holds the lock. Matches the full flushed string, or its trailing
-        segment when a flush joined completed lines with a live partial. Trailing
-        sentence punctuation is ignored so ``hello`` and ``hello?`` still match.
-        The marker stays until this match arrives even if the user has already
-        started speaking again.
+        Caller holds the lock. Matches the full flushed string, or the live
+        partial that was included in that flush. Trailing sentence punctuation
+        is ignored so ``hello`` and ``hello?`` still match. The markers stay
+        until this match arrives even if the user has already started again.
         """
-        if not self._flushed_text or not text:
+        if not text:
             return False
-        flushed = _flush_match_key(self._flushed_text)
         current = _flush_match_key(text)
         if not current:
             return False
-        return flushed == current or flushed.endswith(" " + current)
+        if self._flushed_text and _flush_match_key(self._flushed_text) == current:
+            return True
+        return bool(
+            self._flushed_partial and _flush_match_key(self._flushed_partial) == current
+        )
 
     def _clear_flush_marker(self) -> None:
         """Caller holds the lock."""
         self._flushed_text = ""
+        self._flushed_partial = ""
+
+    def _mark_flushed(self, text: str, partial: str) -> None:
+        """Record an accepted flush so late STT can be absorbed. Holds the lock."""
+        with self.lock:
+            self._flushed_text = text
+            self._flushed_partial = partial
 
     def _text(self, line):
         if line.words:
@@ -221,9 +231,6 @@ class ConversationListener(TranscriptEventListener):
                 self.pending.clear()
                 self._partial = ""
                 self.timer = None
-                if text:
-                    # STT may still close the line we just sent as a partial.
-                    self._flushed_text = text
             prefired = self.prefired
             self.prefired = False
             self._prefired_text = ""
@@ -245,9 +252,16 @@ class ConversationListener(TranscriptEventListener):
         # A speculative turn that survived to here was right: the window
         # closed without the speaker resuming, so it is the reply. Submitting
         # again would answer the same words twice.
+        accepted = False
         if prefired and self.prefire is not None and self.prefire.commit(self.speaker):
-            return
-        self.submit(self.speaker, text)
+            accepted = True
+        else:
+            # ``False`` means dropped (echo); ``True``/``None`` means taken —
+            # tests often wire a bare lambda that returns None.
+            accepted = self.submit(self.speaker, text) is not False
+        if accepted:
+            # Only mark catch-up absorption when the turn was actually taken.
+            self._mark_flushed(text, partial)
 
     def _speculate(self, generation):
         """Start answering before the window closes, if it is still this turn."""
@@ -430,6 +444,9 @@ class ConversationListener(TranscriptEventListener):
                     desired = self._wait_for(text)
                     # Re-arm when speculation is stale, or when adaptive silence
                     # for the revised partial no longer matches the armed wait.
+                    # Presence-quiet here includes TTS suppressors: cancelling on
+                    # every quiet partial would also cancel on echo, so audibility
+                    # remains the resume signal.
                     if cancel_prefire or desired != self.timer.interval:
                         self.extensions = 0
                         self._start_timer(desired)
@@ -463,10 +480,17 @@ class ConversationListener(TranscriptEventListener):
                 self.pending.append(text)
             buffered = self._buffered_text()
             if buffered:
-                # A completed line is a fresh window, so the budget it may be
-                # held open on starts over with it. Adaptive silence shortens
-                # clear Voice commands; the configured value remains the ceiling.
-                cancel = self._arm_silence(buffered)
+                # Energy may already have armed the wait. Fold the completed
+                # line into that wait instead of restarting the full window,
+                # unless the transcript or adaptive duration changed.
+                if self.timer is not None:
+                    cancel = self._revise_prefire_if_stale(buffered)
+                    desired = self._wait_for(buffered)
+                    if cancel or desired != self.timer.interval:
+                        self.extensions = 0
+                        self._start_timer(desired)
+                else:
+                    cancel = self._arm_silence(buffered)
         if text:
             self.presentation.commit(self.speaker, text)
         self._cancel_prefire_outside(cancel)
@@ -476,6 +500,7 @@ class ConversationListener(TranscriptEventListener):
             self._stop_timers()
             self._partial = ""
             self._flushed_text = ""
+            self._flushed_partial = ""
         self._drop_prefire()
         self._stop_counting()
         self.presentation.close_speaker(self.speaker)
@@ -625,20 +650,21 @@ class TranscriptSubmitter:
             if listener.speaker == speaker:
                 listener.flush_now()
 
-    def submit(self, speaker, text):
+    def submit(self, speaker, text) -> bool:
         if self._is_echo(speaker, text):
             print(
                 f"[ignored likely Taga TTS echo from {speaker}: {text}]",
                 file=self.stream,
                 flush=True,
             )
-            return
+            return False
         respond = self.gate.should_respond(speaker)
         # Swept before this turn is ingested, so the context a speaker supplied
         # earlier is ordered earlier in the request that carries both.
         if respond:
             self._sweep_context(speaker)
         self.conversation.ingest(speaker, text, respond=respond)
+        return True
 
     def handle_speech(self, partial):
         """Interrupt playback for real speech; report whether it was real."""

@@ -1444,3 +1444,81 @@ def test_energy_quiet_cancels_when_the_buffer_diverged_offline() -> None:
 
     assert guess.cancelled == ["Voice"]
     listener.close()
+
+
+def test_line_close_keeps_an_energy_armed_wait() -> None:
+    """Completing the same clear turn must not restart the silence clock."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("Taga status?")))
+    listener.on_energy_quiet()
+    generation = listener.timer_generation
+    interval = listener.timer.interval
+    presence.answer = False
+
+    listener.on_line_completed(SimpleNamespace(line=line("Taga status?")))
+
+    assert listener.timer is not None
+    assert listener.timer_generation == generation
+    assert listener.timer.interval == interval
+    assert listener.pending == ["Taga status?"]
+    listener.close()
+
+
+def test_a_rejected_echo_flush_does_not_arm_catch_up() -> None:
+    """Echo drops must not leave a flush marker that blocks the real turn."""
+    display = RecordingDisplay()
+    submitted: list[tuple[str, str]] = []
+    drop_once = {"echo": True}
+
+    def submit(_speaker, text):
+        if drop_once["echo"] and text == "please ignore this echo":
+            drop_once["echo"] = False
+            return False
+        submitted.append((_speaker, text))
+        return True
+
+    presence = StubPresence(False)
+    listener = RecordedListener(
+        display,
+        submitted,
+        confidence_threshold=0.6,
+        turn_silence=TurnSilence(1.25),
+        speaker="Voice",
+        submit=submit,
+        presentation=display,
+        presence=presence,
+    )
+    listener.on_line_text_changed(SimpleNamespace(line=line("please ignore this echo")))
+    listener.flush_now()
+
+    assert submitted == []
+    with listener.lock:
+        assert listener._flushed_text == ""
+        assert listener._flushed_partial == ""
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("please ignore this echo")))
+    listener.on_energy_quiet()
+    assert listener.timer is not None
+    listener.flush_now()
+    assert submitted == [("Voice", "please ignore this echo")]
+    listener.close()
+
+
+def test_a_new_phrase_that_is_a_flushed_suffix_is_not_absorbed() -> None:
+    """Only exact flush / flushed-partial matches are catch-up, not suffixes."""
+    listener, presence = listening_for_speech(speaking=False, window=1.25)
+    listener.on_line_text_changed(SimpleNamespace(line=line("please open the file")))
+    listener.flush_now()
+    presence.answer = False
+
+    listener.on_line_text_changed(SimpleNamespace(line=line("the file")))
+    listener.on_energy_quiet()
+
+    assert listener._partial == "the file"
+    assert listener.timer is not None
+    listener.flush_now()
+    assert listener.submitted == [
+        ("Voice", "please open the file"),
+        ("Voice", "the file"),
+    ]
+    listener.close()
