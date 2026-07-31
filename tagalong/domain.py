@@ -222,10 +222,11 @@ def speech_sink(speak: Callable[[str], None]) -> Callable[[str], None]:
 class SentenceChunker:
     """Turn streamed text into sentence-sized chunks with a hard size cap.
 
-    The opening chunk of a turn may also break at a clause. Everything after
-    it waits for a sentence, because by then speech is already playing and a
-    fragment only costs prosody; the first chunk is the one the listener is
-    waiting through silence for.
+    The opening chunk of a turn may also break at a clause, or at a word
+    bound when the model starts a long sentence without punctuation.
+    Everything after it waits for a sentence, because by then speech is
+    already playing and a fragment only costs prosody; the first chunk is the
+    one the listener is waiting through silence for.
     """
 
     SENTENCE_END = re.compile(
@@ -235,16 +236,22 @@ class SentenceChunker:
     # Below this, an opening clause is not worth hearing on its own: "Sure,"
     # spoken alone is a worse start than the fraction of a second it saves.
     FIRST_CLAUSE_MIN_CHARS = 20
+    # Cap the first spoken fragment when no sentence or clause end arrives.
+    # A twelve-word start is long enough to be a real answer and short enough
+    # that Piper can begin while the rest of the sentence is still streaming.
+    FIRST_CHUNK_MAX_WORDS = 12
 
     def __init__(
         self,
         emit,
         max_chars: int = 400,
         first_clause_min_chars: int | None = FIRST_CLAUSE_MIN_CHARS,
+        first_chunk_max_words: int | None = FIRST_CHUNK_MAX_WORDS,
     ) -> None:
         self.emit = emit
         self.max_chars = max_chars
         self.first_clause_min_chars = first_clause_min_chars
+        self.first_chunk_max_words = first_chunk_max_words
         self.buffer = ""
         self.has_emitted = False
 
@@ -302,6 +309,29 @@ class SentenceChunker:
         if clause:
             self._emit_bounded(clause)
 
+    def _emit_first_words(self) -> None:
+        """Release the opening words when no clause or sentence end has arrived.
+
+        Clause breaking covers the common case. This covers the rest: a long
+        first sentence with no comma would otherwise hold speech until a
+        period or the character cap. Requiring one word past the limit keeps
+        a complete short answer buffered until it finishes or punctuates.
+        """
+        if self.has_emitted or self.first_chunk_max_words is None:
+            return
+        limit = self.first_chunk_max_words
+        if limit < 1:
+            return
+        match = re.match(rf"\S+(?:\s+\S+){{{limit - 1}}}", self.buffer)
+        if match is None:
+            return
+        remainder = self.buffer[match.end() :]
+        if not remainder.lstrip():
+            return
+        chunk = match.group(0)
+        self.buffer = remainder.lstrip()
+        self._emit_bounded(chunk)
+
     def feed(self, text: str) -> None:
         self.buffer += text
         while match := self.SENTENCE_END.search(self.buffer):
@@ -311,6 +341,8 @@ class SentenceChunker:
                 self._emit_bounded(sentence)
         if not self.has_emitted:
             self._emit_first_clause()
+        if not self.has_emitted:
+            self._emit_first_words()
         self._emit_long_chunks()
 
     def flush(self) -> None:

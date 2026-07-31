@@ -152,8 +152,10 @@ they resume. Your own truncated messages in this thread are that, not a
 failure to answer, and the request that follows carries the full transcript.
 
 Responses are spoken sentence-by-sentence. Start every response with a short,
-direct, complete sentence so speech can begin quickly. Keep conversational
-voice replies concise unless the user asks for detail.
+direct, complete sentence of at most twelve words, in plain prose with no
+Markdown, so speech can begin immediately. Put detail, lists, and code after
+that opening sentence. Keep conversational voice replies concise unless the
+user asks for detail.
 """.strip()
 
 
