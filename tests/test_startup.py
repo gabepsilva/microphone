@@ -17,7 +17,7 @@ import pytest
 
 from tagalong import catalog, startup
 from tagalong.domain import POLICY_NAMES, RESPONSE_POLICIES, SpeakerGate
-from tagalong.listener import TranscriptSubmitter, tts_switch
+from tagalong.listener import TranscriptSubmitter
 from tagalong.startup import (
     StartupSelection,
     build_session_state,
@@ -43,7 +43,6 @@ def empty_config(tmp_path):
 BASE_SELECTION = StartupSelection(
     device_index=3,
     device={"name": "Yeti"},
-    tts_enabled=False,
     tts_provider="piper",
     audio_stream=None,
     tts_output=None,
@@ -89,20 +88,20 @@ def test_parser_defaults_match_the_documented_startup_choices(tmp_path) -> None:
         "en_US-lessac-medium",
     )
     assert args.codex_fast is True
-    assert (args.tts, args.taga_after, args.microphone) == ("on", "both", None)
+    assert (args.taga_after, args.microphone) == ("both", None)
     assert args.audio_stream == "none"
 
 
 def test_command_line_overrides_the_startup_config_file(tmp_path) -> None:
     config = write_config(
         tmp_path,
-        'microphone: "Config Mic"\ntts: "on"\ntaga_after: "voice"\n',
+        'microphone: "Config Mic"\ntts_provider: "edge"\ntaga_after: "voice"\n',
     )
 
     _, args = parse_startup_args(["--config", config, "--microphone", "Flag Mic"])
 
     assert args.microphone == "Flag Mic"
-    assert (args.tts, args.taga_after) == ("on", "voice")
+    assert (args.tts_provider, args.taga_after) == ("edge", "voice")
 
 
 def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
@@ -110,8 +109,8 @@ def test_a_missing_startup_config_uses_defaults(tmp_path) -> None:
 
     _, args = parse_startup_args(["--config", missing])
 
-    assert (args.tts, args.audio_stream, args.taga_after) == (
-        "on",
+    assert (args.tts_provider, args.audio_stream, args.taga_after) == (
+        "piper",
         "none",
         "both",
     )
@@ -128,7 +127,7 @@ def test_an_unreadable_startup_config_exits_instead_of_prompting(tmp_path) -> No
 @pytest.mark.parametrize(
     ("body", "argv"),
     [
-        ('tts: "maybe"\n', []),
+        ('tts_provider: "whisper"\n', []),
         ('taga_after: "sometimes"\n', []),
         ("", ["--confidence", "1.5"]),
         ("", ["--confidence", "-0.1"]),
@@ -145,7 +144,6 @@ def test_out_of_range_startup_values_are_rejected(tmp_path, body, argv) -> None:
 
 def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
     chosen = selection(
-        tts_enabled=True,
         audio_stream="Chromium",
         tts_output={"name": "alsa_output.pci", "description": "Speakers"},
         policy=RESPONSE_POLICIES["both"],
@@ -153,7 +151,6 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
 
     assert startup_settings(chosen, saved_args()) == {
         "microphone": "Yeti",
-        "tts": "on",
         "tts_provider": "piper",
         "audio_stream": "Chromium",
         "tts_output": "alsa_output.pci",
@@ -181,7 +178,6 @@ def test_the_startup_summary_reports_the_resolved_choices(tmp_path) -> None:
     print_startup_summary(
         args,
         selection(
-            tts_enabled=True,
             audio_stream="ZOOM VoiceEngine",
             tts_output={"name": "alsa", "description": "Speakers"},
         ),
@@ -205,7 +201,7 @@ def test_the_startup_summary_names_a_session_with_no_audio_application(
     _, args = parse_startup_args(["--config", empty_config(tmp_path)])
     stream = io.StringIO()
 
-    print_startup_summary(args, selection(tts_enabled=True), stream=stream)
+    print_startup_summary(args, selection(), stream=stream)
     summary = stream.getvalue()
 
     assert "Audio application: None" in summary
@@ -225,7 +221,7 @@ def test_the_sidebar_state_reflects_the_resolved_startup_choices(tmp_path) -> No
 
     state = build_session_state(
         args,
-        selection(tts_enabled=True, policy=RESPONSE_POLICIES["voice"]),
+        selection(policy=RESPONSE_POLICIES["voice"]),
     )
 
     assert (state.policy, state.codex_tier, state.codex_effort) == (
@@ -314,7 +310,6 @@ def test_the_chosen_application_and_speech_output_reach_the_selection(
 ) -> None:
     speakers = {"name": "alsa", "description": "Speakers"}
     monkeypatch.setattr(startup, "input_devices", lambda: [(2, {"name": "M"})])
-    monkeypatch.setattr(startup, "choose_tts", lambda requested: False)
     monkeypatch.setattr(startup, "choose_audio_stream", lambda requested: "Chromium")
     monkeypatch.setattr(startup, "choose_tts_output", lambda requested: speakers)
     monkeypatch.setattr(
@@ -326,7 +321,7 @@ def test_the_chosen_application_and_speech_output_reach_the_selection(
 
     assert chosen.audio_stream == "Chromium"
     assert chosen.tts_output is speakers
-    assert (chosen.device_index, chosen.tts_enabled) == (2, False)
+    assert chosen.device_index == 2
 
 
 def test_a_session_with_no_audio_application_resolves_to_nothing(
@@ -334,7 +329,6 @@ def test_a_session_with_no_audio_application_resolves_to_nothing(
 ) -> None:
     """Speech no longer constrains the Audio choice, so None must survive it."""
     monkeypatch.setattr(startup, "input_devices", lambda: [(0, {"name": "M"})])
-    monkeypatch.setattr(startup, "choose_tts", lambda requested: True)
     monkeypatch.setattr(startup, "choose_audio_stream", lambda requested: None)
     monkeypatch.setattr(
         startup, "choose_taga_after", lambda requested: ("Voice", {"Voice"})
@@ -345,7 +339,6 @@ def test_a_session_with_no_audio_application_resolves_to_nothing(
 
     assert chosen.audio_stream is None
     assert chosen.tts_output is None
-    assert chosen.tts_enabled is True
 
 
 def test_startup_keeps_running_without_a_microphone(monkeypatch, tmp_path) -> None:
@@ -660,19 +653,6 @@ def test_an_interrupted_session_still_closes_everything(monkeypatch, capsys) -> 
     assert events.count("close conversation") == 1
 
 
-def test_the_speech_toggle_reports_no_speech_when_the_session_has_none() -> None:
-    assert tts_switch(None)(True) is False
-
-
-def test_the_speech_toggle_forwards_to_the_engine() -> None:
-    settings: list[bool] = []
-    toggle = tts_switch(SimpleNamespace(set_enabled=settings.append))
-
-    assert toggle(False) is True
-    assert toggle(True) is True
-    assert settings == [False, True]
-
-
 # --------------------------------------------------------------------------
 # The policy vocabulary has one definition
 #
@@ -732,15 +712,6 @@ def test_a_chosen_voice_survives_the_provider_default(tmp_path) -> None:
     )
 
     assert (args.tts_provider, args.tts_voice) == ("piper", "en_US-ryan-high")
-
-
-def test_the_startup_summary_reports_a_session_without_speech(tmp_path) -> None:
-    _, args = parse_startup_args(["--config", empty_config(tmp_path)])
-    stream = io.StringIO()
-
-    print_startup_summary(args, selection(tts_enabled=False), stream=stream)
-
-    assert "Taga audio: Off" in stream.getvalue()
 
 
 @pytest.mark.parametrize("seconds", ["0.1", "31", "0"])

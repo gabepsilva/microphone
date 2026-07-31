@@ -3,7 +3,6 @@
 # Null automatically uses the first available microphone. If it is unavailable,
 # the session still starts and the sidebar can select one later.
 microphone: null
-tts: null
 # "piper" synthesizes locally and reaches the first word fastest; "edge" uses
 # Microsoft's online voices. Null keeps the default, piper.
 tts_provider: null

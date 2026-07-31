@@ -442,19 +442,3 @@ class TranscriptSubmitter:
             return False
         self.tts.interrupt()
         return True
-
-
-def tts_switch(tts):
-    """Build the interface's speech toggle.
-
-    It reports whether the session has speech at all, so a session started
-    without Edge TTS says so instead of silently appearing to enable it.
-    """
-
-    def toggle(enabled):
-        if tts is None:
-            return False
-        tts.set_enabled(enabled)
-        return True
-
-    return toggle

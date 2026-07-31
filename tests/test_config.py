@@ -13,7 +13,6 @@ from tagalong.config import (
 def test_startup_config_round_trip(tmp_path) -> None:
     settings = {
         "microphone": "USB microphone",
-        "tts": "on",
         "tts_provider": "piper",
         "audio_stream": "ZOOM VoiceEngine",
         "tts_output": None,
@@ -51,9 +50,12 @@ def test_startup_config_rejects_invalid_input(tmp_path, contents, message) -> No
 
 def test_a_config_value_that_is_not_json_is_kept_as_text(tmp_path) -> None:
     path = tmp_path / "tagalong.yaml"
-    path.write_text('microphone: Blue Yeti\ntts: "on"\n', encoding="utf-8")
+    path.write_text('microphone: Blue Yeti\ntts_provider: "piper"\n', encoding="utf-8")
 
-    assert load_startup_config(path) == {"microphone": "Blue Yeti", "tts": "on"}
+    assert load_startup_config(path) == {
+        "microphone": "Blue Yeti",
+        "tts_provider": "piper",
+    }
 
 
 def test_an_empty_config_value_reads_as_unset(tmp_path) -> None:
@@ -65,9 +67,9 @@ def test_an_empty_config_value_reads_as_unset(tmp_path) -> None:
 
 def test_comments_and_blank_lines_are_ignored(tmp_path) -> None:
     path = tmp_path / "tagalong.yaml"
-    path.write_text('# a comment\n\ntts: "off"\n', encoding="utf-8")
+    path.write_text('# a comment\n\ntts_provider: "edge"\n', encoding="utf-8")
 
-    assert load_startup_config(path) == {"tts": "off"}
+    assert load_startup_config(path) == {"tts_provider": "edge"}
 
 
 def test_a_line_without_a_separator_is_rejected(tmp_path) -> None:
@@ -97,7 +99,6 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
     path = tmp_path / "tagalong.yaml"
     settings = {
         "microphone": "Blue Yeti",
-        "tts": "on",
         "tts_provider": "edge",
         "audio_stream": "none",
         "tts_output": None,
@@ -124,9 +125,9 @@ def test_a_device_name_containing_a_colon_survives_the_round_trip(tmp_path) -> N
 
 def test_parsing_continues_past_an_unset_value(tmp_path) -> None:
     path = tmp_path / "tagalong.yaml"
-    path.write_text('microphone:\ntts: "on"\n', encoding="utf-8")
+    path.write_text('microphone:\ntts_provider: "piper"\n', encoding="utf-8")
 
-    assert load_startup_config(path) == {"microphone": None, "tts": "on"}
+    assert load_startup_config(path) == {"microphone": None, "tts_provider": "piper"}
 
 
 def test_parsing_continues_past_comments_between_settings(tmp_path) -> None:
@@ -204,18 +205,20 @@ def stored(**overrides):
 
 def test_a_changed_setting_is_written_through(tmp_path) -> None:
     save = RecordingSave()
-    config = StartupConfigFile(tmp_path / "tagalong.yaml", stored(tts="on"), save=save)
+    config = StartupConfigFile(
+        tmp_path / "tagalong.yaml", stored(tts_provider="piper"), save=save
+    )
 
-    assert config.record("tts", "off") is True
+    assert config.record("tts_provider", "edge") is True
     assert save.writes[0][0] == tmp_path / "tagalong.yaml"
-    assert save.writes[0][1]["tts"] == "off"
+    assert save.writes[0][1]["tts_provider"] == "edge"
 
 
 def test_a_setting_changed_to_what_it_already_was_is_not_rewritten() -> None:
     save = RecordingSave()
-    config = StartupConfigFile("tagalong.yaml", stored(tts="on"), save=save)
+    config = StartupConfigFile("tagalong.yaml", stored(tts_provider="piper"), save=save)
 
-    assert config.record("tts", "on") is False
+    assert config.record("tts_provider", "piper") is False
     assert save.writes == []
 
 
@@ -232,12 +235,12 @@ def test_every_recorded_change_accumulates_in_the_file() -> None:
 
 
 def test_the_store_does_not_share_the_mapping_it_was_given() -> None:
-    original = stored(tts="on")
+    original = stored(tts_provider="piper")
     config = StartupConfigFile("tagalong.yaml", original, save=RecordingSave())
 
-    config.record("tts", "off")
+    config.record("tts_provider", "edge")
 
-    assert original["tts"] == "on"
+    assert original["tts_provider"] == "piper"
 
 
 def test_a_key_the_file_cannot_hold_is_refused() -> None:
@@ -252,8 +255,8 @@ def test_a_file_that_cannot_be_written_is_reported_once(capsys) -> None:
     save = RecordingSave(error="disk full")
     config = StartupConfigFile("tagalong.yaml", stored(), save=save, stream=None)
 
-    assert config.record("tts", "off") is False
-    assert config.record("tts", "on") is False
+    assert config.record("tts_provider", "edge") is False
+    assert config.record("tts_provider", "piper") is False
 
     assert capsys.readouterr().err.count("Startup config will not be updated") == 1
 
@@ -261,12 +264,14 @@ def test_a_file_that_cannot_be_written_is_reported_once(capsys) -> None:
 def test_a_change_that_could_not_be_saved_is_still_the_setting_in_force() -> None:
     """The session already applied it; the file is what failed, not the change."""
     config = StartupConfigFile(
-        "tagalong.yaml", stored(tts="on"), save=RecordingSave(error="read-only")
+        "tagalong.yaml",
+        stored(tts_provider="piper"),
+        save=RecordingSave(error="read-only"),
     )
 
-    config.record("tts", "off")
+    config.record("tts_provider", "edge")
 
-    assert config.settings["tts"] == "off"
+    assert config.settings["tts_provider"] == "edge"
 
 
 def test_the_saved_keys_are_exactly_the_keys_that_can_be_loaded(tmp_path) -> None:

@@ -409,7 +409,7 @@ def test_toggling_tts_off_updates_the_session(tui) -> None:
     assert facade.state.tts_enabled is False
 
 
-def test_tts_stays_off_when_the_session_has_no_speech(tui) -> None:
+def test_tts_stays_off_when_the_toggle_is_refused(tui) -> None:
     facade = tui.VoiceCodexTUI(
         tui.SessionState(tts_enabled=False), on_tts=lambda enabled: False
     )
@@ -421,7 +421,7 @@ def test_tts_stays_off_when_the_session_has_no_speech(tui) -> None:
     drive(facade, body)
 
     assert facade.state.tts_enabled is False
-    assert any("tts unavailable" in text for text in entry_texts(facade))
+    assert any("tts could not be changed" in text for text in entry_texts(facade))
 
 
 def test_interrupting_marks_the_streaming_row_and_calls_back(tui) -> None:

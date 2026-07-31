@@ -147,8 +147,19 @@ class FakeTTS:
     def __init__(self, voice, output_sink=None):
         self.voice = voice
         self.output_sink = output_sink
+        self.enabled = True
+        self.provider = "piper"
+        # Set by the tests that need a switch still in flight, which is one of
+        # the two things the real engine refuses a provider change for.
+        self.switching = False
 
-    def set_enabled(self, _enabled):
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+
+    def set_provider(self, provider):
+        if self.switching or provider == self.provider:
+            return False
+        self.provider = provider
         return True
 
     def is_speaking(self):
@@ -208,7 +219,6 @@ def wiring(monkeypatch, tmp_path):
         return SimpleNamespace(
             device_index=3 if device is not None else None,
             device=device,
-            tts_enabled=built["tts_enabled"],
             tts_provider="piper",
             audio_stream=built["audio_stream"],
             tts_output=built["tts_output"],
@@ -251,20 +261,17 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
+
     monkeypatch.setattr(
         cli,
         "build_speech",
-        lambda selection, args: (
-            FakeTTS(
-                args.tts_voice,
-                (
-                    selection.tts_output["name"]
-                    if selection.tts_output is not None
-                    else None
-                ),
-            )
-            if selection.tts_enabled
-            else None
+        lambda selection, args: FakeTTS(
+            args.tts_voice,
+            (
+                selection.tts_output["name"]
+                if selection.tts_output is not None
+                else None
+            ),
         ),
     )
     monkeypatch.setattr(cli, "CodexConversation", FakeConversation)
@@ -288,7 +295,6 @@ def wiring(monkeypatch, tmp_path):
 
     built.update(
         input_device=MIC,
-        tts_enabled=False,
         audio_stream=None,
         tts_output=None,
     )
@@ -719,27 +725,26 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
     assert conversation.ingested == [("Text", "what time is it?", True, ())]
 
 
-def test_a_session_without_speech_reports_that_it_cannot_be_switched_on(
-    wiring,
-) -> None:
-    """The toggle must say a silent session is silent, not appear to enable it."""
+def test_the_voice_toggle_mutes_the_session_engine(wiring) -> None:
+    """Off is the engine told to stop generating, not the engine taken away."""
     cli.main()
     tui, _, conversation = wiring["session"]
 
-    assert conversation.tts is None
-    assert tui.hooks.on_tts(True) is False
+    tui.hooks.on_tts(False)
+    assert conversation.tts.enabled is False
+
+    tui.hooks.on_tts(True)
+    assert conversation.tts.enabled is True
 
 
 def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:
-    wiring["tts_enabled"] = True
     wiring["tts_output"] = PLAYBACK
 
     cli.main()
-    tui, _, conversation = wiring["session"]
+    _, _, conversation = wiring["session"]
 
     assert conversation.tts.output_sink == "alsa_output.pci"
     assert conversation.tts.voice == "en_US-lessac-medium"
-    assert tui.hooks.on_tts(True) is True
 
 
 def test_the_codex_thread_is_shown_in_the_sidebar(wiring) -> None:
@@ -761,22 +766,14 @@ def test_the_startup_selection_is_saved_when_asked(wiring, tmp_path) -> None:
     assert 'audio_stream: "ZOOM VoiceEngine"' in written
 
 
-def test_a_silent_session_builds_no_speech() -> None:
-    selection = SimpleNamespace(
-        tts_enabled=False, tts_provider="piper", tts_output=None
-    )
-
-    assert cli.build_speech(selection, SimpleNamespace(tts_voice="v")) is None
-
-
 def test_speech_is_built_for_the_chosen_provider_and_output(monkeypatch) -> None:
     started: list[tuple] = []
     monkeypatch.setattr(
         cli.SwitchableSpeech,
         "start",
         classmethod(
-            lambda _cls, provider, voice, output_sink=None: started.append(
-                (provider, voice, output_sink)
+            lambda _cls, provider, voice, output_sink=None: (
+                started.append((provider, voice, output_sink)) or object()
             )
         ),
     )
@@ -799,7 +796,9 @@ def test_speech_plays_through_the_default_output_when_none_was_chosen(
         cli.SwitchableSpeech,
         "start",
         classmethod(
-            lambda _cls, provider, voice, output_sink=None: started.append(output_sink)
+            lambda _cls, provider, voice, output_sink=None: (
+                started.append(output_sink) or object()
+            )
         ),
     )
     selection = SimpleNamespace(tts_enabled=True, tts_provider="piper", tts_output=None)
@@ -838,19 +837,10 @@ def test_editing_the_window_reaches_the_listeners(wiring) -> None:
 
 def test_the_sidebar_can_see_whether_speech_is_still_playing(wiring) -> None:
     """Without this the state field goes idle while audio is still coming out."""
-    wiring["tts_enabled"] = True
-
     cli.main()
     tui, _, conversation = wiring["session"]
 
     assert tui.speech is conversation.tts
-
-
-def test_a_silent_session_gives_the_sidebar_no_speech_to_poll(wiring) -> None:
-    cli.main()
-    tui, _, _ = wiring["session"]
-
-    assert tui.speech is None
 
 
 def saved_config(tmp_path):
@@ -872,8 +862,6 @@ def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
 
 
 def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
-    wiring["tts_enabled"] = True
-
     cli.main()
     tui, _, _ = wiring["session"]
 
@@ -881,27 +869,42 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     tui.hooks.on_codex_model("gpt-5.6-sol")
     tui.hooks.on_codex_effort("high")
     tui.hooks.on_turn_silence(1.25)
-    tui.hooks.on_tts(False)
+    tui.hooks.on_tts_provider("edge")
 
     saved = saved_config(tmp_path)
     assert saved["taga_after"] == "audio"
     assert saved["codex_model"] == "gpt-5.6-sol"
     assert saved["codex_reasoning"] == "high"
     assert saved["turn_silence"] == 1.25
-    assert saved["tts"] == "off"
+    assert saved["tts_provider"] == "edge"
+
+
+def test_muting_the_voice_is_not_remembered(wiring, tmp_path) -> None:
+    """Silence is for the replies at hand, not for every session that follows."""
+    cli.main()
+    tui, _, conversation = wiring["session"]
+    # Something else has to be saved first, or the file is never written at
+    # all and "the mute was not recorded" would pass for the wrong reason.
+    tui.hooks.on_policy("voice")
+
+    tui.hooks.on_tts(False)
+
+    assert conversation.tts.enabled is False
+    assert "tts" not in saved_config(tmp_path)
 
 
 def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
-    """A silent session cannot switch speech on, so it must not save that it did."""
+    """A refused change moved nothing, so the file must not move either."""
     cli.main()
-    tui, _, _ = wiring["session"]
-    # Something else has to be saved first, or the file is never written at
-    # all and "it did not record the refusal" would pass for the wrong reason.
-    tui.hooks.on_policy("voice")
+    tui, _, conversation = wiring["session"]
 
-    assert tui.hooks.on_tts(True) is False
+    assert tui.hooks.on_tts_provider("edge") is True
+    # The engine is still building the engine it just accepted, so the next
+    # request is refused rather than queued behind it.
+    conversation.tts.switching = True
 
-    assert saved_config(tmp_path)["tts"] == "off"
+    assert tui.hooks.on_tts_provider("piper") is False
+    assert saved_config(tmp_path)["tts_provider"] == "edge"
 
 
 def test_a_clamped_window_is_saved_as_the_value_in_force(wiring, tmp_path) -> None:

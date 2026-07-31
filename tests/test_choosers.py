@@ -21,7 +21,6 @@ from tagalong.choosers import (
     choose_audio_stream,
     choose_microphone,
     choose_taga_after,
-    choose_tts,
     choose_tts_output,
     find_audio_output,
     input_devices,
@@ -417,37 +416,6 @@ def test_choosing_a_response_policy_accepts_its_menu_number(
         frozenset({"Voice", "Audio"}),
     )
     assert "Please enter a number from 1 to 4." in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(("requested", "expected"), [("on", True), ("off", False)])
-def test_a_requested_tts_setting_needs_no_prompt(requested, expected) -> None:
-    assert choose_tts(requested) is expected
-
-
-@pytest.mark.parametrize(
-    ("answer", "expected"),
-    [
-        ("1", False),
-        ("no", False),
-        ("n", False),
-        ("2", True),
-        ("yes", True),
-        ("y", True),
-    ],
-)
-def test_every_accepted_tts_answer_maps_to_a_setting(
-    monkeypatch, answer, expected
-) -> None:
-    answer_with(monkeypatch, [answer])
-
-    assert choose_tts() is expected
-
-
-def test_an_unrecognised_tts_answer_is_asked_again(monkeypatch, capsys) -> None:
-    answer_with(monkeypatch, ["maybe", "y"])
-
-    assert choose_tts() is True
-    assert "Please enter 1 or 2." in capsys.readouterr().out
 
 
 def test_the_model_catalog_populates_the_sidebar_selectors(monkeypatch) -> None:

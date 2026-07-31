@@ -237,29 +237,3 @@ def choose_taga_after(requested=None):
         resolve_response_policy,
         f"Please enter a number from 1 to {len(policies)}.",
     )
-
-
-TTS_ANSWERS = {
-    "1": False,
-    "no": False,
-    "n": False,
-    "2": True,
-    "yes": True,
-    "y": True,
-}
-
-
-def choose_tts(requested=None):
-    """Choose whether Taga's responses are also spoken."""
-    if requested is not None:
-        return requested == "on"
-
-    print("\nSpeak Taga's responses with Edge TTS?")
-    print("   1) No")
-    print("   2) Yes")
-    print()
-    return prompt_until(
-        "Select audio output (1-2): ",
-        TTS_ANSWERS.__getitem__,
-        "Please enter 1 or 2.",
-    )

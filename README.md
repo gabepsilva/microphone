@@ -56,9 +56,10 @@ the provider the session starts with.
 
 The sidebar's engine picker offers a third answer, `No voice reply`, which
 silences the session exactly as `Ctrl-T` does — the two are one setting, so
-either control moves the other. The engine is remembered while the voice is
-off, and choosing one again turns it back on. A session started with
-`--tts off` has no engine at all and stays on `No voice reply`.
+either control moves the other. Off only means replies are not spoken: the
+engine stays loaded, keeps the provider it had, and speaks again the moment
+the voice is turned back on. Every session starts with an engine, so silence
+is always something the running session chooses, never how it was started.
 
 ## Running and presentation
 

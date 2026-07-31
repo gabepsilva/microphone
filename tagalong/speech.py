@@ -94,24 +94,6 @@ def build_speech_engine(provider, voice=None, output_sink=None) -> SpeechEngine:
     return PiperSentenceTTS(voice, output_sink=output_sink)
 
 
-def provider_switch(speech):
-    """Build the interface's speech-provider switch.
-
-    It reports whether the session can switch at all, so a session started
-    without speech says so instead of appearing to change an engine that does
-    not exist. The new provider speaks with its own default voice: a voice
-    name belongs to the engine that defines it, and Edge's would mean nothing
-    to Piper.
-    """
-
-    def switch(provider):
-        if speech is None:
-            return False
-        return speech.set_provider(provider)
-
-    return switch
-
-
 class SwitchableSpeech:
     """One speech object whose provider can be replaced while it runs.
 
@@ -140,6 +122,11 @@ class SwitchableSpeech:
         self.lock = threading.Lock()
         self.closed = False
         self.switch = None
+        # Whether replies are spoken belongs to the session, not to whichever
+        # engine happens to be installed: a muted session that switches
+        # providers is still muted, and a freshly built engine speaks unless
+        # it is told otherwise.
+        self.enabled = True
 
     @classmethod
     def start(cls, provider, voice=None, output_sink=None, build=build_speech_engine):
@@ -165,7 +152,10 @@ class SwitchableSpeech:
         self._current().interrupt()
 
     def set_enabled(self, enabled):
-        self._current().set_enabled(enabled)
+        with self.lock:
+            self.enabled = enabled
+            engine = self.engine
+        engine.set_enabled(enabled)
 
     def is_likely_echo(self, text):
         return self._current().is_likely_echo(text)
@@ -177,7 +167,9 @@ class SwitchableSpeech:
         """Start replacing the engine; report whether the switch was started.
 
         A switch that is already running wins, and a request for the provider
-        already in use is not a switch at all.
+        already in use is not a switch at all. Without a voice the new
+        provider speaks with its own default: a voice name belongs to the
+        engine that defines it, and Edge's would mean nothing to Piper.
         """
         with self.lock:
             if self.closed or provider == self.provider:
@@ -211,6 +203,11 @@ class SwitchableSpeech:
             # sidebar naming a provider that never started.
             installing = not self.closed
             if installing:
+                # Muted before the switch means muted after it. The new engine
+                # is silenced under the same lock that installs it, so no
+                # sentence can reach it in between.
+                if not self.enabled:
+                    engine.set_enabled(False)
                 retired, self.engine, self.provider = self.engine, engine, provider
         if not installing:
             engine.close()

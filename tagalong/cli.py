@@ -55,9 +55,9 @@ from .domain import (
     TurnSilence,
     TurnSilenceClock,
 )
-from .listener import TranscriptSubmitter, tts_switch
+from .listener import TranscriptSubmitter
 from .session import sweep_orphans
-from .speech import SwitchableSpeech, provider_switch
+from .speech import SwitchableSpeech
 from .startup import (
     build_session_state,
     parse_startup_args,
@@ -111,9 +111,12 @@ def acquire_single_instance_lock(lock_path: Path = LOCK_PATH):
 
 
 def build_speech(selection, args):
-    """Build the session's speech, or nothing when the session is silent."""
-    if not selection.tts_enabled:
-        return None
+    """Build the session's speech.
+
+    Every session has a synthesizer. "No voice reply" only stops audio being
+    generated, so there is nothing for a session to start without: the engine
+    is what the sidebar mutes, switches, and unmutes.
+    """
     return SwitchableSpeech.start(
         selection.tts_provider,
         args.tts_voice,
@@ -568,9 +571,9 @@ def remembering(hook, config, key, encode=lambda value: value):
     """Wrap a sidebar hook so an accepted change is written to the config file.
 
     Only an accepted change is recorded. A hook that refuses — a model the
-    session cannot switch to, a speech engine it does not have — has changed
-    nothing, and saving it would make the next session start somewhere this
-    one never went.
+    session cannot switch to, a speech engine still busy becoming the last one
+    it was asked for — has changed nothing, and saving it would make the next
+    session start somewhere this one never went.
     """
 
     def apply(value):
@@ -600,12 +603,11 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     tui.hooks.on_codex_effort = remembering(
         conversation.request_reasoning_effort, config, "codex_reasoning"
     )
-    tui.hooks.on_tts = remembering(
-        tts_switch(tts), config, "tts", encode=lambda on: "on" if on else "off"
-    )
-    tui.hooks.on_tts_provider = remembering(
-        provider_switch(tts), config, "tts_provider"
-    )
+    # Muting is not remembered: it is a thing done to one reply, or a few, and
+    # a session that starts silent every time because of a moment's quiet is
+    # not what "No voice reply" was asked to mean.
+    tui.hooks.on_tts = tts.set_enabled
+    tui.hooks.on_tts_provider = remembering(tts.set_provider, config, "tts_provider")
     tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
 
 
