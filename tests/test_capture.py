@@ -24,8 +24,12 @@ from tagalong.capture import (
     SoundActivityReporter,
     audio_level,
     decode_pcm,
+    deliver_stop_item,
     drain_audio_queue,
+    feed_stream_audio,
     metered_mic_transcriber,
+    offer_audio_chunk,
+    queued_chunk_limit,
     to_mono,
     transcriber_options,
 )
@@ -358,11 +362,84 @@ def test_a_stop_item_ends_the_backlog_and_is_reported() -> None:
     assert stop_requested is True
 
 
+def test_the_chunk_limit_covers_the_configured_backlog() -> None:
+    capture = CaptureSettings(samplerate=16000, blocksize=4096)
+
+    assert queued_chunk_limit(capture, 2.0) == 7
+
+
+def test_a_short_backlog_still_keeps_one_chunk() -> None:
+    capture = CaptureSettings(samplerate=16000, blocksize=4096)
+
+    assert queued_chunk_limit(capture, 0.1) == 1
+
+
+def test_a_full_queue_drops_the_oldest_audio() -> None:
+    audio_queue = queue.Queue(maxsize=2)
+    stop = object()
+
+    assert offer_audio_chunk(audio_queue, b"old", stop) is True
+    assert offer_audio_chunk(audio_queue, b"mid", stop) is True
+    assert offer_audio_chunk(audio_queue, b"new", stop) is True
+
+    assert audio_queue.get_nowait() == b"mid"
+    assert audio_queue.get_nowait() == b"new"
+
+
+def test_offering_never_discards_the_stop_sentinel() -> None:
+    audio_queue = queue.Queue(maxsize=1)
+    stop = object()
+    audio_queue.put(stop)
+
+    assert offer_audio_chunk(audio_queue, b"late", stop) is False
+    assert audio_queue.get_nowait() is stop
+
+
+def test_offer_retries_when_a_slot_opens_between_full_and_drop() -> None:
+    """Full then Empty is a race with the worker; the put must be retried."""
+
+    class RaceQueue:
+        def __init__(self):
+            self._full_once = True
+            self._empty_once = True
+            self.items: list[bytes] = []
+
+        def put_nowait(self, item):
+            if self._full_once:
+                self._full_once = False
+                raise queue.Full
+            self.items.append(item)
+
+        def get_nowait(self):
+            if self._empty_once:
+                self._empty_once = False
+                raise queue.Empty
+            raise AssertionError("drop should not run after Empty")
+
+    audio_queue = RaceQueue()
+
+    assert offer_audio_chunk(audio_queue, b"chunk", object()) is True
+    assert audio_queue.items == [b"chunk"]
+
+
+def test_stop_delivery_clears_a_full_queue() -> None:
+    audio_queue = queue.Queue(maxsize=1)
+    stop = object()
+    audio_queue.put(b"stale")
+
+    deliver_stop_item(audio_queue, stop)
+
+    assert audio_queue.get_nowait() is stop
+
+
 def test_interleaved_channels_are_averaged_rather_than_summed() -> None:
     """Summing doubles a stream carrying the same audio on both sides."""
     samples = decode_pcm(stereo(16384, -16384))
 
-    assert to_mono(samples, 2).tolist() == pytest.approx([0.5, -0.5])
+    mono = to_mono(samples, 2)
+
+    assert mono.dtype == np.float32
+    assert mono.tolist() == pytest.approx([0.5, -0.5])
 
 
 def test_a_speaker_panned_to_one_side_survives_the_downmix() -> None:
@@ -383,6 +460,75 @@ def test_a_frame_cut_in_half_at_shutdown_is_dropped() -> None:
     samples = decode_pcm(pcm(16384, 16384, 8192))
 
     assert to_mono(samples, 2).tolist() == pytest.approx([0.5])
+
+
+def test_a_fake_stream_still_receives_a_python_list() -> None:
+    stream = FakeStream()
+
+    feed_stream_audio(stream, np.array([0.5, -0.5], dtype=np.float32), 16000)
+
+    assert stream.audio == [([0.5, -0.5], 16000)]
+
+
+def test_a_moonshine_stream_is_fed_from_a_float32_buffer() -> None:
+    """Avoid building one Python float per sample on every capture block."""
+    calls: list[tuple] = []
+
+    class Lib:
+        @staticmethod
+        def moonshine_transcribe_add_audio_to_stream(
+            _transcriber, _stream, audio, count, rate, _flags
+        ):
+            calls.append((list(audio), count, rate))
+            return 0
+
+    stream = types.SimpleNamespace(
+        _lib=Lib(),
+        _transcriber=types.SimpleNamespace(_handle=object()),
+        _handle=object(),
+        _stream_time=0.0,
+        _last_update_time=0.0,
+        _update_interval=0.5,
+        _transcribe_flags=0,
+        update_transcription=lambda *_a, **_k: calls.append(("update",)),
+        add_audio=lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("list path must not run")
+        ),
+    )
+
+    feed_stream_audio(stream, np.array([0.25, -0.5], dtype=np.float32), 16000)
+
+    assert calls == [([0.25, -0.5], 2, 16000)]
+    assert stream._stream_time == pytest.approx(2 / 16000)
+
+
+def test_feeding_enough_audio_refreshes_transcription() -> None:
+    updates: list[str] = []
+
+    class Lib:
+        @staticmethod
+        def moonshine_transcribe_add_audio_to_stream(*_args):
+            return 0
+
+    stream = types.SimpleNamespace(
+        _lib=Lib(),
+        _transcriber=types.SimpleNamespace(_handle=object()),
+        _handle=object(),
+        _stream_time=0.0,
+        _last_update_time=0.0,
+        _update_interval=0.01,
+        _transcribe_flags=0,
+        update_transcription=lambda *_a, **_k: updates.append("tick"),
+        add_audio=lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("list path must not run")
+        ),
+    )
+    samples = np.zeros(320, dtype=np.float32)  # 0.02s at 16kHz
+
+    feed_stream_audio(stream, samples, 16000)
+
+    assert updates == ["tick"]
+    assert stream._last_update_time == stream._stream_time
 
 
 def test_an_empty_queue_yields_only_the_first_chunk() -> None:

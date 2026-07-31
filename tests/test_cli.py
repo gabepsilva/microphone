@@ -60,6 +60,8 @@ class FakeTUI:
         self.codex_fields: dict[str, object] = {}
         self.notes: list[str] = []
         self.audio_streams: list[tuple[str, str]] = []
+        self.microphones: list[tuple[str, str]] = []
+        self.microphone_reports: list[list[tuple[str, str]]] = []
         self.closed_speakers: list[str] = []
 
     def set_codex(self, **fields):
@@ -76,6 +78,7 @@ class FakeTUI:
 
     def set_microphones(self, microphones):
         self.microphones = list(microphones)
+        self.microphone_reports.append(list(microphones))
 
 
 class FakeTranscriber:
@@ -545,6 +548,30 @@ def test_a_discovery_failure_is_reported_once_until_it_changes() -> None:
         "could not discover microphones: different failure",
     ]
     assert tui.microphones == []
+
+
+def test_an_unchanged_microphone_list_is_not_reported_again() -> None:
+    """Every report repaints the sidebar, and the list is usually the same."""
+    microphone, tui, _ = managed_microphone(INPUTS)
+    assert microphone.refresh() is True
+
+    assert microphone.refresh() is False
+    assert tui.microphone_reports == [
+        [("Yeti", "Yeti"), ("Webcam", "Webcam")],
+    ]
+
+
+def test_a_microphone_list_change_is_reported() -> None:
+    available: list[tuple[int, dict]] = list(INPUTS[:1])
+    microphone, tui, _ = managed_microphone(discover=lambda: list(available))
+    microphone.refresh()
+
+    available.extend(INPUTS[1:])
+    assert microphone.refresh() is True
+    assert tui.microphone_reports == [
+        [("Yeti", "Yeti")],
+        [("Yeti", "Yeti"), ("Webcam", "Webcam")],
+    ]
 
 
 def test_the_microphone_worker_refreshes_until_it_is_closed() -> None:
