@@ -489,7 +489,7 @@ def test_an_ignored_echo_never_sweeps_the_other_channel() -> None:
     conversation = FakeConversation()
     gate = SpeakerGate({"Audio"}, {"Voice", "Audio"})
     submitter = TranscriptSubmitter(
-        conversation, gate, FakeTTS(echoes={"my own reply"}), stream=io.StringIO()
+        conversation, gate, FakeTTS(echoes={"my own reply"})
     )
     user = FakeChannel("Voice", conversation, buffered="still talking")
     submitter.add_listener(user)
@@ -500,19 +500,34 @@ def test_an_ignored_echo_never_sweeps_the_other_channel() -> None:
     assert conversation.ingested == []
 
 
-def test_the_submitter_drops_a_transcript_of_codex_speaking() -> None:
-    conversation = FakeConversation()
-    gate = SpeakerGate({"Audio"}, {"Audio"})
-    stream = io.StringIO()
-    submitter = TranscriptSubmitter(
-        conversation, gate, FakeTTS(echoes={"my own reply"}), stream=stream
+def test_the_submitter_silently_drops_a_transcript_of_codex_speaking() -> None:
+    probe = """
+from tagalong.domain import SpeakerGate
+from tagalong.listener import TranscriptSubmitter
+
+class Conversation:
+    def ingest(self, speaker, text, *, respond):
+        pass
+
+class TTS:
+    def is_likely_echo(self, text):
+        return text == "my own reply"
+
+submitter = TranscriptSubmitter(
+    Conversation(), SpeakerGate({"Audio"}, {"Audio"}), TTS()
+)
+submitter.submit("Audio", "my own reply")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
-    submitter.submit("Audio", "my own reply")
-    submitter.submit("Audio", "a real question")
-
-    assert conversation.ingested == [("Audio", "a real question", True)]
-    assert "ignored likely Taga TTS echo from Audio" in stream.getvalue()
+    assert completed.stdout == ""
+    assert completed.stderr == ""
 
 
 def test_typed_text_is_never_treated_as_an_echo() -> None:

@@ -7,7 +7,6 @@ a pending flush cannot fire against a torn-down display.
 
 from __future__ import annotations
 
-import sys
 import threading
 
 from moonshine_voice.transcriber import TranscriptEventListener
@@ -248,7 +247,6 @@ class ConversationListener(TranscriptEventListener):
         # transcript: finish_turn alone would clear the live row and lose it.
         if partial:
             self.presentation.commit(self.speaker, partial)
-        self.presentation.finish_turn(self.speaker)
         # A speculative turn that survived to here was right: the window
         # closed without the speaker resuming, so it is the reply. Submitting
         # again would answer the same words twice.
@@ -259,6 +257,11 @@ class ConversationListener(TranscriptEventListener):
             # ``False`` means dropped (echo); ``True``/``None`` means taken —
             # tests often wire a bare lambda that returns None.
             accepted = self.submit(self.speaker, text) is not False
+        # Completed STT lines are shown immediately, but stay provisional until
+        # the submitter has had the chance to reject its own TTS echo. Resolving
+        # here keeps genuine speech responsive without leaving rejected echo in
+        # either the visible or recorded transcript.
+        self.presentation.finish_turn(self.speaker, accepted=accepted)
         if accepted:
             # Only mark catch-up absorption when the turn was actually taken.
             self._mark_flushed(text, partial)
@@ -541,11 +544,10 @@ class TranscriptSubmitter:
 
     ECHO_PRONE_SPEAKERS = ("Voice", "Audio")
 
-    def __init__(self, conversation, gate, tts, stream=sys.stderr, prefire_plan=None):
+    def __init__(self, conversation, gate, tts, prefire_plan=None):
         self.conversation = conversation
         self.gate = gate
         self.tts = tts
-        self.stream = stream
         # Absent when the session waits out every window in full, which is
         # what ``--no-codex-prefire`` selects.
         self.prefire_plan = prefire_plan
@@ -652,11 +654,6 @@ class TranscriptSubmitter:
 
     def submit(self, speaker, text) -> bool:
         if self._is_echo(speaker, text):
-            print(
-                f"[ignored likely Taga TTS echo from {speaker}: {text}]",
-                file=self.stream,
-                flush=True,
-            )
             return False
         respond = self.gate.should_respond(speaker)
         # Swept before this turn is ingested, so the context a speaker supplied
