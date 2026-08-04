@@ -580,6 +580,55 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
     asyncio.run(exercise())
 
 
+def test_clicking_transcript_content_hands_focus_to_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            row = app.add_entry(
+                tui.Entry(kind="speech", source=tui.VOICE, text="click here")
+            )
+            await pilot.pause()
+            app.query_one("#mic-mute", Checkbox).focus()
+
+            await pilot.click(row.query_one(".entry-body", Static))
+
+            assert app.focused is app.query_one("#input", PromptInput)
+
+    asyncio.run(exercise())
+
+
+def test_clicking_sidebar_content_hands_focus_to_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-mute", Checkbox).focus()
+
+            await pilot.click("#panel-audio-head")
+
+            assert app.focused is app.query_one("#input", PromptInput)
+
+    asyncio.run(exercise())
+
+
+def test_clicking_sidebar_controls_does_not_steal_focus_for_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            await pilot.click("#mic-mute")
+            assert app.focused is app.query_one("#mic-mute", Checkbox)
+
+            await pilot.click("#mic-select")
+            assert app.focused is not app.query_one("#input", PromptInput)
+
+            await pilot.click("#silence-input")
+            assert app.focused is app.query_one("#silence-input", Input)
+
+    asyncio.run(exercise())
+
+
 def test_ctrl_c_clears_text_before_quitting_the_application(tui) -> None:
     cleaned_up: list[bool] = []
     app = tui.VoiceCodexApp(
