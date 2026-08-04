@@ -7,7 +7,6 @@ a pending flush cannot fire against a torn-down display.
 
 from __future__ import annotations
 
-import sys
 import threading
 
 from moonshine_voice.transcriber import TranscriptEventListener
@@ -545,11 +544,10 @@ class TranscriptSubmitter:
 
     ECHO_PRONE_SPEAKERS = ("Voice", "Audio")
 
-    def __init__(self, conversation, gate, tts, stream=sys.stderr, prefire_plan=None):
+    def __init__(self, conversation, gate, tts, prefire_plan=None):
         self.conversation = conversation
         self.gate = gate
         self.tts = tts
-        self.stream = stream
         # Absent when the session waits out every window in full, which is
         # what ``--no-codex-prefire`` selects.
         self.prefire_plan = prefire_plan
@@ -656,11 +654,6 @@ class TranscriptSubmitter:
 
     def submit(self, speaker, text) -> bool:
         if self._is_echo(speaker, text):
-            print(
-                f"[ignored likely Taga TTS echo from {speaker}: {text}]",
-                file=self.stream,
-                flush=True,
-            )
             return False
         respond = self.gate.should_respond(speaker)
         # Swept before this turn is ingested, so the context a speaker supplied
