@@ -340,11 +340,20 @@ def test_reset_hook_clears_only_after_a_new_session_starts() -> None:
 
     tui = Tui()
 
-    reset_codex_session(Command("new", ()), Conversation(False), tui)
-    reset_codex_session(Command("new", ()), Conversation(True), tui)
-    reset_codex_session(Command("new", ("again",)), Conversation(True), tui)
+    class Recorder:
+        def __init__(self) -> None:
+            self.rolls = 0
+
+        def roll(self) -> None:
+            self.rolls += 1
+
+    recorder = Recorder()
+    reset_codex_session(Command("new", ()), Conversation(False), tui, recorder)
+    reset_codex_session(Command("new", ()), Conversation(True), tui, recorder)
+    reset_codex_session(Command("new", ("again",)), Conversation(True), tui, recorder)
 
     assert tui.resets == 1
+    assert recorder.rolls == 1
     assert tui.notes == ["usage: /new"]
 
 
@@ -396,7 +405,16 @@ def test_build_command_router_registers_new_and_help() -> None:
             self.resets += 1
 
     tui = Tui()
-    commands = build_command_router(tui, Conversation())
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.rolls = 0
+
+        def roll(self) -> None:
+            self.rolls += 1
+
+    recorder = Recorder()
+    commands = build_command_router(tui, Conversation(), recorder)
 
     assert [spec.name for spec in commands.specs()] == ["new", "help"]
     commands.handle("/help")
@@ -407,6 +425,7 @@ def test_build_command_router_registers_new_and_help() -> None:
 
     commands.handle("/clear")
     assert tui.resets == 1
+    assert recorder.rolls == 1
 
 
 def test_help_for_one_command_names_aliases_and_unknowns() -> None:

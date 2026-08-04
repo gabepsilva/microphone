@@ -78,6 +78,182 @@ def test_a_committed_turn_becomes_a_transcript_entry(tui) -> None:
     assert facade.state.partial_text == ""
 
 
+def test_on_entry_fires_once_for_a_finished_note_and_not_for_an_open_taga_row(
+    tui,
+) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.note("policy → voice")
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert [entry.kind for entry in recorded] == ["note"]
+    assert recorded[0].text == "policy → voice"
+    assert facade.app._streaming is not None
+    assert facade.app._streaming.entry.recorded is False
+
+
+def test_a_streamed_taga_answer_is_recorded_when_the_turn_ends(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        facade.codex_delta("Hello ")
+        facade.codex_delta("there.")
+        await pilot.pause()
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].source == tui.TAGA
+    assert recorded[0].text == "Hello there."
+    assert recorded[0].recorded is True
+    assert recorded[0].streaming is False
+
+
+def test_an_interrupted_answer_is_recorded_once(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        facade.codex_delta("half an answ")
+        await pilot.pause()
+        facade.app.action_interrupt()
+        await pilot.pause()
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].interrupted is True
+    assert recorded[0].text == "half an answ"
+
+
+def test_a_command_is_recorded_at_completion_with_its_output(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.command_started("ls")
+        facade.command_output("file.txt")
+        await pilot.pause()
+        assert recorded == []
+        facade.command_completed(0)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].kind == "command"
+    assert recorded[0].text == "ls"
+    assert recorded[0].output == ["file.txt"]
+    assert recorded[0].exit_code == 0
+
+
+def test_record_open_entries_sweeps_what_a_cut_off_turn_left_behind(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.reasoning_started()
+        facade.reasoning_delta("still thinking")
+        await pilot.pause()
+        assert recorded == []
+        facade.finish_recording()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].kind == "reasoning"
+    assert recorded[0].text == "still thinking"
+
+
+def test_recording_sweeps_buffered_stream_text_before_the_entry(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._answer_deltas.append("buffered answer")
+        facade.finish_recording()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].text == "buffered answer"
+
+
+def test_reset_transcript_records_buffered_stream_text_before_clearing(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._answer_deltas.append("buffered before reset")
+        facade.reset_transcript()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].text == "buffered before reset"
+    assert facade.app.entries == []
+
+
+def test_a_failed_recording_is_retried_on_a_later_sweep(tui) -> None:
+    attempts: list = []
+
+    def record(entry):
+        attempts.append(entry)
+        return len(attempts) > 1
+
+    facade = tui.VoiceCodexTUI(on_entry=record)
+
+    async def body(pilot):
+        facade.note("retry me")
+        await pilot.pause()
+        assert attempts[0].recorded is False
+        facade.finish_recording()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(attempts) == 2
+    assert attempts[0] is attempts[1]
+    assert attempts[0].recorded is True
+
+
+def test_clearing_the_transcript_records_open_entries_first(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.command_started("pwd")
+        await pilot.pause()
+        facade.reset_transcript()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].kind == "command"
+    assert recorded[0].text == "pwd"
+    assert facade.app.entries == []
+
+
 def test_a_note_becomes_a_dim_entry(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
@@ -1275,6 +1451,8 @@ HOST_ONLY_METHODS = frozenset(
         "run",
         "wait_ready",
         "stop",
+        # Flush unfinished rows into the session file before shutdown.
+        "finish_recording",
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",
