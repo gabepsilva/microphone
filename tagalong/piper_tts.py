@@ -183,18 +183,31 @@ class PiperSentenceTTS:
         if self.shutdown_requested.is_set():
             return
         self.turns.cancel()
+        self._discard_queued()
+        self.activity.silenced()
+        self.playback.stop()
 
+    def _discard_queued(self):
+        """Drop every sentence still waiting, and stop calling it recent speech.
+
+        ``speak`` gives a queued sentence a long retention because it may sit
+        in the queue for a while before it is heard; the worker shortens that
+        once the sentence has actually played. A sentence dropped here never
+        reaches the worker, so without this it stays echo-matchable for two
+        minutes despite never being said — and the microphones would filter
+        the speaker's own words as echo of a sentence nobody ever heard.
+        """
         while True:
             try:
                 queued = self.sentences.get_nowait()
             except queue.Empty:
-                break
+                return
             if queued is self.stop_item:
                 self.sentences.put_nowait(queued)
-                break
-
-        self.activity.silenced()
-        self.playback.stop()
+                return
+            self.echo.remember(
+                queued[1], retention=self.SPOKEN_RETENTION_SECONDS, replace=True
+            )
 
     def is_likely_echo(self, text):
         """Return True when a transcript resembles recently queued TTS."""

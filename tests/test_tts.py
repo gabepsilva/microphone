@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tagalong.domain import EchoMatcher
 from tagalong.playback import describe_tool_failure, player_environment
 from tagalong.tts import EdgeSentenceTTS, trim_command
 
@@ -528,6 +529,91 @@ def test_draining_an_interrupt_puts_the_shutdown_item_back(
             while True:
                 remaining.append(engine.sentences.get_nowait())
         assert engine.stop_item in remaining
+    finally:
+        release.set()
+        engine.close()
+
+
+def test_an_interrupt_stops_treating_dropped_speech_as_an_echo(
+    monkeypatch, playback
+) -> None:
+    """A sentence the interrupt threw away must not filter the microphones.
+
+    Queued speech is remembered for two minutes because it may not be said
+    for a while. One that is dropped is never said at all, so its retention
+    has to fall back to a spoken sentence's — otherwise the speaker's own
+    words are filtered as echo of a reply they cut off and never heard.
+    """
+    monkeypatch.setattr(EdgeSentenceTTS, "PREFETCH_COUNT", 1)
+    release = threading.Event()
+    playback.factory = lambda record: GatedPlayer(record, release, running=False)
+    engine = start_engine(monkeypatch, playback)
+    try:
+        engine.begin_turn()
+        engine.speak("Holds the only slot.")
+        engine.speak("Parks the producer.")
+        assert playback.wait_for(1)
+        assert wait_until(engine.sentences.empty)
+        engine.speak("I can roll it back if you would rather not ship today.")
+
+        engine.interrupt()
+
+        elapsed = EdgeSentenceTTS.SPOKEN_RETENTION_SECONDS + 1
+        engine.echo._clock = lambda: time.monotonic() + elapsed
+        assert (
+            engine.is_likely_echo(
+                "i can roll it back if you would rather not ship today"
+            )
+            is False
+        )
+    finally:
+        release.set()
+        engine.close()
+
+
+def test_a_prefetched_sentence_released_unspoken_stops_being_an_echo(
+    monkeypatch, playback
+) -> None:
+    """The prefetch-release path skips the consumer, so it must forget too.
+
+    A sentence the producer is holding when the turn is cancelled never
+    reaches the ``finally`` that shortens retention, and it is never spoken
+    either — the same two-minute filter would sit on it.
+    """
+    monkeypatch.setattr(EdgeSentenceTTS, "PREFETCH_COUNT", 1)
+    release = threading.Event()
+    playback.factory = lambda record: GatedPlayer(record, release, running=False)
+    engine = start_engine(monkeypatch, playback)
+    # A clock the test moves by hand: the release happens on the pipeline's
+    # own schedule, and a real one would let it re-stamp the deadline from a
+    # "now" the test had already moved past.
+    now = [0.0]
+    engine.echo._clock = lambda: now[0]
+    held = "Let us roll the whole release back to yesterday."
+    try:
+        engine.begin_turn()
+        engine.speak("Holds the only slot.")
+        engine.speak(held)
+        assert playback.wait_for(1)
+        # The producer is parked on the prefetch slot holding the second
+        # sentence, so the interrupt's queue drain never sees it.
+        assert wait_until(engine.sentences.empty)
+
+        engine.interrupt()
+        # Freeing the player gives the slot back, which is what wakes the
+        # producer into the release path under test.
+        release.set()
+
+        spoken_window = EdgeSentenceTTS.SPOKEN_RETENTION_SECONDS
+
+        def shortened():
+            deadline = engine.echo._expiry.get(EchoMatcher.normalize(held), 0)
+            return deadline <= now[0] + spoken_window
+
+        assert wait_until(shortened)
+
+        now[0] += spoken_window + 1
+        assert engine.is_likely_echo(held) is False
     finally:
         release.set()
         engine.close()

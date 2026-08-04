@@ -128,18 +128,33 @@ class EdgeSentenceTTS:
         if self.shutdown_requested.is_set():
             return
         self.turns.cancel()
+        self._discard_queued()
+        self.activity.silenced()
+        self.playback.stop()
 
+    def _discard_queued(self):
+        """Drop every sentence still waiting, and stop calling it recent speech.
+
+        ``speak`` gives a queued sentence a long retention because it may sit
+        in the queue for a while before it is heard; the consumer shortens
+        that once the sentence has actually played. A sentence dropped here
+        never reaches the consumer, so without this it stays echo-matchable
+        for two minutes despite never being said — and the microphones would
+        filter the speaker's own words as echo of a sentence nobody heard.
+        """
         while True:
             try:
                 queued = self.sentences.get_nowait()
             except queue.Empty:
-                break
+                return
             if queued is self.stop_item:
                 self.sentences.put_nowait(queued)
-                break
+                return
+            self._forget_unspoken(queued[1])
 
-        self.activity.silenced()
-        self.playback.stop()
+    def _forget_unspoken(self, text):
+        """Cut a never-played sentence's retention back to a spoken one's."""
+        self.echo.remember(text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True)
 
     def is_likely_echo(self, text):
         """Return True when a transcript resembles recently queued TTS."""
@@ -185,10 +200,16 @@ class EdgeSentenceTTS:
             return
         self.playback.play(audio, abandoned=lambda: self._abandoned(turn))
 
-    def _release_if_abandoned(self, turn, available_slots):
-        """Give back a prefetch slot held for speech nobody wants any more."""
+    def _release_if_abandoned(self, turn, text, available_slots):
+        """Give back a prefetch slot held for speech nobody wants any more.
+
+        The sentence is un-remembered on the way out for the same reason the
+        interrupt drain does it: this path skips the consumer's ``finally``,
+        so its long queued retention would otherwise never be shortened.
+        """
         if not self._abandoned(turn):
             return False
+        self._forget_unspoken(text)
         available_slots.release()
         return True
 
@@ -203,7 +224,7 @@ class EdgeSentenceTTS:
             await available_slots.acquire()
             # Checked twice around the stagger: acquiring a slot and waiting
             # out the delay can each span an interrupt or a close.
-            if self._release_if_abandoned(turn, available_slots):
+            if self._release_if_abandoned(turn, text, available_slots):
                 if self.shutdown_requested.is_set():
                     break
                 continue
@@ -214,7 +235,7 @@ class EdgeSentenceTTS:
                 if delay > 0:
                     await asyncio.sleep(delay)
 
-            if self._release_if_abandoned(turn, available_slots):
+            if self._release_if_abandoned(turn, text, available_slots):
                 if self.shutdown_requested.is_set():
                     break
                 continue
