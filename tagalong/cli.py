@@ -56,6 +56,7 @@ from .domain import (
     TurnSilenceClock,
 )
 from .listener import TranscriptSubmitter
+from .recording import TranscriptRecorder
 from .session import sweep_orphans
 from .speech import SwitchableSpeech
 from .startup import (
@@ -628,9 +629,6 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
         images=message.images,
     )
     tui.hooks.on_interrupt = conversation.interrupt
-    commands = build_command_router(tui, conversation)
-    tui.hooks.on_command = commands.handle
-    tui.hooks.list_commands = commands.specs
     tui.hooks.on_codex_model = remembering(
         conversation.request_model, config, "codex_model"
     )
@@ -645,12 +643,20 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
 
 
-def build_command_router(tui, conversation) -> CommandRouter:
+def wire_transcript_recording(tui, conversation, recorder):
+    """Attach continuous transcript recording and the slash commands that roll it."""
+    tui.hooks.on_entry = recorder.record
+    commands = build_command_router(tui, conversation, recorder)
+    tui.hooks.on_command = commands.handle
+    tui.hooks.list_commands = commands.specs
+
+
+def build_command_router(tui, conversation, recorder) -> CommandRouter:
     """Register the session's typed slash commands and their palette copy."""
     commands = CommandRouter(tui)
     commands.register(
         "new",
-        lambda command: reset_codex_session(command, conversation, tui),
+        lambda command: reset_codex_session(command, conversation, tui, recorder),
         description="Start a fresh session and clear the transcript",
         aliases=("clear",),
     )
@@ -677,13 +683,22 @@ def show_command_help(command, commands: CommandRouter, tui) -> None:
     tui.note("\n".join(lines))
 
 
-def reset_codex_session(command, conversation, tui):
+def reset_codex_session(command, conversation, tui, recorder):
     """Start a fresh Taga conversation and clear its visible transcript."""
     if command.arguments:
         tui.note("usage: /new")
         return
     if conversation.new_session():
+        # Sweep open entries into the current file before rolling to a new one.
         tui.reset_transcript()
+        recorder.roll()
+
+
+def finish_recorded_session(tui, recorder, applications) -> None:
+    """Sweep unfinished entries, close the file, and stop background refreshers."""
+    tui.finish_recording()
+    recorder.close()
+    applications.stop()
 
 
 def remembering_turn_silence(turn_silence, config):
@@ -747,6 +762,7 @@ def main():
         speech=tts,
         on_policy=remembering(gate.set_policy, config, "taga_after"),
     )
+    recorder = TranscriptRecorder()
     transcript_display = tui
     conversation = CodexConversation(
         CodexSettings(
@@ -761,6 +777,7 @@ def main():
     )
 
     attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
+    wire_transcript_recording(tui, conversation, recorder)
     # The plan reads the conversation's own measured time-to-first-word, so
     # the moment a turn is guessed at tracks what Taga is actually doing.
     submitter = TranscriptSubmitter(
@@ -834,7 +851,7 @@ def main():
         microphone=microphone,
         audio=them,
     )
-    applications.stop()
+    finish_recorded_session(tui, recorder, applications)
 
 
 def run_entrypoint():

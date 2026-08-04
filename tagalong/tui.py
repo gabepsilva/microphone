@@ -131,6 +131,8 @@ class Entry:
     streaming: bool = False
     # How long a reasoning entry spent thinking, known only once it has.
     seconds: float | None = None
+    # Bookkeeping for the session transcript file; not rendered.
+    recorded: bool = False
 
 
 @dataclass
@@ -216,6 +218,8 @@ class TuiHooks:
     on_interrupt: Callable[[], None] | None = None
     on_end_turn: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
+    # Fired once per finished transcript row for the session file recorder.
+    on_entry: Callable[[Entry], None] | None = None
     on_quit: Callable[[], None] | None = None
 
 
@@ -267,6 +271,11 @@ def uses_markdown_body(entry: Entry) -> bool:
         and not entry.streaming
         and bool(entry.text)
     )
+
+
+def entry_is_open(entry: Entry) -> bool:
+    """True while an entry can still grow: a streaming row or a running command."""
+    return entry.streaming or (entry.kind == "command" and entry.exit_code is None)
 
 
 def render_entry_body(entry: Entry) -> Text:
@@ -1833,6 +1842,8 @@ class VoiceCodexApp(App):
         entry.stamp = entry.stamp or self._stamp()
         was_empty = not self.entries
         self.entries.append(entry)
+        if not entry_is_open(entry):
+            self._record(entry)
         row = EntryRow(entry)
         if not self._tailing:
             # The view is held back in history. The entry is in the record and
@@ -1850,8 +1861,26 @@ class VoiceCodexApp(App):
             self._sync_empty_transcript()
         return row
 
+    def _record(self, entry: Entry) -> None:
+        """Hand a finished entry to the session recorder, once."""
+        if entry.recorded or self.hooks.on_entry is None:
+            return
+        entry.recorded = True
+        self.hooks.on_entry(entry)
+
+    def record_open_entries(self) -> None:
+        """Record every entry that never got a clean finalizer.
+
+        Called before the transcript is cleared and at shutdown, so a command
+        or reasoning section a cut-off turn left behind still reaches the file.
+        """
+        for entry in self.entries:
+            if not entry.recorded:
+                self._record(entry)
+
     def clear_transcript(self) -> None:
         """Forget every rendered and saved transcript row for a new session."""
+        self.record_open_entries()
         for row in self._window:
             row.remove()
         self.entries.clear()
@@ -2288,6 +2317,7 @@ class VoiceCodexApp(App):
             self._streaming.entry.streaming = False
             self._streaming.entry.interrupted = True
             self.mark_dirty(self._streaming)
+            self._record(self._streaming.entry)
             self._streaming = None
         # Draw the cut-off mark, and whatever text arrived just before it,
         # without waiting for the next flush.
@@ -2533,6 +2563,10 @@ class VoiceCodexTUI:
         self._reasoning_deltas.take()
         self._call(self.app.clear_transcript)
 
+    def finish_recording(self) -> None:
+        """Sweep unfinished entries into the session file before shutdown."""
+        self._call(self.app.record_open_entries)
+
     # -- Codex turn --------------------------------------------------------
 
     def begin_codex(self) -> None:
@@ -2614,6 +2648,7 @@ class VoiceCodexTUI:
             row.entry.streaming = False
             self.app.mark_dirty(row)
             self.app._streaming = None
+            self.app._record(row.entry)
         # The turn is over, so whatever the flush timer has not drawn yet is
         # drawn now. Nothing else will arrive to trigger it.
         self.app.flush_stream()
@@ -2681,6 +2716,7 @@ class VoiceCodexTUI:
         row.entry.seconds = elapsed
         self.app.mark_dirty(row)
         self.app._reasoning_row = None
+        self.app._record(row.entry)
         self.app.flush_stream()
 
     def command_started(self, command: str) -> None:
@@ -2732,6 +2768,7 @@ class VoiceCodexTUI:
         row.entry.exit_code = code
         self.app.mark_dirty(row)
         self.app._command_row = None
+        self.app._record(row.entry)
         self.app.flush_stream()
         self.app.refresh_sidebar()
 

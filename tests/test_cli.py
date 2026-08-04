@@ -80,6 +80,12 @@ class FakeTUI:
         self.microphones = list(microphones)
         self.microphone_reports.append(list(microphones))
 
+    def finish_recording(self):
+        self.finished_recording = True
+
+    def reset_transcript(self):
+        self.resets = getattr(self, "resets", 0) + 1
+
 
 class FakeTranscriber:
     def __init__(self, **kwargs):
@@ -757,12 +763,39 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
     assert {
         "on_user_text",
         "on_interrupt",
+        "on_command",
+        "on_entry",
         "on_codex_model",
         "on_codex_effort",
         "on_tts",
         "on_mute",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
+    assert tui.hooks.on_entry is not None
+    assert tui.hooks.on_command is not None
+
+
+def test_main_finishes_transcript_recording_after_the_session(
+    wiring, tmp_path, monkeypatch
+) -> None:
+    """The recorder is closed after run_session so a clean quit still flushes."""
+    closed: list[object] = []
+
+    class TrackingRecorder(cli.TranscriptRecorder):
+        def close(self):
+            closed.append(self)
+            super().close()
+
+    monkeypatch.setattr(
+        cli,
+        "TranscriptRecorder",
+        lambda: TrackingRecorder(directory=tmp_path),
+    )
+    cli.main()
+    tui, _, _ = wiring["session"]
+
+    assert closed
+    assert getattr(tui, "finished_recording", False) is True
 
 
 def test_typed_text_always_requests_a_reply(wiring) -> None:

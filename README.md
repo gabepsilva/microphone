@@ -77,6 +77,14 @@ application. If the file or an input device is absent, the typed/Codex session
 still starts. The microphone picker under the mic meter refreshes as devices
 are connected, so an input can be selected later without restarting.
 
+## Session transcripts
+
+Every finished transcript row — Voice, Text, Audio, Taga answers, reasoning,
+commands, and system notes — is written as it completes to
+`~/tagalong/transcripts/YYYY-MM-DD_HH_MM_SS.txt`. The file is flushed after
+each entry so a killed session still leaves a complete record. `/new` closes
+the current file and opens a fresh one for the next conversation.
+
 ## Hearing the far end
 
 Audio is captured from one application's own PipeWire playback stream rather
