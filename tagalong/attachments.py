@@ -53,15 +53,20 @@ class ClipboardImage:
     suffix: str
 
 
-class ImageClipboard(Protocol):
-    """Port for reading images from the operating-system clipboard.
+class SystemClipboard(Protocol):
+    """Port for reading the operating-system clipboard.
 
-    Textual only pastes text. Image paste goes through this port so tests can
-    supply a fake without patching subprocess or the widget under test.
+    Textual's own paste replays an in-app copy: ``app.clipboard`` is a string
+    the app itself set, never the OS clipboard. Both halves of a real paste
+    therefore come through this port, which also lets tests supply a fake
+    without patching subprocess or the widget under test.
     """
 
     def read_image(self) -> ClipboardImage | None:
         """Return a clipboard image, or ``None`` when none is available."""
+
+    def read_text(self) -> str | None:
+        """Return clipboard text, or ``None`` when the clipboard holds none."""
 
 
 def cache_home(
@@ -196,9 +201,17 @@ def _decode_applescript_png(stdout: bytes) -> bytes | None:
         return None
 
 
+def _decode_clipboard_text(data: bytes | None) -> str | None:
+    """Return clipboard bytes as text, or ``None`` when there is none to paste."""
+    if data is None:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    return text or None
+
+
 @dataclass(slots=True)
 class LinuxImageClipboard:
-    """Read images via Wayland ``wl-paste`` or X11 ``xclip``."""
+    """Read the clipboard via Wayland ``wl-paste`` or X11 ``xclip``."""
 
     def read_image(self) -> ClipboardImage | None:
         for mime, suffix in _CLIPBOARD_IMAGE_TYPES:
@@ -215,14 +228,27 @@ class LinuxImageClipboard:
                 return ClipboardImage(data=data, suffix=suffix)
         return None
 
+    def read_text(self) -> str | None:
+        data = _run_clipboard(
+            ["wl-paste", "-n"],
+            timeout=_CLIPBOARD_TIMEOUT_SECONDS,
+        )
+        if data is None:
+            data = _run_clipboard(
+                ["xclip", "-selection", "clipboard", "-o"],
+                timeout=_CLIPBOARD_TIMEOUT_SECONDS,
+            )
+        return _decode_clipboard_text(data)
+
 
 @dataclass(slots=True)
 class MacImageClipboard:
-    """Read images from the macOS pasteboard through ``osascript``.
+    """Read the macOS pasteboard through ``osascript`` and ``pbpaste``.
 
     macOS has no ``wl-paste``/``xclip``, and ``pbpaste`` only speaks text, so
-    the image would silently never arrive. AppleScript is the one route that
-    needs no third-party binary: ``osascript`` ships with the system.
+    an image would silently never arrive. AppleScript is the one route to the
+    bytes that needs no third-party binary: ``osascript`` ships with the
+    system. Text still comes from ``pbpaste``, which is what it is for.
     """
 
     def read_image(self) -> ClipboardImage | None:
@@ -237,8 +263,13 @@ class MacImageClipboard:
             return None
         return ClipboardImage(data=data, suffix=".png")
 
+    def read_text(self) -> str | None:
+        return _decode_clipboard_text(
+            _run_clipboard(["pbpaste"], timeout=_CLIPBOARD_TIMEOUT_SECONDS)
+        )
 
-def system_image_clipboard(platform: str | None = None) -> ImageClipboard:
+
+def system_image_clipboard(platform: str | None = None) -> SystemClipboard:
     """Return the clipboard adapter for ``platform`` (this host by default)."""
     if (platform if platform is not None else sys.platform) == "darwin":
         return MacImageClipboard()
@@ -246,7 +277,7 @@ def system_image_clipboard(platform: str | None = None) -> ImageClipboard:
 
 
 # Default adapter used by the live app. Tests inject fakes instead.
-DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = system_image_clipboard()
+DEFAULT_IMAGE_CLIPBOARD: SystemClipboard = system_image_clipboard()
 
 
 @dataclass

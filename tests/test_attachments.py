@@ -56,12 +56,16 @@ def tiny_png() -> bytes:
 
 @dataclass
 class FakeImageClipboard:
-    """Image clipboard that returns a fixed payload (or nothing)."""
+    """OS clipboard that returns a fixed image and text (or neither)."""
 
     image: ClipboardImage | None = None
+    text: str | None = None
 
     def read_image(self) -> ClipboardImage | None:
         return self.image
+
+    def read_text(self) -> str | None:
+        return self.text
 
 
 # --------------------------------------------------------------------------
@@ -249,6 +253,58 @@ def test_mac_clipboard_rejects_malformed_applescript_output(monkeypatch) -> None
         assert MacImageClipboard().read_image() is None
 
 
+def test_mac_clipboard_reads_text_with_pbpaste(monkeypatch) -> None:
+    seen: list = []
+
+    def fake_run(command, **kwargs):
+        seen.append((command, kwargs))
+        if command == ["pbpaste"]:
+            return type(
+                "R", (), {"returncode": 0, "stdout": "héllo".encode(), "stderr": b""}
+            )()
+        return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_text() == "héllo"
+    assert seen[0][0] == ["pbpaste"]
+
+
+def test_linux_clipboard_reads_text_with_wl_paste_then_xclip(monkeypatch) -> None:
+    def only_xclip(command, **_kwargs):
+        if command[0] == "wl-paste":
+            raise FileNotFoundError
+        if command == ["xclip", "-selection", "clipboard", "-o"]:
+            return type(
+                "R", (), {"returncode": 0, "stdout": b"from xclip", "stderr": b""}
+            )()
+        return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
+
+    def wayland(command, **_kwargs):
+        if command == ["wl-paste", "-n"]:
+            return type(
+                "R", (), {"returncode": 0, "stdout": b"from wayland", "stderr": b""}
+            )()
+        return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", wayland)
+    assert LinuxImageClipboard().read_text() == "from wayland"
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", only_xclip)
+    assert LinuxImageClipboard().read_text() == "from xclip"
+
+
+def test_an_empty_clipboard_reads_as_no_text(monkeypatch) -> None:
+    """Empty is not a paste: falling through leaves Textual's copy usable."""
+    monkeypatch.setattr(
+        "tagalong.attachments.subprocess.run",
+        lambda *_a, **_k: type(
+            "R", (), {"returncode": 0, "stdout": b"", "stderr": b""}
+        )(),
+    )
+    assert MacImageClipboard().read_text() is None
+    assert LinuxImageClipboard().read_text() is None
+
+
 def test_system_image_clipboard_follows_the_platform(monkeypatch) -> None:
     assert isinstance(system_image_clipboard("darwin"), MacImageClipboard)
     assert isinstance(system_image_clipboard("linux"), LinuxImageClipboard)
@@ -366,6 +422,7 @@ def _app_with_image_ports(
     *,
     on_user_text=None,
     image: ClipboardImage | None = None,
+    text: str | None = None,
 ) -> VoiceCodexApp:
     """Build an app whose prompt will see the injected clipboard and store."""
     app = VoiceCodexApp(
@@ -373,7 +430,7 @@ def _app_with_image_ports(
         TuiHooks(on_user_text=on_user_text),
     )
     app.prompt_ports = PromptPorts(
-        clipboard=FakeImageClipboard(image),
+        clipboard=FakeImageClipboard(image, text),
         store=AttachmentStore(directory=tmp_path),
     )
     return app
@@ -405,6 +462,109 @@ def test_pasting_an_image_inserts_a_token_and_submits_paths(tmp_path) -> None:
     assert len(message.images) == 1
     assert Path(message.images[0]).parent == tmp_path.resolve()
     assert Path(message.images[0]).read_bytes() == tiny_png()
+
+
+def test_cmd_v_pastes_an_image_the_way_ctrl_v_does(tmp_path) -> None:
+    """A terminal that forwards Cmd+V sends super+v, which must also paste.
+
+    macOS users reach for Cmd+V, and a terminal told not to answer it itself
+    reports it under the Kitty protocol as super+v.
+    """
+    app = _app_with_image_ports(
+        tmp_path,
+        image=ClipboardImage(data=tiny_png(), suffix=".png"),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            await pilot.press("super+v")
+
+            assert prompt.value == "[Image #1]"
+            assert len(prompt.draft.paths) == 1
+
+    asyncio.run(exercise())
+
+
+def test_pasting_takes_text_from_the_os_clipboard_not_the_app_copy(tmp_path) -> None:
+    """Textual's own paste replays an in-app copy; the OS clipboard wins.
+
+    Without this the paste key is useless for anything copied outside the
+    app, which is most of what a user pastes.
+    """
+    app = _app_with_image_ports(tmp_path, text="from the system")
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            app.copy_to_clipboard("copied inside the app")
+            await pilot.press("ctrl+v")
+
+            assert prompt.value == "from the system"
+            # Typing continues after the paste rather than before it.
+            await pilot.press("!")
+            assert prompt.value == "from the system!"
+
+    asyncio.run(exercise())
+
+
+def test_pasting_text_replaces_the_selection(tmp_path) -> None:
+    app = _app_with_image_ports(tmp_path, text="new")
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            prompt.value = "old"
+            prompt.select_all()
+            await pilot.press("ctrl+v")
+
+            assert prompt.value == "new"
+
+    asyncio.run(exercise())
+
+
+def test_an_image_beats_text_when_the_clipboard_holds_both(tmp_path) -> None:
+    """A screenshot tool leaves both flavors; the image is what was meant."""
+    app = _app_with_image_ports(
+        tmp_path,
+        image=ClipboardImage(data=tiny_png(), suffix=".png"),
+        text="ignore me",
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            await pilot.press("ctrl+v")
+
+            assert prompt.value == "[Image #1]"
+
+    asyncio.run(exercise())
+
+
+def test_a_read_only_prompt_accepts_neither_image_nor_text(tmp_path) -> None:
+    """Read-only means read-only: no token, no file written, no text."""
+    app = _app_with_image_ports(
+        tmp_path,
+        image=ClipboardImage(data=tiny_png(), suffix=".png"),
+        text="not this either",
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#input", PromptInput)
+            prompt.focus()
+            prompt.read_only = True
+            await pilot.press("ctrl+v")
+
+            assert prompt.value == ""
+            assert not prompt.draft
+            assert list(tmp_path.iterdir()) == []
+
+    asyncio.run(exercise())
 
 
 def test_clearing_the_prompt_drops_staged_attachments(tmp_path) -> None:

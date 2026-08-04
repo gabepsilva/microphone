@@ -49,7 +49,7 @@ from .attachments import (
     DEFAULT_IMAGE_CLIPBOARD,
     AttachmentStore,
     DraftAttachments,
-    ImageClipboard,
+    SystemClipboard,
 )
 from .commands import (
     CommandSpec,
@@ -79,7 +79,7 @@ from .speech import (
 class PromptPorts:
     """Injectable clipboard and store for the prompt (tests override these)."""
 
-    clipboard: ImageClipboard = field(default_factory=lambda: DEFAULT_IMAGE_CLIPBOARD)
+    clipboard: SystemClipboard = field(default_factory=lambda: DEFAULT_IMAGE_CLIPBOARD)
     store: AttachmentStore = field(default_factory=AttachmentStore)
 
 
@@ -509,6 +509,11 @@ class PromptInput(TextArea):
         Binding("enter", "submit", "Submit", show=False, priority=True),
         # Replaces TextArea's paste so OS clipboard images can become tokens.
         Binding("ctrl+v", "paste_or_image", "Paste", show=False),
+        # Cmd+V for the macOS habit. A terminal normally answers Cmd+V itself
+        # and never forwards it; where it can be told not to, the key arrives
+        # as super+v under the Kitty protocol and lands here. Option+V is a
+        # different key (alt+v), so this cannot swallow it.
+        Binding("super+v", "paste_or_image", "Paste", show=False),
     ]
 
     class Submitted(Message):
@@ -548,7 +553,7 @@ class PromptInput(TextArea):
             disabled=disabled,
         )
         resolved = ports if ports is not None else PromptPorts()
-        self.clipboard_port: ImageClipboard = resolved.clipboard
+        self.clipboard_port: SystemClipboard = resolved.clipboard
         self.store = resolved.store
         self.draft = DraftAttachments()
 
@@ -581,14 +586,33 @@ class PromptInput(TextArea):
         """Paste an OS clipboard image as ``[Image #N]``, else paste text.
 
         OS images are tried first: a screenshot on the system clipboard is
-        almost always what Ctrl+V means after a capture tool runs. When no
-        image is present, fall through to Textual's text paste (in-app copy
-        and bracketed terminal paste).
+        almost always what the paste key means after a capture tool runs.
+
+        Text then comes from the OS clipboard rather than from Textual, whose
+        ``action_paste`` replays ``app.clipboard`` — a string the app itself
+        copied, not what the system holds. Textual's own paste stays as the
+        last resort, because an in-app copy need not reach the OS at all.
         """
         if self.paste_image_from_clipboard():
             return
+        if self.paste_text_from_clipboard():
+            return
         self.action_paste()
         self.fit_height()
+
+    def paste_text_from_clipboard(self) -> bool:
+        """Insert OS clipboard text at the cursor. Return whether any landed."""
+        if self.read_only:
+            return False
+        text = self.clipboard_port.read_text()
+        if not text:
+            return False
+        # Public API only, and the cursor follows the paste the way Textual's
+        # own does: replace() leaves it where it was.
+        result = self.replace(text, *self.selection)
+        self.move_cursor(result.end_location)
+        self.fit_height()
+        return True
 
     def paste_image_from_clipboard(self) -> bool:
         """Stage a clipboard image and insert its token. Return whether one landed."""

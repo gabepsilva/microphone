@@ -16,7 +16,12 @@ from tagalong.tui import PromptInput, PromptPorts
 
 
 class _NoImageClipboard:
+    """An OS clipboard holding nothing, so pastes fall back to Textual's."""
+
     def read_image(self) -> ClipboardImage | None:
+        return None
+
+    def read_text(self) -> str | None:
         return None
 
 

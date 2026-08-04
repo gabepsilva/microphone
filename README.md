@@ -40,10 +40,21 @@ Some runtime features also require operating-system tools: PipeWire
 naming output sinks, and `ffmpeg`/`ffplay` for spoken responses. They are
 runtime integrations, not Python packages.
 
-Ctrl+V in the prompt pastes an image from the clipboard as an `[Image #N]`
-token and sends the file with the turn. Reading the clipboard needs
-`wl-paste` or `xclip` on Linux; macOS uses `osascript`, which is already
-installed.
+Ctrl+V in the prompt pastes whatever the clipboard holds: an image becomes an
+`[Image #N]` token and rides along with the turn, text is inserted as text.
+Reading the clipboard needs `wl-paste` or `xclip` on Linux; macOS uses
+`osascript` and `pbpaste`, both already installed.
+
+Cmd+V on macOS is the terminal's key, not the application's. The terminal
+answers it by pasting the clipboard's *text*, and a screenshot has no text
+flavor, so nothing at all reaches TagAlong — there is no keypress to catch.
+A terminal that can be told to forward the key instead reports it as
+`super+v` under the Kitty keyboard protocol, which the prompt also answers.
+In iTerm2: Settings → Profiles → Keys → Key Mappings → **+**, press ⌘V,
+action *Send Escape Sequence*, value `[118;9u`. Scope it to the profile you
+run TagAlong in: for everything else in that profile, ⌘V stops being paste.
+Inside the prompt nothing is lost, because Ctrl+V and ⌘V both paste text
+from the system clipboard as well as images.
 
 ## Speech
 
