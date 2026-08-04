@@ -9,6 +9,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from rich.console import Console
+from rich.style import Style
+from textual import events
+from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Link, Select, Static
 
 from tagalong.attachments import ClipboardImage
@@ -18,6 +21,23 @@ from tagalong.tui import PromptInput, PromptPorts
 class _NoImageClipboard:
     def read_image(self) -> ClipboardImage | None:
         return None
+
+
+def _click_event(
+    widget: Widget, *, button: int = 1, style: Style | None = None
+) -> events.Click:
+    return events.Click(
+        widget,
+        x=0,
+        y=0,
+        delta_x=0,
+        delta_y=0,
+        button=button,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        style=style,
+    )
 
 
 def _rendered(renderable, width: int = 40) -> str:
@@ -576,6 +596,78 @@ def test_transcript_rows_can_be_selected_for_copying(tui) -> None:
             app.screen._select_all_in_widget(row)
 
             assert "copy this" in (app.screen.get_selected_text() or "")
+
+    asyncio.run(exercise())
+
+
+def test_clicking_transcript_content_hands_focus_to_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            row = app.add_entry(
+                tui.Entry(kind="speech", source=tui.VOICE, text="click here")
+            )
+            await pilot.pause()
+            app.query_one("#mic-mute", Checkbox).focus()
+
+            await pilot.click(row.query_one(".entry-body", Static))
+
+            assert app.focused is app.query_one("#input", PromptInput)
+
+    asyncio.run(exercise())
+
+
+def test_clicking_sidebar_content_hands_focus_to_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#mic-mute", Checkbox).focus()
+
+            await pilot.click("#panel-audio-head")
+
+            assert app.focused is app.query_one("#input", PromptInput)
+
+    asyncio.run(exercise())
+
+
+def test_clicking_sidebar_controls_does_not_steal_focus_for_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            await pilot.click("#mic-mute")
+            assert app.focused is app.query_one("#mic-mute", Checkbox)
+
+            await pilot.click("#mic-select")
+            assert app.focused is not app.query_one("#input", PromptInput)
+
+            await pilot.click("#silence-input")
+            assert app.focused is app.query_one("#silence-input", Input)
+
+    asyncio.run(exercise())
+
+
+def test_non_typing_clicks_do_not_focus_the_prompt(tui) -> None:
+    app = tui.VoiceCodexApp(tui.SessionState(), tui.TuiHooks())
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 20)):
+            transcript = app.query_one("#transcript-area", Widget)
+            content = app.query_one("#empty-transcript", Static)
+            sidebar = app.query_one("#sidebar", tui.Sidebar)
+
+            assert not tui.click_should_focus_prompt(
+                _click_event(content, button=3), transcript
+            )
+            assert not tui.click_should_focus_prompt(
+                _click_event(content, style=Style(meta={"@click": "open"})),
+                transcript,
+            )
+            assert not tui.click_should_focus_prompt(
+                _click_event(sidebar.vertical_scrollbar), sidebar
+            )
 
     asyncio.run(exercise())
 

@@ -41,7 +41,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.scrollbar import ScrollDown, ScrollTo, ScrollUp
+from textual.scrollbar import ScrollBar, ScrollDown, ScrollTo, ScrollUp
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Link, Markdown, Select, Static, TextArea
 
@@ -671,6 +671,30 @@ class PromptInput(TextArea):
         """Grow with visual rows, capped so the transcript keeps the floor."""
         lines = max(1, min(self.visual_line_count(), self.MAX_LINES))
         self.styles.height = lines
+
+
+def click_should_focus_prompt(event: events.Click, surface: Widget) -> bool:
+    """Whether a primary click on ``surface`` is background/content, not a control."""
+    if event.button != 1 or event.widget is None:
+        return False
+    if event.widget is not surface and surface not in event.widget.ancestors:
+        return False
+    if event.style is not None and "@click" in event.style.meta:
+        return False
+    for widget in event.widget.ancestors_with_self:
+        if widget is surface:
+            break
+        if isinstance(widget, ScrollBar):
+            return False
+        # Scroll containers accept focus for keyboard scrolling, but their
+        # ordinary content is still part of the click-to-type surface.
+        if (
+            isinstance(widget, Widget)
+            and widget.can_focus
+            and not isinstance(widget, VerticalScroll)
+        ):
+            return False
+    return True
 
 
 def palette_window(count: int, index: int, *, max_visible: int) -> tuple[int, int]:
@@ -1766,6 +1790,14 @@ class VoiceCodexApp(App):
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.set_interval(self.STREAM_FLUSH_INTERVAL_SECONDS, self.flush_stream)
         self.query_one("#input", PromptInput).focus()
+
+    def on_click(self, event: events.Click) -> None:
+        """Hand content/background clicks back to the typing prompt."""
+        for selector in ("#transcript-area", "#sidebar"):
+            surface = self.query_one(selector)
+            if click_should_focus_prompt(event, surface):
+                self.query_one("#input", PromptInput).focus()
+                return
 
     # -- chrome ------------------------------------------------------------
 
