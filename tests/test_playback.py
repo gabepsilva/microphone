@@ -11,6 +11,7 @@ import pytest
 
 from tagalong.playback import (
     AudioPlayer,
+    channel_args,
     describe_tool_failure,
     play_command,
     player_environment,
@@ -115,9 +116,30 @@ def test_raw_audio_is_described_so_the_player_need_not_guess() -> None:
 
     assert command[command.index("-f") + 1] == "s16le"
     assert command[command.index("-ar") + 1] == "22050"
-    assert command[command.index("-ac") + 1] == "1"
     # The format has to be stated before the input it describes.
     assert command.index("-f") < command.index("-i")
+
+
+def test_mono_is_left_to_the_default_every_ffplay_shares() -> None:
+    # -ac was dropped in ffmpeg 8 and -ch_layout arrived in 5.1; an ffplay
+    # that rejects either one plays nothing, and mono is the default in all.
+    command = play_command("/usr/bin/ffplay", raw_pcm_args(22050))
+
+    assert "-ac" not in command
+    assert "-ch_layout" not in command
+
+
+def test_a_count_that_is_not_the_default_is_stated() -> None:
+    assert channel_args(2) == ("-ch_layout", "stereo")
+    assert channel_args(6) == ("-ch_layout", "6c")
+    assert channel_args(1) == ()
+
+
+def test_the_player_may_explain_itself_when_it_fails() -> None:
+    # 'quiet' would leave play() with an exit code and no reason to quote.
+    command = play_command("/usr/bin/ffplay")
+
+    assert command[command.index("-loglevel") + 1] == "error"
 
 
 def test_playback_is_routed_to_a_chosen_sink() -> None:

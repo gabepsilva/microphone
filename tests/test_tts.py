@@ -236,7 +236,7 @@ def test_the_player_is_invoked_with_a_pipe_and_no_display(tts, playback) -> None
         "-nodisp",
         "-autoexit",
         "-loglevel",
-        "quiet",
+        "error",
         "-i",
         "pipe:0",
     ]
