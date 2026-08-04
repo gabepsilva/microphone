@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from tagalong.choosers import audio_outputs
 from tagalong.cli import main
 from tagalong.codex import CodexConversation, load_codex_sdk
 from tagalong.domain import TranscriptRouter
+from tagalong.presentation import CodexPresentation
 
 
 def test_cli_no_longer_offers_the_ansi_ui_switch(monkeypatch, capsys) -> None:
@@ -212,11 +214,9 @@ def test_model_switch_forks_the_current_codex_thread() -> None:
             calls.append((thread_id, kwargs)) or SimpleNamespace(id="new-thread")
         )
     )
-    conversation.transcript_display = SimpleNamespace(
-        set_codex=lambda **fields: updates.append(fields),
-        note=lambda text: None,
-        error=lambda text: None,
-    )
+    transcript_display = Mock(spec=CodexPresentation)
+    transcript_display.set_codex.side_effect = lambda **fields: updates.append(fields)
+    conversation.transcript_display = transcript_display
     conversation.settings_lock = threading.Lock()
     conversation.requested_model = "gpt-5.6-sol"
     conversation.requested_reasoning_effort = "high"
