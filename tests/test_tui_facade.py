@@ -78,6 +78,60 @@ def test_a_committed_turn_becomes_a_transcript_entry(tui) -> None:
     assert facade.state.partial_text == ""
 
 
+def test_an_accepted_turn_is_recorded_after_echo_filtering(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.commit(tui.VOICE, "a real question")
+        await pilot.pause()
+        assert recorded == []
+        facade.finish_turn(tui.VOICE, accepted=True)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert [entry.text for entry in recorded] == ["a real question"]
+    assert entry_texts(facade) == ["a real question"]
+
+
+def test_a_rejected_echo_is_removed_instead_of_recorded(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.update(tui.AUDIO, "Taga speaking")
+        facade.commit(tui.AUDIO, "Taga speaking")
+        await pilot.pause()
+        assert entry_texts(facade) == ["Taga speaking"]
+        facade.finish_turn(tui.AUDIO, accepted=False)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert recorded == []
+    assert facade.app.entries == []
+    assert facade.state.partial_text == ""
+    assert facade.state.echoes_cut == 1
+
+
+def test_rejecting_echo_removes_only_that_channels_interleaved_rows(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.commit(tui.VOICE, "possible echo one")
+        facade.commit(tui.AUDIO, "other channel")
+        facade.commit(tui.VOICE, "possible echo two")
+        await pilot.pause()
+        facade.finish_turn(tui.VOICE, accepted=False)
+        facade.finish_turn(tui.AUDIO, accepted=True)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert entry_texts(facade) == ["other channel"]
+
+
 def test_on_entry_fires_once_for_a_finished_note_and_not_for_an_open_taga_row(
     tui,
 ) -> None:

@@ -1838,11 +1838,11 @@ class VoiceCodexApp(App):
     def _stamp(self) -> str:
         return datetime.now(UTC).astimezone().strftime("%H:%M:%S")
 
-    def add_entry(self, entry: Entry) -> EntryRow:
+    def add_entry(self, entry: Entry, *, record: bool = True) -> EntryRow:
         entry.stamp = entry.stamp or self._stamp()
         was_empty = not self.entries
         self.entries.append(entry)
-        if not entry_is_open(entry):
+        if record and not entry_is_open(entry):
             self._record(entry)
         row = EntryRow(entry)
         if not self._tailing:
@@ -1860,6 +1860,30 @@ class VoiceCodexApp(App):
         if was_empty:
             self._sync_empty_transcript()
         return row
+
+    def resolve_entries(self, entries: list[Entry], *, accepted: bool) -> None:
+        """Record accepted provisional rows or remove rejected ones exactly.
+
+        Capture channels can interleave, so rejection operates on entry
+        identity rather than assuming the echo owns the newest rows.
+        """
+        if accepted:
+            for entry in entries:
+                self._record(entry)
+            return
+
+        rejected = {id(entry) for entry in entries}
+        removed_before_window = sum(
+            id(entry) in rejected for entry in self.entries[: self._window_start]
+        )
+        self.entries[:] = [entry for entry in self.entries if id(entry) not in rejected]
+        self._window_start -= removed_before_window
+        discarded_rows = [row for row in self._window if id(row.entry) in rejected]
+        for row in discarded_rows:
+            row.remove()
+        self._window[:] = [row for row in self._window if id(row.entry) not in rejected]
+        self._dirty[:] = [row for row in self._dirty if id(row.entry) not in rejected]
+        self._sync_empty_transcript()
 
     def _record(self, entry: Entry) -> None:
         """Hand a finished entry to the session recorder, once."""
@@ -2429,6 +2453,10 @@ class VoiceCodexTUI:
         # "newest text + maybe schedule" step atomic across capture threads.
         self._partial_pending = False
         self._partial_lock = threading.Lock()
+        # Finished recognition lines appear at once, but remain provisional
+        # until echo filtering resolves their whole turn. Values are the exact
+        # entries to record or remove, even when Voice and Audio interleave.
+        self._provisional_turns: dict[str, list[Entry]] = {}
         # Answer and reasoning tokens share one buffer shape: ordered chunks,
         # at most one posted flush, drained before end-of-turn or interrupt.
         self._answer_deltas = OrderedDeltaBuffer()
@@ -2532,24 +2560,34 @@ class VoiceCodexTUI:
     def update(self, speaker: str, text: str) -> None:
         self._show_partial(speaker, text)
 
-    def finish_turn(self, speaker: str) -> None:
+    def finish_turn(self, speaker: str, accepted: bool = True) -> None:
         with self._partial_lock:
             clear = self.state.partial_source == speaker
         if clear:
             self._clear_partial()
+        self._call(self._finish_turn_impl, speaker, accepted)
+
+    def _finish_turn_impl(self, speaker: str, accepted: bool) -> None:
+        entries = self._provisional_turns.pop(speaker, [])
+        self.app.resolve_entries(entries, accepted=accepted)
+        if not accepted:
+            self.state.echoes_cut += 1
+            self.app.refresh_session()
 
     def close_speaker(self, speaker: str) -> None:
         self.finish_turn(speaker)
 
     def commit(self, speaker: str, text: str) -> None:
-        """Append a finished turn and clear the live line."""
+        """Show a finished recognition line provisionally and clear the live line."""
         with self._partial_lock:
             self.state.partial_source = ""
             self.state.partial_text = ""
         self._call(self._commit_impl, speaker, text)
 
     def _commit_impl(self, speaker: str, text: str) -> None:
-        self.app.add_entry(Entry(kind="speech", source=speaker, text=text))
+        entry = Entry(kind="speech", source=speaker, text=text)
+        self._provisional_turns.setdefault(speaker, []).append(entry)
+        self.app.add_entry(entry, record=False)
         self.app._sync_partial()
 
     def note(self, text: str) -> None:
@@ -2561,6 +2599,7 @@ class VoiceCodexTUI:
         with self._partial_lock:
             self.state.partial_source = ""
             self.state.partial_text = ""
+        self._provisional_turns.clear()
         self._call(self.app.clear_transcript)
 
     def finish_recording(self) -> None:

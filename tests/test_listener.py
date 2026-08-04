@@ -29,6 +29,7 @@ class RecordingDisplay:
         self.partials: list[tuple[str, str]] = []
         self.commits: list[tuple[str, str]] = []
         self.finished: list[str] = []
+        self.rejected: list[str] = []
         self.closed: list[str] = []
 
     def update(self, speaker, text):
@@ -37,8 +38,10 @@ class RecordingDisplay:
     def commit(self, speaker, text):
         self.commits.append((speaker, text))
 
-    def finish_turn(self, speaker):
+    def finish_turn(self, speaker, accepted=True):
         self.finished.append(speaker)
+        if not accepted:
+            self.rejected.append(speaker)
 
     def close_speaker(self, speaker):
         self.closed.append(speaker)
@@ -1492,6 +1495,7 @@ def test_a_rejected_echo_flush_does_not_arm_catch_up() -> None:
     listener.flush_now()
 
     assert submitted == []
+    assert display.rejected == ["Voice"]
     with listener.lock:
         assert listener._flushed_text == ""
         assert listener._flushed_partial == ""

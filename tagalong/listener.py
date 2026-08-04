@@ -248,7 +248,6 @@ class ConversationListener(TranscriptEventListener):
         # transcript: finish_turn alone would clear the live row and lose it.
         if partial:
             self.presentation.commit(self.speaker, partial)
-        self.presentation.finish_turn(self.speaker)
         # A speculative turn that survived to here was right: the window
         # closed without the speaker resuming, so it is the reply. Submitting
         # again would answer the same words twice.
@@ -259,6 +258,11 @@ class ConversationListener(TranscriptEventListener):
             # ``False`` means dropped (echo); ``True``/``None`` means taken —
             # tests often wire a bare lambda that returns None.
             accepted = self.submit(self.speaker, text) is not False
+        # Completed STT lines are shown immediately, but stay provisional until
+        # the submitter has had the chance to reject its own TTS echo. Resolving
+        # here keeps genuine speech responsive without leaving rejected echo in
+        # either the visible or recorded transcript.
+        self.presentation.finish_turn(self.speaker, accepted=accepted)
         if accepted:
             # Only mark catch-up absorption when the turn was actually taken.
             self._mark_flushed(text, partial)
