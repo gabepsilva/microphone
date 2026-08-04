@@ -388,7 +388,8 @@ def test_the_player_is_told_the_raw_audio_format(piper, playback) -> None:
     command = playback.commands[0]
     assert command[command.index("-f") + 1] == "s16le"
     assert command[command.index("-ar") + 1] == str(SAMPLE_RATE)
-    assert command[command.index("-ac") + 1] == "1"
+    # Mono is left unstated: no channel option spans every ffplay version.
+    assert "-ac" not in command
 
 
 def test_the_chosen_sink_reaches_the_player(monkeypatch, playback, voice) -> None:

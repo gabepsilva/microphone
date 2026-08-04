@@ -34,17 +34,53 @@ def play_command(player, input_args=()):
     ``input_args`` describes audio ffplay cannot identify on its own. Raw PCM
     carries no header, so its format, rate, and channel count have to be
     stated; MP3 carries all three and passes nothing.
+
+    The log level is ``error`` rather than ``quiet`` because ``play`` quotes
+    the player's stderr when it exits badly, and under ``quiet`` there is
+    never anything to quote. A player that rejects one of these arguments
+    then reports only an exit code, which says a sentence was lost without
+    saying which argument lost it. Nothing is written on a normal sentence.
     """
     return [
         player,
         "-nodisp",
         "-autoexit",
         "-loglevel",
-        "quiet",
+        "error",
         *input_args,
         "-i",
         "pipe:0",
     ]
+
+
+CHANNEL_LAYOUTS = {1: "mono", 2: "stereo"}
+
+
+def channel_layout(channels):
+    """Name a channel count the way ffmpeg's layout syntax expects.
+
+    Named layouts are what a reader recognizes; ``6c`` is ffmpeg's spelling
+    for a count with no standard name behind it.
+    """
+    return CHANNEL_LAYOUTS.get(channels, f"{channels}c")
+
+
+def channel_args(channels):
+    """State a channel count only when it is not the one every ffplay assumes.
+
+    There is no spelling of this that every ffplay accepts. ``-ac`` was an
+    ffplay option until ffmpeg 8 removed it; ``-ch_layout`` is a demuxer
+    option the pcm demuxers only grew in 5.1. Passing either one blind breaks
+    playback on the versions that predate or postdate it, and an ffplay that
+    rejects an argument plays nothing at all.
+
+    What both ends agree on is the default: the raw pcm demuxers have read
+    mono since long before either option existed. Mono is what this program
+    synthesizes, so saying nothing is both the compatible answer and the
+    correct one. A caller that wants something else gets ``-ch_layout``, and
+    needs an ffplay from 5.1 or later to be heard.
+    """
+    return () if channels == 1 else ("-ch_layout", channel_layout(channels))
 
 
 def raw_pcm_args(sample_rate, channels=1):
@@ -54,8 +90,7 @@ def raw_pcm_args(sample_rate, channels=1):
         "s16le",
         "-ar",
         str(sample_rate),
-        "-ac",
-        str(channels),
+        *channel_args(channels),
     )
 
 
