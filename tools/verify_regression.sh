@@ -27,7 +27,15 @@ fi
 STASH_MESSAGE="verify-regression $$"
 restore() {
     local stash_ref
-    stash_ref="$(git stash list --format='%gd %gs' | awk -v m="$STASH_MESSAGE" '$0 ~ m {print $1; exit}')"
+    # awk reads every line instead of exiting on the match: an early exit
+    # closes the pipe under `git stash list`, and the SIGPIPE it dies of
+    # becomes this assignment's status under `pipefail`, so `set -e` would
+    # kill the script here — abandoning the developer's fix in the stash
+    # while the working tree looks clean. `index` keeps the message a
+    # literal rather than a regex.
+    stash_ref="$(git stash list --format='%gd %gs' |
+        awk -v m="$STASH_MESSAGE" 'index($0, m) && !found {ref = $1; found = 1}
+                                   END {if (found) print ref}')"
     if [ -n "$stash_ref" ]; then
         echo "==> restoring the fix ($stash_ref)"
         git stash pop "$stash_ref" >/dev/null

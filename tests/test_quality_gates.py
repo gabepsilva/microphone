@@ -286,6 +286,68 @@ def test_regression_verification_observes_fail_then_pass_and_restores_the_fix(
     )
 
 
+def test_regression_verification_restores_the_fix_from_a_long_stash_list(
+    tmp_path,
+) -> None:
+    """The stash lookup must not die of SIGPIPE and strand the fix.
+
+    Reading only as far as the match closes the pipe under ``git stash list``;
+    with ``pipefail`` that failure propagates and the script exits before
+    popping. The bulky entries below make the unread remainder outgrow the
+    pipe buffer, which is what turns that race into a certainty.
+    """
+    repo, env = _regression_repository(
+        tmp_path,
+        "grep -q '\"fixed\"' tagalong/behavior.py",
+    )
+    noise = repo / "noise.txt"
+    noise.write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "-C", repo, "add", "noise.txt"], check=True)
+    subprocess.run(["git", "-C", repo, "commit", "-qm", "noise"], check=True)
+    bulky = "n" * 4000
+    for index in range(8):
+        # Stash only the noise file: a bare push would sweep up the fix that
+        # this run is supposed to be verifying.
+        noise.write_text(str(index), encoding="utf-8")
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                repo,
+                "stash",
+                "push",
+                "-q",
+                "-m",
+                f"{bulky}-{index}",
+                "--",
+                "noise.txt",
+            ],
+            check=True,
+        )
+
+    result = subprocess.run(
+        [TOOLS / "verify_regression.sh", "tests/test_behavior.py::test_fix"],
+        cwd=repo,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "restoring the fix" in result.stdout
+    assert (repo / "tagalong" / "behavior.py").read_text(
+        encoding="utf-8"
+    ) == 'STATE = "fixed"\n'
+    remaining = subprocess.run(
+        ["git", "-C", repo, "stash", "list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "verify-regression" not in remaining
+
+
 def test_regression_verification_rejects_a_test_that_passes_without_the_fix(
     tmp_path,
 ) -> None:
