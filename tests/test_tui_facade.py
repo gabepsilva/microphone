@@ -178,6 +178,64 @@ def test_record_open_entries_sweeps_what_a_cut_off_turn_left_behind(tui) -> None
     assert recorded[0].text == "still thinking"
 
 
+def test_recording_sweeps_buffered_stream_text_before_the_entry(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._answer_deltas.append("buffered answer")
+        facade.finish_recording()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].text == "buffered answer"
+
+
+def test_reset_transcript_records_buffered_stream_text_before_clearing(tui) -> None:
+    recorded: list = []
+    facade = tui.VoiceCodexTUI(on_entry=recorded.append)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        facade._answer_deltas.append("buffered before reset")
+        facade.reset_transcript()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(recorded) == 1
+    assert recorded[0].text == "buffered before reset"
+    assert facade.app.entries == []
+
+
+def test_a_failed_recording_is_retried_on_a_later_sweep(tui) -> None:
+    attempts: list = []
+
+    def record(entry):
+        attempts.append(entry)
+        return len(attempts) > 1
+
+    facade = tui.VoiceCodexTUI(on_entry=record)
+
+    async def body(pilot):
+        facade.note("retry me")
+        await pilot.pause()
+        assert attempts[0].recorded is False
+        facade.finish_recording()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert len(attempts) == 2
+    assert attempts[0] is attempts[1]
+    assert attempts[0].recorded is True
+
+
 def test_clearing_the_transcript_records_open_entries_first(tui) -> None:
     recorded: list = []
     facade = tui.VoiceCodexTUI(on_entry=recorded.append)

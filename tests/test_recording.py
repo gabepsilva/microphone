@@ -127,8 +127,13 @@ def test_recorder_creates_directory_and_flushes_each_entry(tmp_path) -> None:
     when = datetime(2026, 7, 31, 22, 45, 3, tzinfo=UTC).astimezone()
     recorder = TranscriptRecorder(directory=directory, clock=lambda: when)
     try:
-        recorder.record(
-            Entry(kind="speech", source="Voice", text="first turn", stamp="22:45:11")
+        assert (
+            recorder.record(
+                Entry(
+                    kind="speech", source="Voice", text="first turn", stamp="22:45:11"
+                )
+            )
+            is True
         )
 
         assert directory.is_dir()
@@ -140,7 +145,10 @@ def test_recorder_creates_directory_and_flushes_each_entry(tmp_path) -> None:
         assert "# TagAlong transcript" in on_disk
         assert "first turn" in on_disk
 
-        recorder.record(Entry(kind="note", text="tts off", stamp="22:45:20"))
+        assert (
+            recorder.record(Entry(kind="note", text="tts off", stamp="22:45:20"))
+            is True
+        )
         assert "tts off" in recorder.path.read_text(encoding="utf-8")
     finally:
         recorder.close()
@@ -183,8 +191,8 @@ def test_recorder_stays_quiet_after_one_unwritable_directory_report(
     stream = StringIO()
     recorder = TranscriptRecorder(directory=blocked, stream=stream)
 
-    recorder.record(Entry(kind="note", text="one", stamp="00:00:01"))
-    recorder.record(Entry(kind="note", text="two", stamp="00:00:02"))
+    assert recorder.record(Entry(kind="note", text="one", stamp="00:00:01")) is False
+    assert recorder.record(Entry(kind="note", text="two", stamp="00:00:02")) is False
 
     report = stream.getvalue()
     assert report.count("Transcript will not be recorded:") == 1

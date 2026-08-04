@@ -108,16 +108,18 @@ class TranscriptRecorder:
         self._reported = False
         self._closed = False
 
-    def record(self, entry: Any) -> None:
+    def record(self, entry: Any) -> bool:
         """Append one finished entry and flush it to disk."""
         if self._closed:
-            return
+            return False
         try:
             handle = self._ensure_open()
             handle.write(format_entry(entry))
             handle.flush()
         except OSError as error:
             self._report(error)
+            return False
+        return True
 
     def roll(self) -> None:
         """Close the current file so the next entry opens a fresh one."""

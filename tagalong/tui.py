@@ -219,7 +219,7 @@ class TuiHooks:
     on_end_turn: Callable[[], None] | None = None
     on_save: Callable[[list[Entry]], None] | None = None
     # Fired once per finished transcript row for the session file recorder.
-    on_entry: Callable[[Entry], None] | None = None
+    on_entry: Callable[[Entry], bool | None] | None = None
     on_quit: Callable[[], None] | None = None
 
 
@@ -1865,8 +1865,8 @@ class VoiceCodexApp(App):
         """Hand a finished entry to the session recorder, once."""
         if entry.recorded or self.hooks.on_entry is None:
             return
-        entry.recorded = True
-        self.hooks.on_entry(entry)
+        if self.hooks.on_entry(entry) is not False:
+            entry.recorded = True
 
     def record_open_entries(self) -> None:
         """Record every entry that never got a clean finalizer.
@@ -1874,6 +1874,8 @@ class VoiceCodexApp(App):
         Called before the transcript is cleared and at shutdown, so a command
         or reasoning section a cut-off turn left behind still reaches the file.
         """
+        if self.apply_pending_stream_text is not None:
+            self.apply_pending_stream_text()
         for entry in self.entries:
             if not entry.recorded:
                 self._record(entry)
@@ -2559,8 +2561,6 @@ class VoiceCodexTUI:
         with self._partial_lock:
             self.state.partial_source = ""
             self.state.partial_text = ""
-        self._answer_deltas.take()
-        self._reasoning_deltas.take()
         self._call(self.app.clear_transcript)
 
     def finish_recording(self) -> None:
