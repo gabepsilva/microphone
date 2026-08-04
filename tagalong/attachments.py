@@ -13,6 +13,9 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
+from binascii import Error as BinasciiError
+from binascii import unhexlify
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +35,14 @@ _CLIPBOARD_IMAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("image/jpg", ".jpg"),
     ("image/webp", ".webp"),
     ("image/gif", ".gif"),
+)
+
+# macOS pasteboard flavours we ask AppleScript to coerce to, preferred first.
+# The four-letter codes are Apple's, not MIME types.
+_MAC_CLIPBOARD_TYPES: tuple[tuple[str, str], ...] = (
+    ("PNGf", ".png"),
+    ("JPEG", ".jpg"),
+    ("GIFf", ".gif"),
 )
 
 # Reject absurd pastes that would thrash the model or the disk.
@@ -179,8 +190,57 @@ class SystemImageClipboard:
         return None
 
 
+def _decode_applescript_data(payload: bytes, code: str) -> bytes | None:
+    """Decode ``«data PNGf89504…»`` — AppleScript's hex form — into bytes.
+
+    ``osascript`` cannot hand back binary, so it prints raw data as hex. The
+    guillemets may be mangled by the output encoding; the four-letter code and
+    the hex digits are ASCII, so match on those and ignore the rest.
+    """
+    text = payload.decode("utf-8", errors="ignore")
+    match = re.search(rf"data\s*{code}([0-9A-Fa-f]+)", text)
+    if match is None:
+        return None
+    try:
+        return unhexlify(match.group(1))
+    except BinasciiError:
+        return None
+
+
+@dataclass(slots=True)
+class MacImageClipboard:
+    """Read images from the macOS pasteboard.
+
+    ``pngpaste`` is preferred when installed because it returns raw bytes.
+    Otherwise AppleScript coerces the pasteboard to an image flavour, which
+    keeps a plain macOS install working with no Homebrew package.
+    """
+
+    def read_image(self) -> ClipboardImage | None:
+        data = _run_clipboard(["pngpaste", "-"])
+        if data is not None and looks_like_image(data):
+            return ClipboardImage(data=data, suffix=".png")
+        for code, suffix in _MAC_CLIPBOARD_TYPES:
+            payload = _run_clipboard(
+                ["osascript", "-e", f"the clipboard as «class {code}»"]
+            )
+            if payload is None:
+                continue
+            decoded = _decode_applescript_data(payload, code)
+            if decoded is not None and looks_like_image(decoded):
+                return ClipboardImage(data=decoded, suffix=suffix)
+        return None
+
+
+def default_image_clipboard(platform: str | None = None) -> ImageClipboard:
+    """Return the clipboard adapter for ``platform`` (defaults to this host)."""
+    if (platform if platform is not None else sys.platform) == "darwin":
+        return MacImageClipboard()
+    return SystemImageClipboard()
+
+
 # Default adapter used by the live app. Tests inject fakes instead.
-DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = SystemImageClipboard()
+DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = default_image_clipboard()
 
 
 @dataclass

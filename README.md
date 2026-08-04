@@ -40,6 +40,12 @@ Some runtime features also require operating-system tools: PipeWire
 naming output sinks, and `ffmpeg`/`ffplay` for spoken responses. They are
 runtime integrations, not Python packages.
 
+Pasting an image into the prompt with `Ctrl-V` reads the OS clipboard: `wl-paste`
+or `xclip` on Linux, and on macOS the system pasteboard through AppleScript —
+nothing to install, though `pngpaste` is used instead when it is present. Use
+`Ctrl-V` rather than `Cmd-V` on macOS: `Cmd-V` is handled by the terminal, which
+can only forward text.
+
 ## Speech
 
 Taga answers out loud through one of two engines, chosen with `--tts-provider`

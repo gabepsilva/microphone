@@ -15,9 +15,11 @@ from tagalong.attachments import (
     AttachmentStore,
     ClipboardImage,
     DraftAttachments,
+    MacImageClipboard,
     SystemImageClipboard,
     cache_home,
     default_attachments_dir,
+    default_image_clipboard,
     image_token,
     looks_like_image,
     parse_image_numbers,
@@ -170,6 +172,86 @@ def test_system_clipboard_returns_none_when_empty(monkeypatch) -> None:
         )(),
     )
     assert SystemImageClipboard().read_image() is None
+
+
+def completed(stdout: bytes = b"", returncode: int = 0):
+    """A stand-in for ``subprocess.run``'s result."""
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": b""})()
+
+
+def applescript_data(code: str, data: bytes) -> bytes:
+    """The ``«data PNGf8950…»`` hex form osascript prints for raw data."""
+    return "«data ".encode() + code.encode() + data.hex().encode() + "»\n".encode()
+
+
+def test_mac_clipboard_prefers_pngpaste(monkeypatch) -> None:
+    png = tiny_png()
+
+    def fake_run(command, **_kwargs):
+        if command == ["pngpaste", "-"]:
+            return completed(png)
+        raise AssertionError("osascript should not run when pngpaste answers")
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_image() == ClipboardImage(png, ".png")
+
+
+def test_mac_clipboard_decodes_applescript_hex_without_pngpaste(monkeypatch) -> None:
+    png = tiny_png()
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "pngpaste":
+            raise FileNotFoundError
+        if command[0] == "osascript" and "PNGf" in command[2]:
+            return completed(applescript_data("PNGf", png))
+        return completed(returncode=1)
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_image() == ClipboardImage(png, ".png")
+
+
+def test_mac_clipboard_falls_back_to_jpeg_flavour(monkeypatch) -> None:
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 32
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "pngpaste":
+            raise FileNotFoundError
+        if command[0] == "osascript" and "JPEG" in command[2]:
+            return completed(applescript_data("JPEG", jpeg))
+        return completed(returncode=1)
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_image() == ClipboardImage(jpeg, ".jpg")
+
+
+def test_mac_clipboard_rejects_non_image_pasteboard(monkeypatch) -> None:
+    def fake_run(command, **_kwargs):
+        if command[0] == "pngpaste":
+            return completed(b"not an image")
+        return completed(applescript_data("PNGf", b"still not an image"))
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_image() is None
+
+
+def test_mac_clipboard_ignores_unparsable_osascript_output(monkeypatch) -> None:
+    truncated = applescript_data("PNGf", tiny_png())[:-4]  # loses a hex digit
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "pngpaste":
+            raise FileNotFoundError
+        if "PNGf" in command[2]:
+            return completed(truncated)
+        return completed(b"\xc2\xabdata JPEGnothexadecimal\xc2\xbb\n")
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert MacImageClipboard().read_image() is None
+
+
+def test_default_clipboard_matches_the_host_platform() -> None:
+    assert isinstance(default_image_clipboard("darwin"), MacImageClipboard)
+    assert isinstance(default_image_clipboard("linux"), SystemImageClipboard)
+    assert isinstance(default_image_clipboard("win32"), SystemImageClipboard)
 
 
 # --------------------------------------------------------------------------
