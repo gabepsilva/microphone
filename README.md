@@ -40,6 +40,11 @@ Some runtime features also require operating-system tools: PipeWire
 naming output sinks, and `ffmpeg`/`ffplay` for spoken responses. They are
 runtime integrations, not Python packages.
 
+Ctrl+V in the prompt pastes an image from the clipboard as an `[Image #N]`
+token and sends the file with the turn. Reading the clipboard needs
+`wl-paste` or `xclip` on Linux; macOS uses `osascript`, which is already
+installed.
+
 ## Speech
 
 Taga answers out loud through one of two engines, chosen with `--tts-provider`

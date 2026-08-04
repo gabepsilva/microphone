@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import subprocess
+import sys
 
+import pytest
 import sounddevice
 
+from tagalong.attachments import MacImageClipboard, looks_like_image
 from tagalong.catalog import probe_codex_models
 from tagalong.choosers import audio_outputs, input_devices
 from tagalong.piper_tts import ensure_model
@@ -66,3 +71,32 @@ async def _edge_audio() -> bytes:
 
 def test_the_default_edge_voice_synthesizes_audio_over_the_network() -> None:
     assert asyncio.run(_edge_audio())
+
+
+# A 1x1 PNG, small enough to inline and real enough for the pasteboard.
+_ONE_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
+    "AAAABJRU5ErkJggg=="
+)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS pasteboard only")
+def test_the_macos_pasteboard_hands_back_a_copied_image(tmp_path) -> None:
+    """Round-trip a PNG through the real pasteboard. Replaces the clipboard."""
+    source = tmp_path / "smoke.png"
+    source.write_bytes(_ONE_PIXEL_PNG)
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            f'set the clipboard to (read (POSIX file "{source}") as «class PNGf»)',
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    image = MacImageClipboard().read_image()
+
+    assert image is not None, "osascript did not return the copied image"
+    assert image.suffix == ".png"
+    assert looks_like_image(image.data)

@@ -15,12 +15,14 @@ from tagalong.attachments import (
     AttachmentStore,
     ClipboardImage,
     DraftAttachments,
-    SystemImageClipboard,
+    LinuxImageClipboard,
+    MacImageClipboard,
     cache_home,
     default_attachments_dir,
     image_token,
     looks_like_image,
     parse_image_numbers,
+    system_image_clipboard,
 )
 from tagalong.codex import CodexConversation
 from tagalong.domain import TranscriptEntry, TranscriptRouter, UserTextMessage
@@ -125,7 +127,7 @@ def test_draft_attachments_resolve_only_tokens_still_in_text(tmp_path) -> None:
     assert draft.resolve("[Image #9]") == ()
 
 
-def test_system_clipboard_uses_wl_paste(monkeypatch) -> None:
+def test_linux_clipboard_uses_wl_paste(monkeypatch) -> None:
     png = tiny_png()
 
     def fake_run(command, **_kwargs):
@@ -138,10 +140,10 @@ def test_system_clipboard_uses_wl_paste(monkeypatch) -> None:
         return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
-    assert SystemImageClipboard().read_image() == ClipboardImage(png, ".png")
+    assert LinuxImageClipboard().read_image() == ClipboardImage(png, ".png")
 
 
-def test_system_clipboard_falls_back_to_xclip(monkeypatch) -> None:
+def test_linux_clipboard_falls_back_to_xclip(monkeypatch) -> None:
     png = tiny_png()
 
     def fake_run(command, **_kwargs):
@@ -159,17 +161,102 @@ def test_system_clipboard_falls_back_to_xclip(monkeypatch) -> None:
         return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
-    assert SystemImageClipboard().read_image() == ClipboardImage(png, ".png")
+    assert LinuxImageClipboard().read_image() == ClipboardImage(png, ".png")
 
 
-def test_system_clipboard_returns_none_when_empty(monkeypatch) -> None:
+def test_linux_clipboard_returns_none_when_empty(monkeypatch) -> None:
     monkeypatch.setattr(
         "tagalong.attachments.subprocess.run",
         lambda *_a, **_k: type(
             "R", (), {"returncode": 1, "stdout": b"", "stderr": b""}
         )(),
     )
-    assert SystemImageClipboard().read_image() is None
+    assert LinuxImageClipboard().read_image() is None
+
+
+def applescript_literal(data: bytes) -> bytes:
+    """Render ``data`` the way ``osascript`` prints raw clipboard bytes."""
+    return f"«data PNGf{data.hex().upper()}»\n".encode()
+
+
+def fake_osascript(stdout: bytes, *, returncode: int = 0, seen: list | None = None):
+    """A ``subprocess.run`` stand-in that answers only the AppleScript read."""
+
+    def run(command, **kwargs):
+        if seen is not None:
+            seen.append((command, kwargs))
+        if command[0] != "osascript":
+            return type("R", (), {"returncode": 1, "stdout": b"", "stderr": b""})()
+        return type(
+            "R", (), {"returncode": returncode, "stdout": stdout, "stderr": b""}
+        )()
+
+    return run
+
+
+def test_mac_clipboard_decodes_the_applescript_png_literal(monkeypatch) -> None:
+    png = tiny_png()
+    seen: list = []
+    monkeypatch.setattr(
+        "tagalong.attachments.subprocess.run",
+        fake_osascript(applescript_literal(png), seen=seen),
+    )
+
+    assert MacImageClipboard().read_image() == ClipboardImage(png, ".png")
+    command, kwargs = seen[0]
+    # The PNG flavor is what makes one command cover screenshots too, and the
+    # budget has to outlast hex-encoding a multi-megabyte paste.
+    assert command == ["osascript", "-e", "the clipboard as «class PNGf»"]
+    assert kwargs["timeout"] == 5.0
+
+
+def test_mac_clipboard_is_empty_when_the_clipboard_holds_text(monkeypatch) -> None:
+    # osascript exits non-zero with "Can't make some data into the expected
+    # type" when the pasteboard has no image flavor.
+    monkeypatch.setattr(
+        "tagalong.attachments.subprocess.run",
+        fake_osascript(b"", returncode=1),
+    )
+    assert MacImageClipboard().read_image() is None
+
+
+def test_mac_clipboard_rejects_a_literal_that_is_not_an_image(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tagalong.attachments.subprocess.run",
+        fake_osascript(applescript_literal(b"not a picture at all")),
+    )
+    assert MacImageClipboard().read_image() is None
+
+
+def test_mac_clipboard_rejects_an_oversized_paste(monkeypatch) -> None:
+    oversized = tiny_png() + b"\x00" * MAX_IMAGE_BYTES
+    monkeypatch.setattr(
+        "tagalong.attachments.subprocess.run",
+        fake_osascript(applescript_literal(oversized)),
+    )
+    assert MacImageClipboard().read_image() is None
+
+
+def test_mac_clipboard_rejects_malformed_applescript_output(monkeypatch) -> None:
+    png = tiny_png()
+    truncated = applescript_literal(png).replace(b"\xc2\xbb", b"")
+    odd_hex = f"«data PNGf{png.hex().upper()}F»\n".encode()
+    non_hex = "«data PNGfnot-hex»\n".encode()
+    for stdout in (truncated, odd_hex, non_hex, b"the clipboard is empty\n"):
+        monkeypatch.setattr(
+            "tagalong.attachments.subprocess.run", fake_osascript(stdout)
+        )
+        assert MacImageClipboard().read_image() is None
+
+
+def test_system_image_clipboard_follows_the_platform(monkeypatch) -> None:
+    assert isinstance(system_image_clipboard("darwin"), MacImageClipboard)
+    assert isinstance(system_image_clipboard("linux"), LinuxImageClipboard)
+
+    monkeypatch.setattr("tagalong.attachments.sys.platform", "darwin")
+    assert isinstance(system_image_clipboard(), MacImageClipboard)
+    monkeypatch.setattr("tagalong.attachments.sys.platform", "linux")
+    assert isinstance(system_image_clipboard(), LinuxImageClipboard)
 
 
 # --------------------------------------------------------------------------

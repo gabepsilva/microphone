@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -148,12 +149,12 @@ class AttachmentStore:
         return path.resolve()
 
 
-def _run_clipboard(command: list[str]) -> bytes | None:
+def _run_clipboard(command: list[str], *, timeout: float) -> bytes | None:
     try:
         completed = subprocess.run(
             command,
             capture_output=True,
-            timeout=2,
+            timeout=timeout,
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -163,24 +164,89 @@ def _run_clipboard(command: list[str]) -> bytes | None:
     return completed.stdout
 
 
+# A local clipboard helper answers immediately or not at all; the cap only
+# keeps a wedged one from freezing the prompt.
+_CLIPBOARD_TIMEOUT_SECONDS = 2.0
+
+# osascript hex-encodes the whole image into its own stdout, so its budget
+# scales with the paste: a multi-megabyte screenshot takes about a second.
+_APPLESCRIPT_TIMEOUT_SECONDS = 5.0
+
+# Asking for the PNG flavor keeps one command for every capture path: macOS
+# synthesizes it for anything image-shaped on the pasteboard, including the
+# TIFF a screenshot leaves, and fails cleanly when the clipboard holds text.
+_APPLESCRIPT_PNG_COMMAND = ("osascript", "-e", "the clipboard as «class PNGf»")
+
+# AppleScript renders raw data as ``«data PNGf<hex>»`` on a single line.
+_APPLESCRIPT_PNG_PREFIX = "«data PNGf"
+_APPLESCRIPT_DATA_SUFFIX = "»"
+
+
+def _decode_applescript_png(stdout: bytes) -> bytes | None:
+    """Return the PNG bytes inside an AppleScript ``«data PNGf…»`` literal."""
+    text = stdout.decode("utf-8", errors="replace").strip()
+    if not text.startswith(_APPLESCRIPT_PNG_PREFIX):
+        return None
+    if not text.endswith(_APPLESCRIPT_DATA_SUFFIX):
+        return None
+    body = text[len(_APPLESCRIPT_PNG_PREFIX) : -len(_APPLESCRIPT_DATA_SUFFIX)]
+    try:
+        return bytes.fromhex(body)
+    except ValueError:
+        return None
+
+
 @dataclass(slots=True)
-class SystemImageClipboard:
+class LinuxImageClipboard:
     """Read images via Wayland ``wl-paste`` or X11 ``xclip``."""
 
     def read_image(self) -> ClipboardImage | None:
         for mime, suffix in _CLIPBOARD_IMAGE_TYPES:
-            data = _run_clipboard(["wl-paste", "-t", mime, "-n"])
+            data = _run_clipboard(
+                ["wl-paste", "-t", mime, "-n"],
+                timeout=_CLIPBOARD_TIMEOUT_SECONDS,
+            )
             if data is None:
                 data = _run_clipboard(
-                    ["xclip", "-selection", "clipboard", "-t", mime, "-o"]
+                    ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
+                    timeout=_CLIPBOARD_TIMEOUT_SECONDS,
                 )
             if data is not None and looks_like_image(data):
                 return ClipboardImage(data=data, suffix=suffix)
         return None
 
 
+@dataclass(slots=True)
+class MacImageClipboard:
+    """Read images from the macOS pasteboard through ``osascript``.
+
+    macOS has no ``wl-paste``/``xclip``, and ``pbpaste`` only speaks text, so
+    the image would silently never arrive. AppleScript is the one route that
+    needs no third-party binary: ``osascript`` ships with the system.
+    """
+
+    def read_image(self) -> ClipboardImage | None:
+        stdout = _run_clipboard(
+            list(_APPLESCRIPT_PNG_COMMAND),
+            timeout=_APPLESCRIPT_TIMEOUT_SECONDS,
+        )
+        if stdout is None:
+            return None
+        data = _decode_applescript_png(stdout)
+        if data is None or not looks_like_image(data):
+            return None
+        return ClipboardImage(data=data, suffix=".png")
+
+
+def system_image_clipboard(platform: str | None = None) -> ImageClipboard:
+    """Return the clipboard adapter for ``platform`` (this host by default)."""
+    if (platform if platform is not None else sys.platform) == "darwin":
+        return MacImageClipboard()
+    return LinuxImageClipboard()
+
+
 # Default adapter used by the live app. Tests inject fakes instead.
-DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = SystemImageClipboard()
+DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = system_image_clipboard()
 
 
 @dataclass
