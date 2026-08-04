@@ -683,7 +683,7 @@ def click_should_focus_prompt(event: events.Click, surface: Widget) -> bool:
         return False
     for widget in event.widget.ancestors_with_self:
         if widget is surface:
-            return True
+            break
         if isinstance(widget, ScrollBar):
             return False
         # Scroll containers accept focus for keyboard scrolling, but their
@@ -694,7 +694,7 @@ def click_should_focus_prompt(event: events.Click, surface: Widget) -> bool:
             and not isinstance(widget, VerticalScroll)
         ):
             return False
-    return False
+    return True
 
 
 def palette_window(count: int, index: int, *, max_visible: int) -> tuple[int, int]:
