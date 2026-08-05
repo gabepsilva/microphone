@@ -810,19 +810,6 @@ def test_catalog_gate_rejects_an_unknown_deferral() -> None:
     assert any("not in the catalog" in problem for problem in problems)
 
 
-def test_catalog_gate_reads_multiline_register_calls() -> None:
-    gate = _load_gate("catalog_gate")
-    source = (
-        "controller.register(\n"
-        '    "message.send", handler\n'
-        ")\n"
-        'controller.register("tts.set_enabled", other)\n'
-    )
-    assert gate.registered_action_ids(source) == frozenset(
-        {"message.send", "tts.set_enabled"}
-    )
-
-
 def test_catalog_gate_reads_binder_calls_by_name() -> None:
     gate = _load_gate("catalog_gate")
     source = (
@@ -835,16 +822,12 @@ def test_catalog_gate_reads_binder_calls_by_name() -> None:
     )
 
 
-def test_catalog_gate_ignores_non_literal_register_calls() -> None:
+def test_catalog_gate_handler_ids_come_from_runtime_registration() -> None:
+    """A register call that never runs must not satisfy the gate."""
     gate = _load_gate("catalog_gate")
-    source = (
-        "register('bare')\n"
-        "controller.register()\n"
-        "controller.register(action_id, handler)\n"
-        "controller.register(12, handler)\n"
-        'other.call("message.send")\n'
-    )
-    assert gate.registered_action_ids(source) == frozenset()
+    wired = gate.production_handler_ids()
+    assert "microphone.set_muted" in wired
+    assert len(wired) == len(gate.CATALOG)
 
 
 def test_catalog_gate_main_reports_planted_failures(monkeypatch, capsys) -> None:

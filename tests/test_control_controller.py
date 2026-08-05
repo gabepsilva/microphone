@@ -184,6 +184,13 @@ def test_a_handler_can_only_be_registered_for_a_catalog_action() -> None:
         wired().register("microphone.explode", never_called)
 
 
+def test_registered_lists_only_actions_with_handlers() -> None:
+    controller = Controller()
+    assert controller.registered() == frozenset()
+    controller.register("tts.set_enabled", setting_tts)
+    assert controller.registered() == frozenset({"tts.set_enabled"})
+
+
 # -- refusals -----------------------------------------------------------
 
 

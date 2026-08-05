@@ -225,6 +225,11 @@ class Controller:
         with self._lock:
             self._handlers[action_id] = handler
 
+    def registered(self) -> frozenset[str]:
+        """Action ids that have a handler in this session."""
+        with self._lock:
+            return frozenset(self._handlers)
+
     # -- reading --------------------------------------------------------
 
     @property

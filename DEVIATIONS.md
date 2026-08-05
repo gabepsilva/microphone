@@ -197,14 +197,16 @@ missing device) remains a per-call answer. Pinned by
 ``test_mcp_bridge_omits_tools_capability_policy_denies``.
 
 **Catalog handler gate.** ``make catalog`` / ``tools/catalog_gate.py`` fails
-when a catalog action has no ``controller.register`` in
-``tagalong/application.py`` and is not on ``DEFERRED_ACTIONS``. Stale or
-unknown deferrals also fail. The gate also requires ``tagalong/cli.py`` to
-call every name in ``REQUIRED_BINDERS``, so a composition root that skips a
-binder fails even when the binder itself is complete. Both checks read
-source (AST). Wired into ``VERIFY_QUICK``. Pinned by
-``test_catalog_gate_rejects_a_missing_handler`` and
-``test_catalog_gate_rejects_a_skipped_composition_binder``.
+when a catalog action is not registered by executing the production binders
+and is not on ``DEFERRED_ACTIONS``. Stale or unknown deferrals also fail.
+Runtime registration catches a ``register`` call parked in dead code; an
+AST check separately requires ``tagalong/cli.py`` to call every name in
+``REQUIRED_BINDERS`` so a composition root that skips a binder fails even
+when the binders themselves are complete. Collaborators are ``MagicMock``
+scaffolding — the asserted subject is the registered id set. Wired into
+``VERIFY_QUICK``. Pinned by ``test_catalog_gate_rejects_a_missing_handler``,
+``test_catalog_gate_rejects_a_skipped_composition_binder``, and
+``test_catalog_gate_handler_ids_come_from_runtime_registration``.
 
 **Authorization seam.** ``authorizes`` is the only production check (scope
 plus ``AGENT_DENIED_ACTIONS``). ``Actor.may`` was removed so a future adapter
