@@ -97,6 +97,9 @@ def _imported_modules(tree: ast.AST) -> list[tuple[str, int]]:
         if isinstance(node, ast.ImportFrom):
             if node.level == 1 and node.module:
                 found.append((node.module.split(".")[0], node.lineno))
+            elif node.level == 1 and node.module is None:
+                for alias in node.names:
+                    found.append((alias.name.split(".")[0], node.lineno))
             elif node.level == 0 and node.module:
                 head, _, rest = node.module.partition(".")
                 if head == PACKAGE.name and rest:
