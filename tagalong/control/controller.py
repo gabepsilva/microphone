@@ -500,8 +500,13 @@ class Controller:
         return outcome
 
     def _release(self, request_id: str, unpublished: _Unpublished) -> Applied:
-        if unpublished.changed and self._fragment_is_current(unpublished.changed):
-            self._events.publish("state.changed", dict(unpublished.changed))
+        still = {
+            name: value
+            for name, value in unpublished.changed.items()
+            if getattr(self._state, name) == value
+        }
+        if still:
+            self._events.publish("state.changed", still)
         self._publish_applied(
             request_id,
             unpublished.action_id,
@@ -512,11 +517,6 @@ class Controller:
         self._mark_announced(request_id, outcome)
         self._conclude(request_id, outcome)
         return outcome
-
-    def _fragment_is_current(self, changed: Mapping[str, object]) -> bool:
-        return all(
-            getattr(self._state, name) == value for name, value in changed.items()
-        )
 
     def _trim_unpublished(self) -> None:
         while len(self._unpublished) > UNPUBLISHED_MEMORY:
