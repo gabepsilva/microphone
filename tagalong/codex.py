@@ -594,7 +594,14 @@ class CodexConversation:
         )
 
     def new_session(self) -> bool:
-        """Discard the transcript context and start a fresh, equivalent thread."""
+        """Start and adopt a fresh thread as one step.
+
+        Production goes through :meth:`start_fresh_thread` and
+        :meth:`adopt_fresh_thread` separately so a superseded ``session.new``
+        can discard the open without installing it. This wrapper is the same
+        composition, kept for tests that drive the conversation without a
+        controller.
+        """
         started = self.start_fresh_thread()
         if started is None:
             return False

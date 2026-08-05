@@ -122,6 +122,15 @@ class _Pending:
     settle: Callable[[AppState, object], AppState]
 
 
+@dataclass(frozen=True)
+class _Unpublished:
+    """An applied request whose ``action.applied`` event is still waiting."""
+
+    action_id: str
+    actor_id: str
+    effective: object
+
+
 @dataclass
 class _Requests:
     """In-flight requests, one slot per action, plus what recently lost its slot."""
@@ -192,6 +201,7 @@ class Controller:
         self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
         # Which key, if any, is waiting on a request that has not ended yet.
         self._keyed: dict[str, tuple[str, str]] = {}
+        self._unpublished: dict[str, _Unpublished] = {}
         self._counter = 0
 
     # -- wiring ---------------------------------------------------------
@@ -425,16 +435,55 @@ class Controller:
         that keeps a device which finally opened from overwriting the choice
         made while it was opening, and the reason a superseded selection is
         never written to the configuration file.
+
+        Use this when the external effect is already live. When the adapter
+        still has work after learning it won — installing a Codex thread,
+        for example — call :meth:`claim` and then :meth:`announce` so
+        ``action.applied`` is not published one step too early.
         """
         with self._lock:
-            pending = self._requests.finish(request_id)
-            if pending is None:
-                return self._unknown_request(request_id)
-            self._commit(pending.settle(self._state, effective))
+            return self._complete(request_id, effective, publish=True)
+
+    def claim(self, request_id: str, effective: object = None) -> Outcome:
+        """Retire a pending request as applied without publishing yet.
+
+        The settle closure runs and the slot is freed, but ``action.applied``
+        waits for :meth:`announce`. That split is for adapters whose live
+        effect is not the AppState change alone: a subscriber that reacts to
+        the event by reading the session must find the change already there.
+        """
+        with self._lock:
+            return self._complete(request_id, effective, publish=False)
+
+    def announce(self, request_id: str) -> None:
+        """Publish ``action.applied`` for a request :meth:`claim` already won."""
+        with self._lock:
+            unpublished = self._unpublished.pop(request_id, None)
+            if unpublished is None:
+                return
+            self._publish_applied(
+                request_id,
+                unpublished.action_id,
+                unpublished.actor_id,
+                unpublished.effective,
+            )
+
+    def _complete(
+        self, request_id: str, effective: object, *, publish: bool
+    ) -> Outcome:
+        pending = self._requests.finish(request_id)
+        if pending is None:
+            return self._unknown_request(request_id)
+        self._commit(pending.settle(self._state, effective))
+        if publish:
             self._publish_applied(
                 request_id, pending.action_id, pending.actor_id, effective
             )
-            return self._conclude(request_id, Applied(request_id, effective))
+        else:
+            self._unpublished[request_id] = _Unpublished(
+                pending.action_id, pending.actor_id, effective
+            )
+        return self._conclude(request_id, Applied(request_id, effective))
 
     def fail(self, request_id: str, detail: str) -> Outcome:
         """Report that an accepted request was attempted and did not succeed.

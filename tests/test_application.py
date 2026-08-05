@@ -263,6 +263,31 @@ def test_run_new_session_settles_when_the_thread_starts() -> None:
     assert recorder.rolls == 1
 
 
+def test_session_new_announces_applied_after_the_thread_is_live(
+    monkeypatch,
+) -> None:
+    controller, conversation, _tts = bound()
+    display = FakeDisplay()
+    recorder = FakeRecorder()
+    conversation.thread = "thread-0"
+    seen: list[tuple[str, object | None]] = []
+    publish = controller._events.publish
+
+    def record(name: str, payload=None):
+        seen.append((name, conversation.thread))
+        return publish(name, payload)
+
+    monkeypatch.setattr(controller._events, "publish", record)
+
+    outcome = run_new_session(controller, OWNER, conversation, display, recorder)
+
+    assert outcome == Applied("req-1")
+    assert seen == [
+        ("action.accepted", "thread-0"),
+        ("action.applied", "thread-1"),
+    ]
+
+
 def test_a_superseded_new_session_does_not_replace_the_live_one() -> None:
     class SlowConversation:
         def __init__(self) -> None:

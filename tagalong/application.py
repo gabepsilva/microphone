@@ -17,9 +17,10 @@ stay valid oracles, and the live path has one execution model.
 
 ``session.new`` starts a Codex thread, which is slow work. The handler only
 records that a reset was accepted. The caller opens the thread after dispatch
-returns, asks the controller whether that request still holds the slot, and
-only then adopts it, clears the transcript, and rolls the recorder. A
-superseded start is discarded rather than overwriting the newer session.
+returns, claims the slot if it still holds it, adopts the thread, and only
+then announces ``action.applied``. A superseded start is discarded rather
+than overwriting the newer session, and a subscriber reacting to the applied
+event sees the new thread already live.
 """
 
 from __future__ import annotations
@@ -184,10 +185,11 @@ def run_new_session(
 ) -> Outcome:
     """Dispatch ``session.new`` and adopt the thread only if it still wins.
 
-    The Codex open happens outside the writer lock. After it finishes, settle
-    decides whether this request still holds the slot. Transcript and recorder
-    move only for an applied outcome, so a superseded start cannot clear a
-    newer session or leave the audit record pointing at the wrong thread.
+    The Codex open happens outside the writer lock. After it finishes, claim
+    decides whether this request still holds the slot without publishing.
+    Transcript, recorder, and ``action.applied`` move only after the winner
+    is installed, so a superseded start cannot clear a newer session and a
+    subscriber does not observe the previous thread as the applied one.
     """
     outcome = controller.dispatch("session.new", actor=actor)
     if not isinstance(outcome, Accepted):
@@ -195,10 +197,11 @@ def run_new_session(
     started = conversation.start_fresh_thread()
     if started is None:
         return controller.fail(outcome.request_id, "could not start a new session")
-    settled = controller.settle(outcome.request_id)
+    settled = controller.claim(outcome.request_id)
     if not isinstance(settled, Applied):
         return settled
     conversation.adopt_fresh_thread(started)
     display.reset_transcript()
     recorder.roll()
+    controller.announce(outcome.request_id)
     return settled

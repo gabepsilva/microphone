@@ -469,6 +469,63 @@ def test_selections_of_different_things_do_not_supersede_each_other() -> None:
     assert controller.state.audio_stream == Selection("Zoom", "Zoom")
 
 
+def test_claiming_a_request_commits_without_publishing_applied() -> None:
+    controller = wired()
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    _, subscription = controller.subscribe()
+
+    outcome = controller.claim(accepted.request_id, "Yeti")
+
+    assert outcome == Applied("req-1", "Yeti")
+    assert controller.state.microphone == Selection("Yeti", "Yeti")
+    assert events(subscription) == [
+        ("state.changed", {"microphone": Selection("Yeti", "Yeti")}),
+    ]
+
+
+def test_announcing_a_claimed_request_publishes_applied() -> None:
+    controller = wired()
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    controller.claim(accepted.request_id, "Yeti")
+    _, subscription = controller.subscribe()
+
+    controller.announce(accepted.request_id)
+
+    assert events(subscription) == [
+        (
+            "action.applied",
+            {
+                "request_id": "req-1",
+                "action": "microphone.select",
+                "actor": "local",
+                "effective": "Yeti",
+            },
+        ),
+    ]
+
+
+def test_announcing_a_request_that_was_not_claimed_is_harmless() -> None:
+    controller = wired()
+    _, subscription = controller.subscribe()
+
+    controller.announce("req-1")
+
+    assert events(subscription) == []
+
+
+def test_a_claimed_request_cannot_be_settled_again() -> None:
+    controller = wired()
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    controller.claim(accepted.request_id, "Yeti")
+
+    outcome = controller.settle(accepted.request_id, "Webcam")
+
+    assert outcome == Rejected(
+        "req-1", Rejection.INVALID, "no request in flight: req-1"
+    )
+    assert controller.state.microphone == Selection("Yeti", "Yeti")
+
+
 def test_a_request_that_already_settled_cannot_settle_twice() -> None:
     controller = wired()
     accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
