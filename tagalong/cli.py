@@ -39,8 +39,12 @@ from moonshine_voice.moonshine_api import ModelArch
 
 from .application import (
     app_state_from_session,
+    bind_audio_slice,
     bind_first_slice,
+    bind_settings_slice,
+    install_audio_hooks,
     install_first_slice_hooks,
+    install_settings_hooks,
     run_new_session,
 )
 from .capture import (
@@ -78,7 +82,7 @@ from .startup import (
     validate_codex_reasoning,
 )
 from .streams import ApplicationRefresher, StreamTap
-from .transport import EventPump, LocalServer, TransportError, apply_state_fragment
+from .transport import EventPump, LocalServer, TransportError
 
 # The name carries the user ID because the fallback is a shared directory: on a
 # multi-user box a fixed name in /tmp is one user's lock file blocking every
@@ -314,6 +318,7 @@ class _SelectionRequest:
 
     value: str | None
     on_applied: Callable[[str | None], object] | None = None
+    on_failed: Callable[[str], object] | None = None
 
 
 class _SelectionRequests:
@@ -334,8 +339,8 @@ class _SelectionRequests:
         with self._lock:
             return self._request.value
 
-    def replace(self, value, on_applied=None):
-        request = _SelectionRequest(value, on_applied)
+    def replace(self, value, on_applied=None, on_failed=None):
+        request = _SelectionRequest(value, on_applied, on_failed)
         with self._lock:
             self._request = request
         return request
@@ -354,11 +359,15 @@ class _SelectionRequests:
             request.on_applied(effective)
         return True
 
-    def abandon(self, request):
+    def abandon(self, request, detail="selection failed"):
         """Forget a failed request unless a newer selection superseded it."""
+        callback = None
         with self._lock:
             if self._request is request:
                 self._request = _SelectionRequest(None)
+                callback = request.on_failed
+        if callback is not None:
+            callback(detail)
 
 
 class MicrophoneChannel:
@@ -418,11 +427,16 @@ class MicrophoneChannel:
         """Return the newest requested microphone name."""
         return self._selection.desired
 
-    def select(self, microphone, *, on_applied=None):
+    def select(self, microphone, *, on_applied=None, on_failed=None):
         """Ask for a named microphone, or for none. Always accepted."""
-        self._selection.replace(microphone, on_applied)
+        self._selection.replace(microphone, on_applied, on_failed)
         self.wake.set()
         return True
+
+    def set_muted(self, muted):
+        """Apply desired mute to the open capture, if one is open."""
+        if self.transcriber is not None and self.listener is not None:
+            muting(self.transcriber, self.listener)(muted)
 
     def refresh(self):
         """Publish currently available inputs, only when the list changed.
@@ -520,16 +534,14 @@ class MicrophoneChannel:
         self._open_error = None
         self.transcriber, self.listener = transcriber, listener
         self.current = device["name"]
-        self.tui.hooks.on_mute = muting(transcriber, listener)
         if self.tui.state.mic.muted:
-            self.tui.hooks.on_mute(True)
+            self.set_muted(True)
         return True
 
     def _retire(self):
         transcriber, listener = self.transcriber, self.listener
         self.transcriber = self.listener = None
         self.current = None
-        self.tui.hooks.on_mute = None
         if transcriber is not None and listener is not None:
             self.close_channel(transcriber, listener)
 
@@ -595,11 +607,16 @@ class AudioChannel:
         """Return the newest requested application name."""
         return self._selection.desired
 
-    def select(self, application, *, on_applied=None):
+    def select(self, application, *, on_applied=None, on_failed=None):
         """Ask for an application, or for none. Always accepted."""
-        self._selection.replace(application, on_applied)
+        self._selection.replace(application, on_applied, on_failed)
         self.wake.set()
         return True
+
+    def set_muted(self, muted):
+        """Apply desired mute to the open far end, if one is open."""
+        if self.transcriber is not None and self.listener is not None:
+            muting(self.transcriber, self.listener)(muted)
 
     def _serve(self):
         while True:
@@ -617,6 +634,7 @@ class AudioChannel:
         channel the other is retiring.
         """
         applied = False
+        abandoned = None
         effective = None
         with self.lock:
             request = self._selection.snapshot()
@@ -630,7 +648,7 @@ class AudioChannel:
                 if self._open(wanted):
                     applied = True
                 else:
-                    self._selection.abandon(request)
+                    abandoned = wanted
             else:
                 self.tap.follow(wanted)
                 self.current = wanted
@@ -638,6 +656,8 @@ class AudioChannel:
             effective = self.current
         if applied:
             self._selection.complete(request, effective)
+        elif abandoned is not None:
+            self._selection.abandon(request, f"could not listen to {abandoned}")
 
     def _open(self, application):
         tap = StreamTap(application)
@@ -650,9 +670,8 @@ class AudioChannel:
             self.tui.note(f"could not listen to {application}: {error}")
             return False
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
-        self.tui.hooks.on_audio_mute = muting(transcriber, listener)
         if self.tui.state.audio.muted:
-            self.tui.hooks.on_audio_mute(True)
+            self.set_muted(True)
         self.gate.set_available(BASE_SPEAKERS | {"Audio"})
         self.current = application
         return True
@@ -662,7 +681,6 @@ class AudioChannel:
         transcriber, listener = self.transcriber, self.listener
         self.tap = self.transcriber = self.listener = None
         self.current = None
-        self.tui.hooks.on_audio_mute = None
         self.gate.set_available(BASE_SPEAKERS)
         self.close_channel(transcriber, listener)
 
@@ -696,54 +714,37 @@ def microphone_presence(mic_activity, audio_activity, tts):
     return SpeakerPresence(mic_activity, suppressors)
 
 
-def remembering(hook, config, key, encode=lambda value: value):
-    """Wrap a sidebar hook so an accepted change is written to the config file.
-
-    Only an accepted change is recorded. A hook that refuses — a model the
-    session cannot switch to, a speech engine still busy becoming the last one
-    it was asked for — has changed nothing, and saving it would make the next
-    session start somewhere this one never went.
-    """
-
-    def apply(value):
-        accepted = hook(value)
-        if accepted is not False:
-            config.record(key, encode(value))
-        return accepted
-
-    return apply
-
-
-def remembering_applied(hook, config, key, encode=lambda value: value):
-    """Record an asynchronous selection only after it becomes effective."""
-
-    def apply(value):
-        return hook(
-            value,
-            on_applied=lambda applied: config.record(key, encode(applied)),
-        )
-
-    return apply
-
-
-def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
-    """Point the interface's controls at the conversation, its speech, and disk."""
+def attach_conversation_hooks(tui, conversation, tts):
+    """Point the interface's first-slice controls at the controller."""
     actor = local_user("tui")
     controller = Controller(app_state_from_session(tui.state))
     bind_first_slice(controller, conversation=conversation, tts=tts)
     install_first_slice_hooks(tui, controller, actor)
-    tui.hooks.on_codex_model = remembering(
-        conversation.request_model, config, "codex_model"
-    )
-    tui.hooks.on_codex_effort = remembering(
-        conversation.request_reasoning_effort, config, "codex_reasoning"
-    )
-    # Muting is not remembered: it is a thing done to one reply, or a few, and
-    # a session that starts silent every time because of a moment's quiet is
-    # not what "No voice reply" was asked to mean.
-    tui.hooks.on_tts_provider = remembering(tts.set_provider, config, "tts_provider")
-    tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
     return controller, actor
+
+
+def start_capture_channels(controller, tui, actor, microphone, audio_setup):
+    """Bind audio actions, install hooks, and apply the startup selections."""
+    audio, config, desired_microphone, audio_stream = audio_setup
+    bind_audio_slice(
+        controller,
+        microphone=microphone,
+        audio=audio,
+        on_microphone_applied=lambda name: config.record("microphone", name),
+        on_audio_applied=lambda name: config.record(
+            "audio_stream", audio_stream_setting(name)
+        ),
+    )
+    install_audio_hooks(tui, controller, actor)
+    controller.dispatch("microphone.select", {"name": desired_microphone}, actor=actor)
+    microphone.reconcile()
+    microphone.start()
+    audio.start()
+    applications = ApplicationRefresher(tui)
+    applications.start()
+    tui.hooks.on_quit = applications.stop
+    controller.dispatch("audio_stream.select", {"name": audio_stream}, actor=actor)
+    return applications
 
 
 def attach_remote_access(controller, tui):
@@ -754,6 +755,8 @@ def attach_remote_access(controller, tui):
     A missing ``XDG_RUNTIME_DIR`` leaves the TUI session running without a
     socket rather than falling back to ``/tmp``.
     """
+    from .tui import apply_state_fragment
+
     _snapshot, subscription = controller.subscribe()
 
     def apply(changed):
@@ -839,22 +842,6 @@ def finish_recorded_session(tui, recorder, applications) -> None:
     applications.stop()
 
 
-def remembering_turn_silence(turn_silence, config):
-    """Adopt a typed window and record the value actually applied.
-
-    The applied value is what is saved, not the typed one: the two differ
-    whenever the setting clamps, and the file has to describe the session that
-    ran rather than the request that produced it.
-    """
-
-    def apply(seconds):
-        applied = turn_silence.set(seconds)
-        config.record("turn_silence", applied)
-        return applied
-
-    return apply
-
-
 def main():
     parser, args = parse_startup_args()
     # Parsing comes first so `--help` and a rejected argument still answer while
@@ -898,7 +885,6 @@ def main():
         build_session_state(args, selection, codex_models),
         countdown=countdown,
         speech=tts,
-        on_policy=remembering(gate.set_policy, config, "taga_after"),
     )
     recorder = TranscriptRecorder()
     transcript_display = tui
@@ -914,9 +900,13 @@ def main():
         tts,
     )
 
-    controller, actor = attach_conversation_hooks(
-        tui, conversation, tts, config, turn_silence
+    controller, actor = attach_conversation_hooks(tui, conversation, tts)
+    bind_settings_slice(
+        controller,
+        (conversation, tts, gate, turn_silence),
+        persist=config.record,
     )
+    install_settings_hooks(tui, controller, actor)
     wire_transcript_recording(tui, conversation, recorder, controller, actor)
     # The plan reads the conversation's own measured time-to-first-word, so
     # the moment a turn is guessed at tracks what Taga is actually doing.
@@ -962,30 +952,26 @@ def main():
         partial(close_microphone_channel, parts, mic_activity),
         devices=initial_devices,
     )
-    desired_microphone = (
-        selection.device["name"] if selection.device is not None else args.microphone
-    )
-    tui.hooks.on_microphone = remembering_applied(
-        microphone.select, config, "microphone"
-    )
-    microphone.select(desired_microphone)
-    microphone.reconcile()
-    microphone.start()
-
     them = AudioChannel(
         tui,
         gate,
         partial(open_audio_channel, parts, audio_activity),
         partial(close_audio_channel, parts, audio_activity),
     )
-    them.start()
-    applications = ApplicationRefresher(tui)
-    applications.start()
-    tui.hooks.on_quit = applications.stop
-    tui.hooks.on_audio_stream = remembering_applied(
-        them.select, config, "audio_stream", encode=audio_stream_setting
+    applications = start_capture_channels(
+        controller,
+        tui,
+        actor,
+        microphone,
+        (
+            them,
+            config,
+            selection.device["name"]
+            if selection.device is not None
+            else args.microphone,
+            audio_stream,
+        ),
     )
-    them.select(audio_stream)
     run_attached_session(controller, tui, conversation, microphone, them)
     finish_recorded_session(tui, recorder, applications)
 

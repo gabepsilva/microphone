@@ -1,15 +1,20 @@
-"""The first-slice adapter: live collaborators as catalog handlers."""
+"""In-process catalog handlers: first slice, settings, and audio."""
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import pytest
 
 from tagalong.application import (
     app_state_from_session,
+    bind_audio_slice,
     bind_first_slice,
+    bind_settings_slice,
+    install_audio_hooks,
     install_first_slice_hooks,
+    install_settings_hooks,
     run_new_session,
 )
 from tagalong.control import (
@@ -20,6 +25,7 @@ from tagalong.control import (
     Failed,
     Rejected,
     Rejection,
+    Selection,
     Superseded,
     agent,
     local_user,
@@ -39,6 +45,10 @@ class FakeConversation:
         self.started: list[object] = []
         self.adopted: list[object] = []
         self.thread: object | None = None
+        self.models: list[str] = []
+        self.efforts: list[str] = []
+        self.model_ok = True
+        self.effort_ok = True
 
     def ingest(self, speaker, text, respond, images=()):
         self.ingested.append((speaker, text, respond, images))
@@ -66,18 +76,36 @@ class FakeConversation:
         self.adopt_fresh_thread(started)
         return True
 
+    def request_model(self, model: str) -> bool:
+        self.models.append(model)
+        return self.model_ok
+
+    def request_reasoning_effort(self, effort: str) -> bool:
+        self.efforts.append(effort)
+        return self.effort_ok
+
 
 class FakeSpeech:
-    def __init__(self, *, accept: bool = True) -> None:
+    def __init__(self, *, accept: bool = True, provider: str = "piper") -> None:
         self.enabled = True
+        self.provider = provider
         self.accept = accept
         self.calls: list[bool] = []
+        self.providers: list[str] = []
+        self.provider_ok = True
 
     def set_enabled(self, enabled: bool) -> bool | None:
         self.calls.append(enabled)
         if not self.accept:
             return False
         self.enabled = enabled
+        return True
+
+    def set_provider(self, provider: str) -> bool | None:
+        self.providers.append(provider)
+        if not self.provider_ok or provider == self.provider:
+            return False
+        self.provider = provider
         return True
 
 
@@ -103,6 +131,56 @@ class FakeTui:
         self.state = SessionState()
 
 
+class FakeGate:
+    def __init__(self) -> None:
+        self.policies: list[str] = []
+
+    def set_policy(self, policy: str) -> None:
+        self.policies.append(policy)
+
+
+class FakeSilence:
+    def __init__(self, seconds: float = 3.0) -> None:
+        self.seconds = seconds
+
+    def set(self, seconds: float) -> float:
+        self.seconds = max(0.25, min(30.0, seconds))
+        return self.seconds
+
+
+class FakeCapture:
+    def __init__(self) -> None:
+        self.selected: list[str | None] = []
+        self.muted = False
+        self._applied: list[Callable[[str | None], object] | None] = []
+        self._failed: list[Callable[[str], object] | None] = []
+
+    def select(
+        self,
+        name: str | None,
+        *,
+        on_applied: Callable[[str | None], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool:
+        self.selected.append(name)
+        self._applied.append(on_applied)
+        self._failed.append(on_failed)
+        return True
+
+    def set_muted(self, muted: bool) -> None:
+        self.muted = muted
+
+    def apply(self, name: str | None, index: int = -1) -> object:
+        on_applied = self._applied[index]
+        assert on_applied is not None
+        return on_applied(name)
+
+    def fail(self, detail: str, index: int = -1) -> object:
+        on_failed = self._failed[index]
+        assert on_failed is not None
+        return on_failed(detail)
+
+
 OWNER = local_user("tui")
 
 
@@ -117,7 +195,7 @@ def bound(
     return controller, conversation, tts
 
 
-def test_app_state_seeds_only_the_field_this_slice_maintains() -> None:
+def test_app_state_seeds_every_field_this_slice_maintains() -> None:
     state = SessionState(
         microphone="Yeti",
         audio_stream="Zoom",
@@ -129,13 +207,22 @@ def test_app_state_seeds_only_the_field_this_slice_maintains() -> None:
         turn_silence=4.5,
     )
     state.mic.muted = True
+    state.audio.muted = True
 
     seeded = app_state_from_session(state)
 
-    assert seeded == AppState(tts_enabled=False)
-    assert seeded.microphone.desired is None
-    assert seeded.codex_model == ""
-    assert seeded.microphone_muted is False
+    assert seeded == AppState(
+        microphone=Selection(desired="Yeti"),
+        microphone_muted=True,
+        audio_stream=Selection(desired="Zoom"),
+        audio_stream_muted=True,
+        response_policy="audio",
+        tts_enabled=False,
+        tts_provider="edge",
+        codex_model="gpt-5.6-sol",
+        codex_reasoning="high",
+        turn_silence=4.5,
+    )
 
 
 def test_a_human_message_is_ingested_as_text_and_applied() -> None:
@@ -394,3 +481,296 @@ def test_a_refused_tts_hook_reports_failure_to_the_interface() -> None:
 
     assert tui.hooks.on_tts is not None
     assert tui.hooks.on_tts(False) is False
+
+
+def settings_bound(
+    conversation: FakeConversation | None = None,
+    tts: FakeSpeech | None = None,
+    gate: FakeGate | None = None,
+    silence: FakeSilence | None = None,
+    recorded: list[tuple[str, object]] | None = None,
+) -> tuple[Controller, FakeConversation, FakeSpeech, FakeGate, FakeSilence]:
+    conversation = FakeConversation() if conversation is None else conversation
+    tts = FakeSpeech() if tts is None else tts
+    gate = FakeGate() if gate is None else gate
+    silence = FakeSilence() if silence is None else silence
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(controller, conversation=conversation, tts=tts)
+    bind_settings_slice(
+        controller,
+        (conversation, tts, gate, silence),
+        persist=(
+            (lambda key, value: recorded.append((key, value)))
+            if recorded is not None
+            else None
+        ),
+    )
+    return controller, conversation, tts, gate, silence
+
+
+def audio_bound() -> tuple[Controller, FakeCapture, FakeCapture]:
+    controller = Controller(app_state_from_session(SessionState()))
+    microphone = FakeCapture()
+    audio = FakeCapture()
+    bind_first_slice(controller, conversation=FakeConversation(), tts=FakeSpeech())
+    bind_audio_slice(controller, microphone=microphone, audio=audio)
+    return controller, microphone, audio
+
+
+def test_settings_actions_update_canonical_state() -> None:
+    controller, conversation, tts, gate, silence = settings_bound()
+
+    assert controller.dispatch(
+        "response_policy.set", {"policy": "voice"}, actor=OWNER
+    ) == Applied("req-1", "voice")
+    assert controller.dispatch(
+        "tts.set_provider", {"provider": "edge"}, actor=OWNER
+    ) == Applied("req-2", "edge")
+    assert controller.dispatch(
+        "codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER
+    ) == Applied("req-3", "gpt-5.6-sol")
+    assert controller.dispatch(
+        "codex.set_reasoning", {"effort": "high"}, actor=OWNER
+    ) == Applied("req-4", "high")
+    assert controller.dispatch(
+        "turn_silence.set", {"seconds": 0.01}, actor=OWNER
+    ) == Applied("req-5", 0.25)
+
+    assert gate.policies == ["voice"]
+    assert tts.provider == "edge"
+    assert conversation.models == ["gpt-5.6-sol"]
+    assert conversation.efforts == ["high"]
+    assert silence.seconds == 0.25
+    assert controller.state.response_policy == "voice"
+    assert controller.state.tts_provider == "edge"
+    assert controller.state.codex_model == "gpt-5.6-sol"
+    assert controller.state.codex_reasoning == "high"
+    assert controller.state.turn_silence == 0.25
+
+
+def test_setting_the_provider_does_not_unmute_speech() -> None:
+    """Unmute is a TUI picker composition, not part of ``tts.set_provider``."""
+    controller, *_rest = settings_bound()
+    controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
+
+    assert controller.dispatch(
+        "tts.set_provider", {"provider": "edge"}, actor=OWNER
+    ) == Applied("req-2", "edge")
+    assert controller.state.tts_enabled is False
+    assert controller.state.tts_provider == "edge"
+
+
+def test_settings_persistence_runs_from_the_handler_not_the_hook() -> None:
+    recorded: list[tuple[str, object]] = []
+    controller, *_rest = settings_bound(recorded=recorded)
+
+    controller.dispatch("response_policy.set", {"policy": "voice"}, actor=OWNER)
+    controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER)
+    controller.dispatch("codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER)
+    controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=OWNER)
+    controller.dispatch("turn_silence.set", {"seconds": 0.01}, actor=OWNER)
+
+    assert recorded == [
+        ("taga_after", "voice"),
+        ("tts_provider", "edge"),
+        ("codex_model", "gpt-5.6-sol"),
+        ("codex_reasoning", "high"),
+        ("turn_silence", 0.25),
+    ]
+
+
+def test_a_refused_settings_change_is_not_persisted() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    tts.provider_ok = False
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Failed,
+    )
+    assert recorded == []
+
+
+def test_a_refused_settings_change_fails_and_leaves_state() -> None:
+    tts = FakeSpeech()
+    tts.provider_ok = False
+    conversation = FakeConversation()
+    conversation.model_ok = False
+    conversation.effort_ok = False
+    controller, *_rest = settings_bound(conversation=conversation, tts=tts)
+    before = controller.state
+
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Failed,
+    )
+    assert isinstance(
+        controller.dispatch("codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER),
+        Failed,
+    )
+    assert isinstance(
+        controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=OWNER),
+        Failed,
+    )
+    assert controller.state == before
+
+
+def test_the_tui_hooks_dispatch_settings() -> None:
+    controller, conversation, tts, gate, silence = settings_bound()
+    tui = FakeTui()
+    install_settings_hooks(tui, controller, OWNER)
+
+    assert tui.hooks.on_policy is not None
+    assert tui.hooks.on_codex_model is not None
+    assert tui.hooks.on_codex_effort is not None
+    assert tui.hooks.on_tts_provider is not None
+    assert tui.hooks.on_turn_silence is not None
+    assert tui.hooks.on_policy("quiet") is True
+    assert tui.hooks.on_codex_model("gpt-5.6-sol") is True
+    assert tui.hooks.on_codex_effort("high") is True
+    assert tui.hooks.on_tts_provider("edge") is True
+    assert tui.hooks.on_turn_silence(1.25) == 1.25
+
+    assert gate.policies == ["quiet"]
+    assert conversation.models == ["gpt-5.6-sol"]
+    assert conversation.efforts == ["high"]
+    assert tts.provider == "edge"
+    assert silence.seconds == 1.25
+
+
+def test_a_refused_settings_hook_reports_failure_to_the_interface() -> None:
+    tts = FakeSpeech()
+    tts.provider_ok = False
+    conversation = FakeConversation()
+    conversation.model_ok = False
+    conversation.effort_ok = False
+    controller, *_rest = settings_bound(conversation=conversation, tts=tts)
+    tui = FakeTui()
+    install_settings_hooks(tui, controller, OWNER)
+
+    assert tui.hooks.on_tts_provider is not None
+    assert tui.hooks.on_tts_provider("edge") is False
+    assert tui.hooks.on_codex_model is not None
+    assert tui.hooks.on_codex_model("gpt-5.6-sol") is False
+    assert tui.hooks.on_codex_effort is not None
+    assert tui.hooks.on_codex_effort("high") is False
+    forbidden = FakeTui()
+    install_settings_hooks(forbidden, controller, agent("notes-bot", set()))
+    assert forbidden.hooks.on_policy is not None
+    assert forbidden.hooks.on_policy("quiet") is False
+    assert forbidden.hooks.on_turn_silence is not None
+    assert forbidden.hooks.on_turn_silence(1.25) is None
+
+
+def test_microphone_select_is_accepted_then_settled() -> None:
+    controller, microphone, _audio = audio_bound()
+
+    outcome = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+
+    assert isinstance(outcome, Accepted)
+    assert microphone.selected == ["Yeti"]
+    assert controller.state.microphone == Selection(desired="Yeti")
+    assert microphone.apply("Yeti") == Applied("req-1", "Yeti")
+    assert controller.state.microphone == Selection(desired="Yeti", effective="Yeti")
+
+
+def test_a_superseded_microphone_select_does_not_apply() -> None:
+    controller, microphone, _audio = audio_bound()
+
+    first = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    second = controller.dispatch("microphone.select", {"name": "Webcam"}, actor=OWNER)
+    assert isinstance(first, Accepted)
+    assert isinstance(second, Accepted)
+
+    assert microphone.apply("Yeti", index=0) == Superseded("req-1")
+    assert controller.state.microphone.effective is None
+    assert microphone.apply("Webcam", index=1) == Applied("req-2", "Webcam")
+    assert controller.state.microphone == Selection(
+        desired="Webcam", effective="Webcam"
+    )
+
+
+def test_a_failed_audio_select_does_not_settle() -> None:
+    controller, _microphone, audio = audio_bound()
+
+    outcome = controller.dispatch("audio_stream.select", {"name": "Zoom"}, actor=OWNER)
+
+    assert isinstance(outcome, Accepted)
+    assert audio.fail("could not listen to Zoom") == Failed(
+        "req-1", "could not listen to Zoom"
+    )
+    assert controller.state.audio_stream == Selection(desired="Zoom")
+    assert controller.state.audio_stream.effective is None
+
+
+def test_mute_applies_without_an_open_channel() -> None:
+    controller, microphone, audio = audio_bound()
+
+    assert controller.dispatch(
+        "microphone.set_muted", {"muted": True}, actor=OWNER
+    ) == Applied("req-1", True)
+    assert controller.dispatch(
+        "audio_stream.set_muted", {"muted": True}, actor=OWNER
+    ) == Applied("req-2", True)
+
+    assert microphone.muted is True
+    assert audio.muted is True
+    assert controller.state.microphone_muted is True
+    assert controller.state.audio_stream_muted is True
+
+
+def test_audio_hooks_report_a_forbidden_actor() -> None:
+    controller, _microphone, _audio = audio_bound()
+    tui = FakeTui()
+    install_audio_hooks(tui, controller, agent("notes-bot", set()))
+
+    assert tui.hooks.on_microphone is not None
+    assert tui.hooks.on_microphone("Yeti") is False
+    assert tui.hooks.on_audio_stream is not None
+    assert tui.hooks.on_audio_stream("Zoom") is False
+    assert tui.hooks.on_mute is not None
+    assert tui.hooks.on_mute(True) is False
+    assert tui.hooks.on_audio_mute is not None
+    assert tui.hooks.on_audio_mute(True) is False
+    assert tui.hooks.on_turn_silence is None
+
+
+def test_the_tui_hooks_dispatch_audio_actions() -> None:
+    controller, microphone, audio = audio_bound()
+    tui = FakeTui()
+    install_audio_hooks(tui, controller, OWNER)
+
+    assert tui.hooks.on_microphone is not None
+    assert tui.hooks.on_audio_stream is not None
+    assert tui.hooks.on_mute is not None
+    assert tui.hooks.on_audio_mute is not None
+    assert tui.hooks.on_microphone("Yeti") is True
+    assert tui.hooks.on_audio_stream("Zoom") is True
+    assert tui.hooks.on_mute(True) is True
+    assert tui.hooks.on_audio_mute(True) is True
+
+    assert microphone.selected == ["Yeti"]
+    assert audio.selected == ["Zoom"]
+    assert microphone.muted is True
+    assert audio.muted is True
+
+
+def test_audio_persist_runs_only_for_the_applied_selection() -> None:
+    persisted: list[str | None] = []
+    controller = Controller(app_state_from_session(SessionState()))
+    microphone = FakeCapture()
+    bind_first_slice(controller, conversation=FakeConversation(), tts=FakeSpeech())
+    bind_audio_slice(
+        controller,
+        microphone=microphone,
+        audio=FakeCapture(),
+        on_microphone_applied=persisted.append,
+    )
+
+    controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    controller.dispatch("microphone.select", {"name": "Webcam"}, actor=OWNER)
+    microphone.apply("Yeti", index=0)
+    microphone.apply("Webcam", index=1)
+
+    assert persisted == ["Webcam"]

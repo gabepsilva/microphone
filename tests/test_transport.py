@@ -7,6 +7,7 @@ import socket
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -17,6 +18,7 @@ from tagalong.control import (
     Controller,
     Failed,
     Outcome,
+    Selection,
     Superseded,
     local_user,
 )
@@ -30,9 +32,9 @@ from tagalong.transport import (
     Peer,
     TransportError,
     actor_for_client,
-    apply_state_fragment,
     decode_frame,
     encode_frame,
+    json_ready,
     outcome_payload,
     prepare_runtime_dir,
     read_peer,
@@ -40,6 +42,7 @@ from tagalong.transport import (
     snapshot_payload,
     socket_path,
 )
+from tagalong.tui import SessionState, apply_state_fragment
 
 
 class Speech:
@@ -541,6 +544,125 @@ def test_event_pump_thread_applies_then_stops() -> None:
         time.sleep(0.05)
     pump.stop()
     assert state.tts_enabled is False
+
+
+def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
+    state = SessionState(
+        microphone="Yeti",
+        audio_stream=None,
+        policy="both",
+        tts_provider="piper",
+        codex_model="gpt-5.6-luna",
+        codex_effort="low",
+        turn_silence=3.0,
+        codex_efforts_by_model={"gpt-5.6-sol": ["low", "high"]},
+        codex_default_effort_by_model={"gpt-5.6-sol": "low"},
+    )
+
+    apply_state_fragment(
+        state,
+        {
+            "tts_enabled": False,
+            "tts_provider": "edge",
+            "response_policy": "voice",
+            "microphone_muted": True,
+            "audio_stream_muted": True,
+            "microphone": Selection(desired="Webcam", effective="Webcam"),
+            "audio_stream": {"desired": "Zoom", "effective": None},
+            "codex_model": "gpt-5.6-sol",
+            "codex_reasoning": "high",
+            "turn_silence": 1.25,
+        },
+    )
+
+    assert state.tts_enabled is False
+    assert state.tts_provider == "edge"
+    assert state.tts_voice == "en-US-AndrewNeural"
+    assert state.policy == "voice"
+    assert state.mic.muted is True
+    assert state.audio.muted is True
+    assert state.microphone == "Webcam"
+    assert state.audio_stream == "Zoom"
+    assert state.codex_model == "gpt-5.6-sol"
+    assert state.codex_effort == "high"
+    assert state.turn_silence == 1.25
+    assert state.codex_efforts == ["low", "high"]
+
+
+def test_applying_a_provider_change_does_not_unmute() -> None:
+    """A remote provider event is not the sidebar's unmute composition."""
+    state = SessionState(tts_provider="piper", tts_enabled=False)
+
+    apply_state_fragment(state, {"tts_provider": "edge"})
+
+    assert state.tts_enabled is False
+    assert state.tts_provider == "edge"
+    assert state.tts_voice == "en-US-AndrewNeural"
+
+
+def test_json_ready_turns_selection_values_into_dicts() -> None:
+    payload = json_ready(
+        {
+            "microphone": Selection(desired="Yeti", effective="Yeti"),
+            "flag": True,
+            "pair": ("a", Selection(desired="Webcam")),
+        }
+    )
+
+    assert payload == {
+        "microphone": {"desired": "Yeti", "effective": "Yeti"},
+        "flag": True,
+        "pair": ["a", {"desired": "Webcam", "effective": None}],
+    }
+
+
+def test_apply_state_fragment_selection_helpers_accept_wire_shapes() -> None:
+    state = SessionState(codex_model="gpt-5.6-luna", codex_effort="medium")
+
+    apply_state_fragment(state, {"microphone": None, "audio_stream": "Zoom"})
+    assert state.microphone is None
+    assert state.audio_stream == "Zoom"
+
+    apply_state_fragment(state, {"codex_model": "missing-model"})
+    assert state.codex_model == "missing-model"
+    assert state.codex_effort == "medium"
+
+    state.codex_efforts_by_model = {"gpt-5.6-sol": ["low", "high"]}
+    apply_state_fragment(state, {"codex_model": "gpt-5.6-sol"})
+    assert state.codex_effort == "low"
+
+    broken = SimpleNamespace(
+        codex_model="gpt-5.6-sol",
+        codex_effort="medium",
+        codex_efforts_by_model={"gpt-5.6-sol": ["low", "high"]},
+        codex_default_effort_by_model="not-a-mapping",
+    )
+    apply_state_fragment(broken, {"codex_model": "gpt-5.6-sol"})
+    assert broken.codex_effort == "low"
+
+    class Display:
+        tts_enabled = True
+        tts_provider = "piper"
+        microphone = None
+        policy = "both"
+        codex_model = "gpt-5.6-luna"
+        codex_effort = "low"
+        turn_silence = 3.0
+        codex_efforts_by_model = 1
+
+    display = Display()
+    apply_state_fragment(
+        display,
+        {
+            "tts_provider": "edge",
+            "microphone_muted": True,
+            "audio_stream_muted": True,
+            "codex_model": "gpt-5.6-sol",
+        },
+    )
+    assert display.tts_provider == "edge"
+    assert display.codex_model == "gpt-5.6-sol"
+    assert not hasattr(display, "tts_voice")
 
 
 def test_a_second_writer_updates_tui_state_through_the_event_pump() -> None:

@@ -158,8 +158,11 @@ skip_empty = true
 #
 # tagalong/transport.py stays out: it is the Unix-socket / SO_PEERCRED
 # boundary. Mutating accept, framing, or peer checks produces survivors that
-# can only be "killed" by faking the unit under test. Coverage at 100% locks
-# the branches; the controller behind the socket remains in scope.
+# can only be "killed" by faking the unit under test. ``json_ready`` lives
+# next to ``encode_frame`` as wire serialization, not a second settings
+# model; TUI fragment-apply moved to ``tui.py`` with the state it writes.
+# Coverage at 100% locks the branches; the controller behind the socket
+# remains in scope.
 # tagalong/mcp.py stays out with it. McpBridge is a socket adapter. The schema
 # helpers are pure, but they only restate the already-mutated catalog; a
 # mutant there is a renamed field or a wrong JSON type, and test_mcp.py

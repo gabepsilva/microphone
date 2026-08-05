@@ -18,7 +18,7 @@ import socket
 import struct
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -407,7 +407,7 @@ class LocalServer:
             {
                 "sequence": event.sequence,
                 "name": event.name,
-                "payload": dict(event.payload),
+                "payload": json_ready(dict(event.payload)),
             }
             for event in session.subscribed.drain()
         ]
@@ -497,10 +497,15 @@ class LocalClient:
         return line
 
 
-def apply_state_fragment(state: Any, changed: Mapping[str, object]) -> None:
-    """Copy controller-owned fields from a ``state.changed`` payload onto *state*."""
-    if "tts_enabled" in changed:
-        state.tts_enabled = bool(changed["tts_enabled"])
+def json_ready(value: object) -> object:
+    """Turn in-process event values into JSON-encodable ones."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return {str(key): json_ready(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [json_ready(item) for item in value]
+    return value
 
 
 class EventPump:
