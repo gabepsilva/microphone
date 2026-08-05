@@ -14,7 +14,9 @@ import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TextIO
+
+from .presentation import Entry
 
 TRANSCRIPT_ROOT_NAME = "tagalong"
 TRANSCRIPTS_DIR_NAME = "transcripts"
@@ -47,37 +49,32 @@ def _inline_first_line(header: str, text: str) -> str:
     return f"{header} {first}\n{remainder}"
 
 
-def format_entry(entry: Any) -> str:
-    """Render one finished transcript row as a multi-line text block.
-
-    Duck-typed against the fields ``Entry`` carries so this module never
-    imports the TUI. The first line of speech, notes, and reasoning is kept
-    beside the stamped header; later body lines retain their line breaks.
-    """
-    stamp = getattr(entry, "stamp", "") or ""
-    kind = getattr(entry, "kind", "") or ""
-    text = getattr(entry, "text", "") or ""
+def format_entry(entry: Entry) -> str:
+    """Render one finished transcript row as a multi-line text block."""
+    stamp = entry.stamp or ""
+    kind = entry.kind or ""
+    text = entry.text or ""
     lines: list[str] = []
 
     if kind == "note":
         lines.append(_inline_first_line(f"[{stamp}] System", text))
     elif kind == "reasoning":
-        seconds = getattr(entry, "seconds", None)
+        seconds = entry.seconds
         label = "Taga (thinking)"
         if seconds is not None:
             label = f"Taga (thinking {seconds:.1f}s)"
         lines.append(_inline_first_line(f"[{stamp}] {label}", text))
     elif kind == "command":
         lines.append(f"[{stamp}] $ {text}")
-        for line in getattr(entry, "output", ()) or ():
+        for line in entry.output:
             lines.append(line)
-        exit_code = getattr(entry, "exit_code", None)
+        exit_code = entry.exit_code
         if exit_code is not None:
             lines.append(f"[exit {exit_code}]")
     else:
-        source = getattr(entry, "source", "") or "System"
+        source = entry.source or "System"
         header = f"[{stamp}] {source}"
-        if getattr(entry, "interrupted", False):
+        if entry.interrupted:
             header += " (interrupted)"
         lines.append(_inline_first_line(header, text))
 
@@ -108,7 +105,7 @@ class TranscriptRecorder:
         self._reported = False
         self._closed = False
 
-    def record(self, entry: Any) -> bool:
+    def record(self, entry: Entry) -> bool:
         """Append one finished entry and flush it to disk."""
         if self._closed:
             return False

@@ -5,15 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 
+from tagalong.presentation import Entry
 from tagalong.recording import (
     TranscriptRecorder,
     default_transcript_dir,
     format_entry,
     transcript_filename,
 )
-from tagalong.tui import Entry
 
 
 def test_default_transcript_dir_is_under_home_tagalong(tmp_path) -> None:
@@ -214,17 +213,3 @@ def test_lazy_open_leaves_no_file_when_nothing_is_recorded(tmp_path) -> None:
     recorder.roll()
     recorder.close()
     assert list(tmp_path.iterdir()) == []
-
-
-def test_format_entry_accepts_plain_namespaces() -> None:
-    """The formatter is duck-typed so the recorder need not import the TUI."""
-    text = format_entry(
-        SimpleNamespace(
-            kind="speech",
-            source="Audio",
-            text="meeting noise",
-            stamp="12:00:00",
-            interrupted=False,
-        )
-    )
-    assert text == "[12:00:00] Audio meeting noise\n\n"

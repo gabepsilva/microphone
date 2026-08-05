@@ -197,6 +197,24 @@ def test_model_probe_uses_the_exact_cli_contract_then_its_bundled_fallback(
     ]
 
 
+def test_model_probe_returns_empty_after_both_catalogs_have_no_visible_models(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout='{"models": []}')
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert probe_codex_models() == []
+    assert calls == [
+        ["codex", "debug", "models"],
+        ["codex", "debug", "models", "--bundled"],
+    ]
+
+
 def test_model_switch_forks_the_current_codex_thread() -> None:
     # Built without ``__init__``, so the SDK names the fork call reads are
     # bound here rather than by whichever test happened to run first.

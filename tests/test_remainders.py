@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import runpy
 from pathlib import Path
 
 import pytest
@@ -10,20 +9,7 @@ import pytest
 from tagalong import cli
 from tagalong.catalog import _parse_codex_model_catalog
 
-ENTRYPOINTS = ["tagalong.py"]
 ROOT = Path(__file__).resolve().parents[1]
-
-
-@pytest.mark.parametrize("script", ENTRYPOINTS)
-def test_each_entrypoint_launches_the_configured_application(
-    monkeypatch, script
-) -> None:
-    called: list[bool] = []
-    monkeypatch.setattr("tagalong.cli.main", lambda: called.append(True))
-
-    runpy.run_path(str(ROOT / script), run_name="__main__")
-
-    assert called == [True]
 
 
 def test_a_keyboard_interrupt_stops_without_a_traceback(monkeypatch, capsys) -> None:

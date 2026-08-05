@@ -152,11 +152,6 @@ class CommandRouter:
         self._specs: list[CommandSpec] = []
         self._aliases: dict[str, str] = {}
 
-    @property
-    def handlers(self) -> dict[str, Callable[[Command], None]]:
-        """Registered handlers by canonical name (read-only view for callers)."""
-        return self._handlers
-
     def register(
         self,
         name: str,
