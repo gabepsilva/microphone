@@ -6,14 +6,20 @@ Milestone 3 of issue #81 converts the first Textual slice onto the controller:
 the running session's conversation, speech engine, display, and recorder
 become the handlers those four actions run.
 
+The agreed slice is those four actions, not every sidebar transition. Canonical
+state therefore carries only what a registered handler keeps true —
+``tts_enabled``. Seeding the rest from startup would make ``snapshot()`` report
+stale sidebar values as current. Those fields arrive with their actions later.
+
 The Textual interface still speaks through ``TuiHooks``. The hooks installed
 here dispatch, so journey tests that drive the interface without a controller
 stay valid oracles, and the live path has one execution model.
 
 ``session.new`` starts a Codex thread, which is slow work. The handler only
-records that a reset was accepted; the caller runs the thread start after
-dispatch returns, then settles or fails the request. That is what keeps mute
-and interrupt responsive while a new session is opening.
+records that a reset was accepted. The caller opens the thread after dispatch
+returns, asks the controller whether that request still holds the slot, and
+only then adopts it, clears the transcript, and rolls the recorder. A
+superseded start is discarded rather than overwriting the newer session.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from .control import (
     Accepted,
     Actor,
     ActorKind,
+    Applied,
     AppState,
     Controller,
     Effect,
@@ -34,7 +41,6 @@ from .control import (
     Outcome,
     Rejected,
     Request,
-    Selection,
 )
 from .domain import TEXT, UserTextMessage
 
@@ -50,13 +56,17 @@ class ConversationPort(Protocol):
 
     def interrupt(self) -> None: ...
 
-    def new_session(self) -> bool: ...
+    def start_fresh_thread(self) -> object | None: ...
+
+    def adopt_fresh_thread(self, started: object) -> None: ...
 
 
 class SessionReset(Protocol):
-    """The only conversation method a new-session run needs."""
+    """The conversation methods a new-session run needs."""
 
-    def new_session(self) -> bool: ...
+    def start_fresh_thread(self) -> object | None: ...
+
+    def adopt_fresh_thread(self, started: object) -> None: ...
 
 
 class SpeechPort(Protocol):
@@ -77,49 +87,24 @@ class RecorderPort(Protocol):
     def roll(self) -> None: ...
 
 
-class ChannelView(Protocol):
-    @property
-    def muted(self) -> bool: ...
+class FirstSliceHost(Protocol):
+    """Anything that exposes the hook bag this slice overwrites."""
+
+    hooks: Any
 
 
-class SessionView(Protocol):
-    """The subset of sidebar state this slice seeds the controller from."""
-
-    microphone: str | None
-    audio_stream: str | None
-    policy: str
+class TtsView(Protocol):
     tts_enabled: bool
-    tts_provider: str
-    codex_model: str
-    codex_effort: str
-    turn_silence: float
-
-    @property
-    def mic(self) -> ChannelView: ...
-
-    @property
-    def audio(self) -> ChannelView: ...
 
 
-def app_state_from_session(state: SessionView) -> AppState:
-    """Seed canonical state from the session the interface already holds.
+def app_state_from_session(state: TtsView) -> AppState:
+    """Seed only the field this slice will keep true.
 
-    Desired device names come from startup; effective ones stay unset until a
-    reconciler reports they opened. Mute and the rest of the slice are
-    synchronous flags copied as they stand.
+    ``tts.set_enabled`` is the one registered handler that writes ``AppState``.
+    Copying microphone, model, mute, or silence here would snapshot startup
+    values that later sidebar hooks change without telling the controller.
     """
-    return AppState(
-        microphone=Selection(desired=state.microphone),
-        microphone_muted=state.mic.muted,
-        audio_stream=Selection(desired=state.audio_stream),
-        audio_stream_muted=state.audio.muted,
-        response_policy=state.policy,
-        tts_enabled=state.tts_enabled,
-        tts_provider=state.tts_provider,
-        codex_model=state.codex_model,
-        codex_reasoning=state.codex_effort,
-        turn_silence=state.turn_silence,
-    )
+    return AppState(tts_enabled=state.tts_enabled)
 
 
 def bind_first_slice(
@@ -164,7 +149,9 @@ def bind_first_slice(
     controller.register("session.new", start_session)
 
 
-def install_first_slice_hooks(tui: Any, controller: Controller, actor: Actor) -> None:
+def install_first_slice_hooks(
+    tui: FirstSliceHost, controller: Controller, actor: Actor
+) -> None:
     """Point the interface's first-slice hooks at *controller*."""
 
     def on_user_text(message: UserTextMessage) -> None:
@@ -188,23 +175,6 @@ def install_first_slice_hooks(tui: Any, controller: Controller, actor: Actor) ->
     tui.hooks.on_interrupt = on_interrupt
 
 
-def apply_new_session(
-    conversation: SessionReset,
-    display: TranscriptDisplayPort,
-    recorder: RecorderPort,
-) -> bool:
-    """Start a fresh Codex thread and roll the transcript if it took.
-
-    The visible transcript and the session file move together, and only after
-    the new thread exists — a failed start must leave both where they were.
-    """
-    if not conversation.new_session():
-        return False
-    display.reset_transcript()
-    recorder.roll()
-    return True
-
-
 def run_new_session(
     controller: Controller,
     actor: Actor,
@@ -212,10 +182,23 @@ def run_new_session(
     display: TranscriptDisplayPort,
     recorder: RecorderPort,
 ) -> Outcome:
-    """Dispatch ``session.new`` and reconcile the slow start outside the lock."""
+    """Dispatch ``session.new`` and adopt the thread only if it still wins.
+
+    The Codex open happens outside the writer lock. After it finishes, settle
+    decides whether this request still holds the slot. Transcript and recorder
+    move only for an applied outcome, so a superseded start cannot clear a
+    newer session or leave the audit record pointing at the wrong thread.
+    """
     outcome = controller.dispatch("session.new", actor=actor)
     if not isinstance(outcome, Accepted):
         return outcome
-    if apply_new_session(conversation, display, recorder):
-        return controller.settle(outcome.request_id)
-    return controller.fail(outcome.request_id, "could not start a new session")
+    started = conversation.start_fresh_thread()
+    if started is None:
+        return controller.fail(outcome.request_id, "could not start a new session")
+    settled = controller.settle(outcome.request_id)
+    if not isinstance(settled, Applied):
+        return settled
+    conversation.adopt_fresh_thread(started)
+    display.reset_transcript()
+    recorder.roll()
+    return settled

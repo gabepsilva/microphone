@@ -39,7 +39,6 @@ from moonshine_voice.moonshine_api import ModelArch
 
 from .application import (
     app_state_from_session,
-    apply_new_session,
     bind_first_slice,
     install_first_slice_hooks,
     run_new_session,
@@ -731,8 +730,6 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     controller = Controller(app_state_from_session(tui.state))
     bind_first_slice(controller, conversation=conversation, tts=tts)
     install_first_slice_hooks(tui, controller, actor)
-    tui.controller = controller
-    tui.actor = actor
     tui.hooks.on_codex_model = remembering(
         conversation.request_model, config, "codex_model"
     )
@@ -756,7 +753,7 @@ def wire_transcript_recording(tui, conversation, recorder, controller, actor):
 
 
 def build_command_router(
-    tui, conversation, recorder, controller=None, actor=None
+    tui, conversation, recorder, controller, actor
 ) -> CommandRouter:
     """Register the session's typed slash commands and their palette copy."""
 
@@ -764,11 +761,7 @@ def build_command_router(
         reset_codex_session(
             command,
             tui,
-            lambda: (
-                run_new_session(controller, actor, conversation, tui, recorder)
-                if controller is not None and actor is not None
-                else apply_new_session(conversation, tui, recorder)
-            ),
+            lambda: run_new_session(controller, actor, conversation, tui, recorder),
         )
 
     commands = CommandRouter(tui)

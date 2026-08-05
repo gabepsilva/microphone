@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from tagalong.application import (
     app_state_from_session,
     bind_first_slice,
@@ -16,6 +18,7 @@ from tagalong.control import (
     Failed,
     Rejected,
     Rejection,
+    Superseded,
     agent,
     local_user,
 )
@@ -31,6 +34,9 @@ class FakeConversation:
         self.ingested: list[tuple] = []
         self.interrupts = 0
         self.sessions = 0
+        self.started: list[object] = []
+        self.adopted: list[object] = []
+        self.thread: object | None = None
 
     def ingest(self, speaker, text, respond, images=()):
         self.ingested.append((speaker, text, respond, images))
@@ -38,11 +44,24 @@ class FakeConversation:
     def interrupt(self) -> None:
         self.interrupts += 1
 
-    def new_session(self) -> bool:
+    def start_fresh_thread(self):
         if not self.new_session_ok:
-            return False
+            return None
+        started = f"thread-{len(self.started) + 1}"
+        self.started.append(started)
+        return started
+
+    def adopt_fresh_thread(self, started) -> None:
         self.generation += 1
         self.sessions += 1
+        self.adopted.append(started)
+        self.thread = started
+
+    def new_session(self) -> bool:
+        started = self.start_fresh_thread()
+        if started is None:
+            return False
+        self.adopt_fresh_thread(started)
         return True
 
 
@@ -96,7 +115,7 @@ def bound(
     return controller, conversation, tts
 
 
-def test_app_state_copies_the_session_the_sidebar_already_holds() -> None:
+def test_app_state_seeds_only_the_field_this_slice_maintains() -> None:
     state = SessionState(
         microphone="Yeti",
         audio_stream="Zoom",
@@ -111,22 +130,10 @@ def test_app_state_copies_the_session_the_sidebar_already_holds() -> None:
 
     seeded = app_state_from_session(state)
 
-    assert seeded == AppState(
-        microphone=seeded.microphone,
-        microphone_muted=True,
-        audio_stream=seeded.audio_stream,
-        audio_stream_muted=False,
-        response_policy="audio",
-        tts_enabled=False,
-        tts_provider="edge",
-        codex_model="gpt-5.6-sol",
-        codex_reasoning="high",
-        turn_silence=4.5,
-    )
-    assert seeded.microphone.desired == "Yeti"
-    assert seeded.microphone.effective is None
-    assert seeded.audio_stream.desired == "Zoom"
-    assert seeded.audio_stream.effective is None
+    assert seeded == AppState(tts_enabled=False)
+    assert seeded.microphone.desired is None
+    assert seeded.codex_model == ""
+    assert seeded.microphone_muted is False
 
 
 def test_a_human_message_is_ingested_as_text_and_applied() -> None:
@@ -209,6 +216,7 @@ def test_a_new_session_is_accepted_before_the_thread_starts() -> None:
     outcome = controller.dispatch("session.new", actor=OWNER)
 
     assert isinstance(outcome, Accepted)
+    assert conversation.started == []
     assert conversation.sessions == 0
 
 
@@ -250,6 +258,60 @@ def test_run_new_session_settles_when_the_thread_starts() -> None:
 
     assert outcome == Applied("req-1")
     assert conversation.sessions == 1
+    assert conversation.adopted == conversation.started
+    assert display.resets == 1
+    assert recorder.rolls == 1
+
+
+def test_a_superseded_new_session_does_not_replace_the_live_one() -> None:
+    class SlowConversation:
+        def __init__(self) -> None:
+            self.generation = 0
+            self.started: list[str] = []
+            self.adopted: list[str] = []
+            self._block_first = threading.Event()
+            self._first_started = threading.Event()
+
+        def ingest(self, *_args, **_kwargs) -> None:
+            return None
+
+        def interrupt(self) -> None:
+            return None
+
+        def start_fresh_thread(self):
+            name = f"T{len(self.started) + 1}"
+            self.started.append(name)
+            if name == "T1":
+                self._first_started.set()
+                self._block_first.wait(timeout=2)
+            return name
+
+        def adopt_fresh_thread(self, started) -> None:
+            self.adopted.append(started)
+
+    conversation = SlowConversation()
+    controller = Controller()
+    bind_first_slice(controller, conversation=conversation, tts=FakeSpeech())
+    display = FakeDisplay()
+    recorder = FakeRecorder()
+    first: list[object] = []
+
+    def run_first() -> None:
+        first.append(
+            run_new_session(controller, OWNER, conversation, display, recorder)
+        )
+
+    worker = threading.Thread(target=run_first, daemon=True)
+    worker.start()
+    assert conversation._first_started.wait(timeout=2)
+    second = run_new_session(controller, OWNER, conversation, display, recorder)
+    conversation._block_first.set()
+    worker.join(timeout=2)
+
+    assert first == [Superseded("req-1")]
+    assert second == Applied("req-2")
+    assert conversation.started == ["T1", "T2"]
+    assert conversation.adopted == ["T2"]
     assert display.resets == 1
     assert recorder.rolls == 1
 

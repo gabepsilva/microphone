@@ -62,6 +62,12 @@ toggle still leaves the sidebar as it was, interrupt still flushes pending
 stream text before cutting the turn, and `/new` still clears the transcript
 only after a new Codex thread starts.
 
+Canonical `AppState` in this slice carries only `tts_enabled`. The agreed
+milestone is those four actions, not every sidebar transition; seeding
+microphone, mute, model, or silence from startup would make `snapshot()`
+report values no registered handler can update. Those fields arrive with
+their actions in later slices.
+
 Agent `message.send` is refused as inapplicable until the `Agent` transcript
 source lands as its own evaluated change. That path has no live client yet, so
 it is not a user-visible deviation from today's session.

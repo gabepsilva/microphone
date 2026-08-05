@@ -534,8 +534,13 @@ class CodexConversation:
         with self.context_lock:
             return generation == self.generation
 
-    def new_session(self) -> bool:
-        """Discard the transcript context and start a fresh, equivalent thread."""
+    def start_fresh_thread(self):
+        """Open a new Codex thread without installing it as the live session.
+
+        Starting the thread is the slow part. A newer ``session.new`` may win
+        while this one is still opening, and only the winner should become the
+        live session — so the open is separate from adopting it.
+        """
         with self.settings_lock:
             model = self.requested_model or self.model
             effort = self.requested_reasoning_effort or self.reasoning_effort
@@ -552,8 +557,12 @@ class CodexConversation:
             self.transcript_display.error(
                 f"Could not start a new Codex session: {error}"
             )
-            return False
+            return None
+        return thread, model, effort
 
+    def adopt_fresh_thread(self, started) -> None:
+        """Install a previously started thread as the live session."""
+        thread, model, effort = started
         with self.context_lock:
             self.generation += 1
             self.router = TranscriptRouter()
@@ -583,6 +592,13 @@ class CodexConversation:
             thread=self.thread.id,
             state="idle",
         )
+
+    def new_session(self) -> bool:
+        """Discard the transcript context and start a fresh, equivalent thread."""
+        started = self.start_fresh_thread()
+        if started is None:
+            return False
+        self.adopt_fresh_thread(started)
         return True
 
     def _apply_pending_settings(self) -> None:
