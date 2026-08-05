@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from tagalong.application import (
     app_state_from_session,
     bind_first_slice,
@@ -282,6 +284,32 @@ def test_session_new_announces_applied_after_the_thread_is_live(
     outcome = run_new_session(controller, OWNER, conversation, display, recorder)
 
     assert outcome == Applied("req-1")
+    assert seen == [
+        ("action.accepted", "thread-0"),
+        ("action.applied", "thread-1"),
+    ]
+
+
+def test_a_failed_roll_still_announces_the_adopted_session(monkeypatch) -> None:
+    class FullDisk:
+        def roll(self) -> None:
+            raise OSError("No space left on device")
+
+    controller, conversation, _tts = bound()
+    conversation.thread = "thread-0"
+    seen: list[tuple[str, object | None]] = []
+    publish = controller._events.publish
+
+    def record(name: str, payload=None):
+        seen.append((name, conversation.thread))
+        return publish(name, payload)
+
+    monkeypatch.setattr(controller._events, "publish", record)
+
+    with pytest.raises(OSError, match="No space left on device"):
+        run_new_session(controller, OWNER, conversation, FakeDisplay(), FullDisk())
+
+    assert conversation.adopted == ["thread-1"]
     assert seen == [
         ("action.accepted", "thread-0"),
         ("action.applied", "thread-1"),

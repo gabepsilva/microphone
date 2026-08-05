@@ -14,6 +14,7 @@ from tagalong.control.actors import agent, local_user
 from tagalong.control.controller import (
     IDEMPOTENCY_MEMORY,
     SUPERSEDED_MEMORY,
+    UNPUBLISHED_MEMORY,
     Controller,
     Request,
 )
@@ -469,7 +470,7 @@ def test_selections_of_different_things_do_not_supersede_each_other() -> None:
     assert controller.state.audio_stream == Selection("Zoom", "Zoom")
 
 
-def test_claiming_a_request_commits_without_publishing_applied() -> None:
+def test_claiming_a_request_commits_without_publishing_anything() -> None:
     controller = wired()
     accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
     _, subscription = controller.subscribe()
@@ -478,20 +479,19 @@ def test_claiming_a_request_commits_without_publishing_applied() -> None:
 
     assert outcome == Applied("req-1", "Yeti")
     assert controller.state.microphone == Selection("Yeti", "Yeti")
-    assert events(subscription) == [
-        ("state.changed", {"microphone": Selection("Yeti", "Yeti")}),
-    ]
+    assert events(subscription) == []
 
 
-def test_announcing_a_claimed_request_publishes_applied() -> None:
+def test_announcing_a_claimed_request_publishes_state_then_applied() -> None:
     controller = wired()
     accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
     controller.claim(accepted.request_id, "Yeti")
     _, subscription = controller.subscribe()
 
-    controller.announce(accepted.request_id)
+    assert controller.announce(accepted.request_id) == Applied("req-1", "Yeti")
 
     assert events(subscription) == [
+        ("state.changed", {"microphone": Selection("Yeti", "Yeti")}),
         (
             "action.applied",
             {
@@ -504,12 +504,28 @@ def test_announcing_a_claimed_request_publishes_applied() -> None:
     ]
 
 
-def test_announcing_a_request_that_was_not_claimed_is_harmless() -> None:
+def test_announcing_a_request_that_was_not_claimed_is_rejected() -> None:
     controller = wired()
     _, subscription = controller.subscribe()
 
-    controller.announce("req-1")
+    outcome = controller.announce("req-1")
 
+    assert outcome == Rejected(
+        "req-1", Rejection.INVALID, "no request in flight: req-1"
+    )
+    assert events(subscription) == []
+
+
+def test_announcing_twice_returns_the_same_applied_outcome() -> None:
+    controller = wired()
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=OWNER)
+    controller.claim(accepted.request_id, "Yeti")
+    first = controller.announce(accepted.request_id)
+    _, subscription = controller.subscribe()
+
+    second = controller.announce(accepted.request_id)
+
+    assert first == second == Applied("req-1", "Yeti")
     assert events(subscription) == []
 
 
@@ -837,6 +853,60 @@ def test_a_retry_learns_the_outcome_the_request_has_since_reached() -> None:
     )
 
     assert retried == Applied("req-1", "Yeti")
+
+
+def test_a_keyed_retry_stays_accepted_until_the_claim_is_announced() -> None:
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    controller.claim("req-1", "Yeti")
+
+    between = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    controller.announce("req-1")
+    after = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert between == Accepted("req-1")
+    assert after == Applied("req-1", "Yeti")
+
+
+def test_the_oldest_unannounced_claim_is_released_first() -> None:
+    controller = wired()
+    first = controller.dispatch("microphone.select", {"name": "mic-0"}, actor=OWNER)
+    controller.claim(first.request_id, "mic-0")
+    _, subscription = controller.subscribe()
+    for number in range(1, UNPUBLISHED_MEMORY + 1):
+        accepted = controller.dispatch(
+            "microphone.select", {"name": f"mic-{number}"}, actor=OWNER
+        )
+        controller.claim(accepted.request_id, f"mic-{number}")
+
+    assert any(
+        name == "action.applied" and payload["request_id"] == first.request_id
+        for name, payload in events(subscription)
+    )
+    assert controller.announce(first.request_id) == Applied(first.request_id, "mic-0")
+
+
+def test_remembered_announcements_are_bounded() -> None:
+    controller = wired()
+    first = controller.dispatch("microphone.select", {"name": "mic-0"}, actor=OWNER)
+    controller.settle(first.request_id, "mic-0")
+    for number in range(1, UNPUBLISHED_MEMORY + 1):
+        accepted = controller.dispatch(
+            "microphone.select", {"name": f"mic-{number}"}, actor=OWNER
+        )
+        controller.settle(accepted.request_id, f"mic-{number}")
+
+    assert controller.announce(first.request_id) == Rejected(
+        first.request_id,
+        Rejection.INVALID,
+        f"no request in flight: {first.request_id}",
+    )
 
 
 def test_a_retry_of_a_request_that_was_overtaken_says_so() -> None:

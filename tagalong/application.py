@@ -187,9 +187,9 @@ def run_new_session(
 
     The Codex open happens outside the writer lock. After it finishes, claim
     decides whether this request still holds the slot without publishing.
-    Transcript, recorder, and ``action.applied`` move only after the winner
-    is installed, so a superseded start cannot clear a newer session and a
-    subscriber does not observe the previous thread as the applied one.
+    Transcript and recorder move only for the winner. ``action.applied`` is
+    announced in ``finally`` so a failed roll cannot leave a claimed request
+    without a terminal event.
     """
     outcome = controller.dispatch("session.new", actor=actor)
     if not isinstance(outcome, Accepted):
@@ -200,8 +200,10 @@ def run_new_session(
     settled = controller.claim(outcome.request_id)
     if not isinstance(settled, Applied):
         return settled
-    conversation.adopt_fresh_thread(started)
-    display.reset_transcript()
-    recorder.roll()
-    controller.announce(outcome.request_id)
+    try:
+        conversation.adopt_fresh_thread(started)
+        display.reset_transcript()
+        recorder.roll()
+    finally:
+        controller.announce(outcome.request_id)
     return settled
