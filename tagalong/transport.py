@@ -241,6 +241,9 @@ class LocalServer:
     def _accept(self, listener: socket.socket):
         return listener.accept()
 
+    def _recv(self, connection: socket.socket) -> bytes:
+        return connection.recv(4096)
+
     def _handle(self, connection: socket.socket) -> None:
         with self._connections_lock:
             self._connections.append(connection)
@@ -253,7 +256,7 @@ class LocalServer:
             session = _Session(peer=peer)
             while not self._stop.is_set():
                 try:
-                    chunk = connection.recv(4096)
+                    chunk = self._recv(connection)
                 except TimeoutError:
                     continue
                 if not chunk:

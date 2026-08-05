@@ -552,10 +552,24 @@ def test_client_readline_wraps_a_closed_file_descriptor(tmp_path: Path) -> None:
         server.stop()
 
 
-def test_an_idle_connection_notices_stop_after_recv_timeout(tmp_path: Path) -> None:
+def test_an_idle_connection_notices_stop_after_recv_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
     _, server, client = wired(tmp_path)
+    calls = {"n": 0}
+    original = server._recv
+
+    def flaky_recv(connection):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError
+        return original(connection)
+
+    monkeypatch.setattr(server, "_recv", flaky_recv)
     try:
-        client.call("initialize", {"client": "electron"})
+        hello = client.call("initialize", {"client": "electron"})
+        assert hello["protocol_version"] == PROTOCOL_VERSION
+        assert calls["n"] >= 1
         server._stop.set()
         deadline = time.time() + 1.0
         while server._connections and time.time() < deadline:
