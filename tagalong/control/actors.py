@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from .actions import ActionSpec, Scope
+from .actions import Scope
 
 
 class ActorKind(StrEnum):
@@ -38,15 +38,15 @@ class ActorKind(StrEnum):
 
 @dataclass(frozen=True)
 class Actor:
-    """An authenticated caller and the scopes its connection was granted."""
+    """An authenticated caller and the scopes its connection was granted.
+
+    Authorization is :func:`~.policy.authorizes` — scope plus explicit
+    denials. This type only carries the grant; it does not answer "may".
+    """
 
     id: str
     kind: ActorKind = ActorKind.HUMAN
     scopes: frozenset[Scope] = field(default_factory=frozenset)
-
-    def may(self, action: ActionSpec) -> bool:
-        """Return whether this actor holds the scope *action* requires."""
-        return action.scope in self.scopes
 
 
 def local_user(id: str = "local") -> Actor:

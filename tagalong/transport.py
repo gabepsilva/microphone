@@ -34,7 +34,7 @@ from .control import (
     Superseded,
     agent,
 )
-from .control.actions import PROTOCOL_VERSION, Scope
+from .control.actions import PROTOCOL_VERSION
 from .discovery import list_commands
 
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -159,20 +159,14 @@ def actor_for_client(client: str, peer: Peer) -> Actor:
 
     The transport authenticates uid, not which program connected. A self-asserted
     ``client`` string therefore cannot mint :class:`ActorKind.HUMAN` — that
-    would let any same-uid process pose as a person in the room. The in-process
-    TUI is still :func:`local_user`; only socket callers go through here.
+    would let any same-uid process pose as a person in the room. Scopes come
+    from :func:`~.control.policy.scopes_for_socket_client`, not from the
+    request. The in-process TUI is still :func:`local_user`.
     """
+    from .control.policy import scopes_for_socket_client
+
     label = client.strip() or "local"
-    return agent(
-        f"{label}-{peer.uid}",
-        {
-            Scope.CONVERSE,
-            Scope.SESSION,
-            Scope.AUDIO,
-            Scope.SETTINGS,
-            Scope.TRANSCRIPT,
-        },
-    )
+    return agent(f"{label}-{peer.uid}", scopes_for_socket_client(label))
 
 
 class LocalServer:
@@ -340,6 +334,7 @@ class LocalServer:
                 "protocol_version": PROTOCOL_VERSION,
                 "actor_id": session.actor.id,
                 "actor_kind": session.actor.kind.value,
+                "scopes": sorted(scope.value for scope in session.actor.scopes),
             },
         )
 

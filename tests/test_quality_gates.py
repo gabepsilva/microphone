@@ -766,6 +766,79 @@ def test_worker_gate_passes_on_this_repository() -> None:
 
 
 # --------------------------------------------------------------------------
+# tools/catalog_gate.py
+# --------------------------------------------------------------------------
+
+
+def test_catalog_gate_passes_on_this_repository() -> None:
+    gate = _load_gate("catalog_gate")
+    assert gate.main() == 0
+
+
+def test_catalog_gate_rejects_a_missing_handler() -> None:
+    gate = _load_gate("catalog_gate")
+    registered = gate.production_handler_ids() - {"session.quit"}
+    problems = gate.check(registered)
+    assert any(
+        "session.quit" in problem and "no handler" in problem for problem in problems
+    )
+
+
+def test_catalog_gate_rejects_a_skipped_composition_binder() -> None:
+    gate = _load_gate("catalog_gate")
+    called = gate.composition_binder_ids() - {"bind_audio_slice"}
+    problems = gate.check(binders=called)
+    assert any(
+        "bind_audio_slice" in problem and "composition root" in problem
+        for problem in problems
+    )
+
+
+def test_catalog_gate_rejects_a_stale_deferral() -> None:
+    gate = _load_gate("catalog_gate")
+    problems = gate.check(
+        gate.production_handler_ids(), deferred=frozenset({"session.quit"})
+    )
+    assert any("deferred but a handler" in problem for problem in problems)
+
+
+def test_catalog_gate_rejects_an_unknown_deferral() -> None:
+    gate = _load_gate("catalog_gate")
+    problems = gate.check(
+        gate.production_handler_ids(), deferred=frozenset({"session.explode"})
+    )
+    assert any("not in the catalog" in problem for problem in problems)
+
+
+def test_catalog_gate_reads_binder_calls_by_name() -> None:
+    gate = _load_gate("catalog_gate")
+    source = (
+        "bind_first_slice(controller, conversation=c)\n"
+        "mod.bind_audio_slice(controller)\n"
+        "other(bind_settings_slice)\n"
+    )
+    assert gate.called_names(source) == frozenset(
+        {"bind_first_slice", "bind_audio_slice", "other"}
+    )
+
+
+def test_catalog_gate_handler_ids_come_from_runtime_registration() -> None:
+    """A register call that never runs must not satisfy the gate."""
+    gate = _load_gate("catalog_gate")
+    wired = gate.production_handler_ids()
+    assert "microphone.set_muted" in wired
+    assert len(wired) == len(gate.CATALOG)
+
+
+def test_catalog_gate_main_reports_planted_failures(monkeypatch, capsys) -> None:
+    gate = _load_gate("catalog_gate")
+    monkeypatch.setattr(gate, "check", lambda: ["session.quit: planted"])
+    assert gate.main() == 1
+    captured = capsys.readouterr()
+    assert "session.quit: planted" in captured.err
+
+
+# --------------------------------------------------------------------------
 # tools/ratchet_gate.py
 # --------------------------------------------------------------------------
 

@@ -6,7 +6,7 @@ PYTHON_SOURCES := tagalong.py tagalong
 # Keep the local gate and its hosted lanes defined from the same lists. The
 # orchestration gate rejects a dropped target or a hosted lane that stops
 # invoking one of these groups.
-VERIFY_QUICK := format-check lint types test-integrity context-budget worker-threads ratchet shellcheck workflows orchestration
+VERIFY_QUICK := format-check lint types test-integrity context-budget worker-threads ratchet shellcheck workflows orchestration catalog
 VERIFY_COVERAGE := test-coverage
 VERIFY_MUTATION := mutation
 VERIFY_SECURITY := security-static
@@ -25,7 +25,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration verify-quick verify-coverage verify-mutation verify-security verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog verify-quick verify-coverage verify-mutation verify-security verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -101,6 +101,9 @@ workflows:
 
 orchestration:
 	uv run python tools/orchestration_gate.py
+
+catalog:
+	uv run python tools/catalog_gate.py
 
 verify-quick: $(VERIFY_QUICK)
 

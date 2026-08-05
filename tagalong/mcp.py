@@ -1,12 +1,12 @@
-"""MCP adapter: static tool schemas over the same local transport.
+"""MCP adapter: catalog-derived tool schemas over the same local transport.
 
-Tool names and input schemas come from the action catalog for this protocol
-version. Authorization and applicability stay dynamic and are answered per
-call — generating live tools from the current capability set is what the RFC
-rejected.
-
-This adapter has no session logic of its own. It opens the Unix socket, calls
-``dispatch``, and returns the outcome.
+Input schemas are generated from the static :data:`~.control.actions.CATALOG`
+so a protocol version cannot drift between human and agent surfaces. Which
+tools a connected session *lists* is capability policy: only actions the
+actor is authorized to invoke. Transient applicability (device missing, stale
+generation) stays a per-call answer — that is what the RFC kept dynamic.
+Advertising a tool the policy will FORBIDDEN is the defect this adapter
+refuses to repeat.
 """
 
 from __future__ import annotations
@@ -55,9 +55,25 @@ def tool_schema(spec: ActionSpec) -> dict[str, Any]:
     }
 
 
-def mcp_tools(catalog: tuple[ActionSpec, ...] = CATALOG) -> list[dict[str, Any]]:
-    """Static MCP tool list for this protocol version."""
-    return [tool_schema(spec) for spec in catalog]
+# Explicit full-surface set for tests and docs. Callers that want every
+# catalog tool must pass this (or an equivalent) — there is no silent default
+# that advertises tools a live actor cannot invoke.
+ALL_TOOL_IDS: frozenset[str] = frozenset(spec.id for spec in CATALOG)
+
+
+def mcp_tools(
+    catalog: tuple[ActionSpec, ...] = CATALOG,
+    *,
+    allowed_ids: frozenset[str] | set[str],
+) -> list[dict[str, Any]]:
+    """Tool schemas for *catalog*, limited to *allowed_ids*.
+
+    *allowed_ids* is required on purpose: a default of "everything" would make
+    the unconsidered call the permissive one, and that is how an agent gets
+    offered ``session.quit``. Tests and docs pass :data:`ALL_TOOL_IDS`. A live
+    session passes the ids capability policy marks allowed for its actor.
+    """
+    return [tool_schema(spec) for spec in catalog if spec.id in allowed_ids]
 
 
 class McpBridge:
@@ -67,13 +83,16 @@ class McpBridge:
         self._client = client
         hello = self._client.call("initialize", {"client": "mcp"})
         self.actor_id = hello["actor_id"]
+        self.scopes = tuple(hello["scopes"])
 
     @classmethod
     def connect(cls, path=None) -> McpBridge:
         return cls(LocalClient(path if path is not None else socket_path()))
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return mcp_tools()
+        capabilities = self._client.call("capabilities")
+        allowed = {entry["id"] for entry in capabilities["actions"] if entry["allowed"]}
+        return mcp_tools(allowed_ids=allowed)
 
     def call_tool(self, name: str, arguments: Mapping[str, object]) -> dict[str, Any]:
         action_id = _action_id_from_tool(name)

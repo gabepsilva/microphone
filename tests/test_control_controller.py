@@ -152,6 +152,19 @@ def test_capabilities_answer_for_the_actor_that_asked() -> None:
     assert all(entry.allowed for entry in controller.capabilities(OWNER))
 
 
+def test_capabilities_deny_agent_quit_even_with_the_session_scope() -> None:
+    controller = wired()
+    caller = agent("bot", {Scope.SESSION})
+
+    allowed = {
+        entry.action.id: entry.allowed for entry in controller.capabilities(caller)
+    }
+
+    assert allowed["session.interrupt"] is True
+    assert allowed["session.new"] is True
+    assert allowed["session.quit"] is False
+
+
 def test_an_unhandled_action_stays_in_the_catalog() -> None:
     """It is inapplicable in this session, not unknown to the protocol."""
     controller = wired()
@@ -169,6 +182,13 @@ def test_an_unhandled_action_stays_in_the_catalog() -> None:
 def test_a_handler_can_only_be_registered_for_a_catalog_action() -> None:
     with pytest.raises(KeyError, match=r"no such action: microphone\.explode"):
         wired().register("microphone.explode", never_called)
+
+
+def test_registered_lists_only_actions_with_handlers() -> None:
+    controller = Controller()
+    assert controller.registered() == frozenset()
+    controller.register("tts.set_enabled", setting_tts)
+    assert controller.registered() == frozenset({"tts.set_enabled"})
 
 
 # -- refusals -----------------------------------------------------------

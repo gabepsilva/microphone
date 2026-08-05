@@ -36,9 +36,11 @@ FLOORS = {
     "tools/mutation_gate.py": 78.0,
     # Recorded 2026-08-05 with the hosted lane split from issue #87.
     "tools/orchestration_gate.py": 98.0,
-    "tools/ratchet_gate.py": 90.0,
+    "tools/ratchet_gate.py": 92.0,
     "tools/test_integrity.py": 93.0,
     "tools/worker_gate.py": 97.0,
+    # Recorded 2026-08-05 with the catalog handler gate for issue #81 milestone 8.
+    "tools/catalog_gate.py": 97.0,
     "tagalong.py": 83.0,
     "tagalong/__init__.py": 100.0,
     # Recorded 2026-08-05 with the first TUI slice adapter for issue #81.
@@ -50,8 +52,8 @@ FLOORS = {
     "tagalong/mcp.py": 100.0,
     # Raised 2026-07-30 from 94 when microphone retarget/release paths
     # closed the remaining null-stream branches.
-    "tagalong/capture.py": 95.0,
-    "tagalong/catalog.py": 97.0,
+    "tagalong/capture.py": 96.0,
+    "tagalong/catalog.py": 100.0,
     # Raised 2026-07-28 from 94, then to 100 when the virtual meeting sink
     # left and the application-stream chooser that replaced it arrived fully
     # covered.
@@ -72,6 +74,7 @@ FLOORS = {
     "tagalong/control/controller.py": 100.0,
     "tagalong/control/events.py": 100.0,
     "tagalong/control/outcomes.py": 100.0,
+    "tagalong/control/policy.py": 100.0,
     "tagalong/control/state.py": 100.0,
     "tagalong/domain.py": 98.0,
     "tagalong/listener.py": 100.0,
@@ -79,7 +82,7 @@ FLOORS = {
     # same figure across three consecutive runs, so none of these carries the
     # thread-interleaving slack the tts.py note below describes: piper_tts.py
     # 95.73, playback.py 98.41, speech.py 100.00.
-    "tagalong/piper_tts.py": 95.0,
+    "tagalong/piper_tts.py": 96.0,
     "tagalong/playback.py": 98.0,
     "tagalong/presentation.py": 100.0,
     # Recorded 2026-08-05 with the shared queued-speech lifecycle.

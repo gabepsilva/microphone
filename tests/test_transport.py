@@ -22,7 +22,7 @@ from tagalong.control import (
     Superseded,
     local_user,
 )
-from tagalong.control.actions import PROTOCOL_VERSION
+from tagalong.control.actions import PROTOCOL_VERSION, Scope
 from tagalong.control.outcomes import Applied, Rejected, Rejection
 from tagalong.transport import (
     MAX_FRAME,
@@ -203,7 +203,9 @@ def test_a_same_uid_client_can_dispatch_tts(tmp_path: Path) -> None:
 def test_commands_list_is_available_over_the_socket(tmp_path: Path) -> None:
     _, server, client = wired(tmp_path)
     try:
-        client.call("initialize", {"client": "mcp"})
+        hello = client.call("initialize", {"client": "mcp"})
+        assert hello["actor_kind"] == "agent"
+        assert set(hello["scopes"]) == {scope.value for scope in Scope}
         listing = client.call("commands.list")
         assert listing["commands"][0]["action_id"] == "session.new"
         caps = client.call("capabilities")

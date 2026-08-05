@@ -15,6 +15,7 @@ from tagalong.control.actions import (
     Scope,
 )
 from tagalong.control.actors import Actor, agent, local_user
+from tagalong.control.policy import authorizes
 from tagalong.control.state import AppState
 from tagalong.domain import POLICY_NAMES
 from tagalong.speech import PROVIDERS
@@ -213,7 +214,7 @@ def test_the_person_at_the_session_may_do_everything_in_the_catalog() -> None:
 
     owner = local_user()
 
-    assert [spec for spec in CATALOG if not owner.may(spec)] == []
+    assert [spec for spec in CATALOG if not authorizes(owner, spec)] == []
     assert owner.id == "local"
     assert owner.kind is ActorKind.HUMAN
     assert local_user("gabriel").id == "gabriel"
@@ -225,16 +226,16 @@ def test_an_agent_holds_only_the_scopes_it_was_granted() -> None:
     reader = agent("notes-bot", {Scope.TRANSCRIPT})
 
     assert reader.kind is ActorKind.AGENT
-    assert reader.may(action("transcript.append"))
-    assert not reader.may(action("microphone.select"))
-    assert not reader.may(action("message.send"))
+    assert authorizes(reader, action("transcript.append"))
+    assert not authorizes(reader, action("microphone.select"))
+    assert not authorizes(reader, action("message.send"))
 
 
 def test_an_actor_with_no_scopes_may_do_nothing() -> None:
     """An unconsidered actor is the one that must not be the permissive case."""
     nobody = Actor("nobody")
 
-    assert [spec for spec in CATALOG if nobody.may(spec)] == []
+    assert [spec for spec in CATALOG if authorizes(nobody, spec)] == []
 
 
 def test_a_capability_pairs_a_static_action_with_this_actor_s_authority() -> None:

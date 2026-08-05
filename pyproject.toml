@@ -178,6 +178,7 @@ source_paths = [
     "tagalong/control/controller.py",
     "tagalong/control/events.py",
     "tagalong/control/outcomes.py",
+    "tagalong/control/policy.py",
     "tagalong/control/state.py",
     "tagalong/discovery.py",
 ]
