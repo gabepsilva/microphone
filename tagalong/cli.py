@@ -56,6 +56,7 @@ from .codex import CodexConversation, CodexSettings
 from .commands import CommandRouter
 from .config import StartupConfigFile, save_startup_config
 from .control import Controller, local_user
+from .discovery import list_commands, render_command_help
 from .domain import (
     PrefirePlan,
     SpeakerGate,
@@ -755,43 +756,44 @@ def wire_transcript_recording(tui, conversation, recorder, controller, actor):
 def build_command_router(
     tui, conversation, recorder, controller, actor
 ) -> CommandRouter:
-    """Register the session's typed slash commands and their palette copy."""
+    """Register slash adapters over the typed catalog and their palette copy.
 
-    def start_new(command):
-        reset_codex_session(
+    Registration is driven by ``list_commands()``. A listed adapter with no
+    handler, or a handler with no adapter, fails here rather than advertising
+    a command the router cannot run.
+    """
+    listing = list_commands()
+    handlers = {
+        "new": lambda command: reset_codex_session(
             command,
             tui,
             lambda: run_new_session(controller, actor, conversation, tui, recorder),
+        ),
+        "help": lambda command: tui.note(
+            render_command_help(
+                listing, command.arguments[0] if command.arguments else None
+            )
+        ),
+    }
+    listed = {entry.name for entry in listing}
+    missing_handlers = sorted(listed - handlers.keys())
+    extra_handlers = sorted(handlers.keys() - listed)
+    if missing_handlers or extra_handlers:
+        raise ValueError(
+            "slash adapters and handlers must match: "
+            f"listed without handler: {missing_handlers}; "
+            f"handler without adapter: {extra_handlers}"
         )
 
     commands = CommandRouter(tui)
-    commands.register(
-        "new",
-        start_new,
-        description="Start a fresh session and clear the transcript",
-        aliases=("clear",),
-    )
-    commands.register(
-        "help",
-        lambda command: show_command_help(command, commands, tui),
-        description="List available slash commands",
-        aliases=("?",),
-    )
+    for entry in listing:
+        commands.register(
+            entry.name,
+            handlers[entry.name],
+            description=entry.summary,
+            aliases=entry.aliases,
+        )
     return commands
-
-
-def show_command_help(command, commands: CommandRouter, tui) -> None:
-    """Print the command catalog, or detail for one name when given."""
-    if command.arguments:
-        token = command.arguments[0].removeprefix("/")
-        spec = commands.lookup(token)
-        if spec is None:
-            tui.note(f"unknown command: /{token}")
-            return
-        tui.note(spec.detail_line())
-        return
-    lines = ["commands:", *(spec.listing_line() for spec in commands.specs())]
-    tui.note("\n".join(lines))
 
 
 def reset_codex_session(command, tui, run):

@@ -7,20 +7,21 @@ import os
 import threading
 from types import SimpleNamespace
 
+import pytest
+
+from tagalong import cli
 from tagalong import codex as codex_module
 from tagalong.application import bind_first_slice
-from tagalong.cli import (
-    build_command_router,
-    show_command_help,
-)
+from tagalong.cli import build_command_router
 from tagalong.codex import (
     CODEX_DEVELOPER_INSTRUCTIONS,
     CodexConversation,
     CodexSettings,
     load_codex_sdk,
 )
-from tagalong.commands import Command, CommandRouter
+from tagalong.commands import CommandRouter
 from tagalong.control import Controller, local_user
+from tagalong.discovery import ListedCommand, list_commands
 from tagalong.domain import TEXT
 from tagalong.tui import PromptInput, VoiceCodexTUI
 
@@ -596,26 +597,42 @@ def test_build_command_router_registers_new_and_help() -> None:
 
 
 def test_help_for_one_command_names_aliases_and_unknowns() -> None:
-    class Tui:
-        def __init__(self) -> None:
-            self.notes: list[str] = []
+    tui = RouterTui()
+    commands = _router(RouterConversation(), tui, RouterRecorder())
 
-        def note(self, text: str) -> None:
-            self.notes.append(text)
-
-    tui = Tui()
-    commands = CommandRouter(tui)
-    commands.register(
-        "new",
-        lambda _command: None,
-        description="Fresh session",
-        aliases=("clear",),
-    )
-
-    show_command_help(Command("help", ("clear",)), commands, tui)
-    show_command_help(Command("help", ("missing",)), commands, tui)
+    commands.handle("/help clear")
+    commands.handle("/help /clear")
+    commands.handle("/help missing")
 
     assert tui.notes == [
-        "/new (aliases: /clear): Fresh session",
+        "/new (aliases: /clear): Start a fresh session and clear the transcript",
+        "/new (aliases: /clear): Start a fresh session and clear the transcript",
         "unknown command: /missing",
     ]
+
+
+def test_router_build_rejects_a_listed_adapter_with_no_handler(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "list_commands",
+        lambda: (
+            *list_commands(),
+            ListedCommand(
+                "interrupt", "Stop the reply in progress", action_id="session.interrupt"
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="listed without handler: \\['interrupt'\\]"):
+        _router(RouterConversation(), RouterTui(), RouterRecorder())
+
+
+def test_router_build_rejects_a_handler_with_no_adapter(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "list_commands",
+        lambda: tuple(entry for entry in list_commands() if entry.name != "new"),
+    )
+
+    with pytest.raises(ValueError, match="handler without adapter: \\['new'\\]"):
+        _router(RouterConversation(), RouterTui(), RouterRecorder())

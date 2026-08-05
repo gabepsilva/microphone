@@ -149,6 +149,12 @@ skip_empty = true
 # the usual reason for staging a join — an adapter whose survivors cannot be
 # killed — does not apply. It took the run from 861 mutants to 1,586 and left
 # two survivors, both recorded in tools/mutation_gate.py.
+#
+# tagalong/discovery.py joined on 2026-08-05 for the same reason: it is pure
+# data over the catalog and slash table, with no adapter boundary. Leaving it
+# out would hide assertion gaps behind a silent non-widening that ratchet
+# cannot see. tests/test_discovery.py is in the selection so those mutants
+# are scored against the tests that name them.
 source_paths = [
     "tagalong/domain.py",
     "tagalong/config.py",
@@ -160,6 +166,7 @@ source_paths = [
     "tagalong/control/events.py",
     "tagalong/control/outcomes.py",
     "tagalong/control/state.py",
+    "tagalong/discovery.py",
 ]
 also_copy = ["tagalong/", "tagalong.py", "tagalong.example.yaml"]
 pytest_add_cli_args_test_selection = [
@@ -170,6 +177,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_domain.py",
     "tests/test_config.py",
     "tests/test_conversation.py",
+    "tests/test_discovery.py",
     "tests/test_new_session.py",
     "tests/test_choosers.py",
     "tests/test_remainders.py",
