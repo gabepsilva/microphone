@@ -188,10 +188,12 @@ def test_uploaded_base64_arrives_as_bytes() -> None:
 
 
 def test_uploaded_data_rejects_non_binary_shapes() -> None:
-    with pytest.raises(InvalidPayload, match="binary data"):
+    with pytest.raises(InvalidPayload) as int_shape:
         action("attachment.upload").validate({"data": 12})
-    with pytest.raises(InvalidPayload, match="binary data"):
+    assert str(int_shape.value) == "attachment.upload: data: expected binary data"
+    with pytest.raises(InvalidPayload) as bad_b64:
         action("attachment.upload").validate({"data": "!!!!"})
+    assert str(bad_b64.value) == "attachment.upload: data: expected binary data"
 
 
 def test_session_quit_is_in_the_catalog() -> None:

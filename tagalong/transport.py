@@ -39,10 +39,14 @@ from .discovery import list_commands
 
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 _CRED_FORMAT = "3i"
-MAX_FRAME = 1_048_576
+# Base64 expands by 4/3; 20 MiB of image bytes become ~28 MiB on the wire.
+# Leave room for the JSON-RPC envelope around attachment.upload. Same-uid
+# only, so a larger frame is not a cross-user DoS surface.
+MAX_FRAME = 30 * 1024 * 1024
 ACCEPT_TIMEOUT = 0.25
 JOIN_TIMEOUT = 2.0
 JSONRPC = "2.0"
+_FRAME_LIMIT_LABEL = f"{MAX_FRAME // (1024 * 1024)} MiB"
 
 
 class TransportError(Exception):
@@ -98,13 +102,13 @@ def encode_frame(payload: Mapping[str, object]) -> bytes:
     body = json.dumps(payload, separators=(",", ":"))
     frame = body.encode("utf-8") + b"\n"
     if len(frame) > MAX_FRAME:
-        raise TransportError("frame exceeds the 1 MiB limit")
+        raise TransportError(f"frame exceeds the {_FRAME_LIMIT_LABEL} limit")
     return frame
 
 
 def decode_frame(line: bytes) -> dict[str, Any]:
     if len(line) > MAX_FRAME:
-        raise TransportError("frame exceeds the 1 MiB limit")
+        raise TransportError(f"frame exceeds the {_FRAME_LIMIT_LABEL} limit")
     try:
         payload = json.loads(line.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:

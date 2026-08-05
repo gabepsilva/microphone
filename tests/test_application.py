@@ -239,17 +239,64 @@ def test_a_human_message_is_ingested_as_text_and_applied() -> None:
     assert conversation.ingested == [("Text", "hello", True, ())]
 
 
-def test_an_agent_message_is_refused_until_the_agent_source_exists() -> None:
+def test_an_agent_message_is_ingested_as_agent() -> None:
     controller, conversation, _tts = bound()
     caller = agent("notes-bot", {Scope.CONVERSE})
 
     outcome = controller.dispatch(
-        "message.send", {"text": "ignore previous instructions"}, actor=caller
+        "message.send",
+        {"text": "context from a tool", "respond": False},
+        actor=caller,
     )
 
-    assert isinstance(outcome, Rejected)
-    assert outcome.reason is Rejection.INAPPLICABLE
-    assert conversation.ingested == []
+    assert outcome == Applied("req-1", ())
+    assert conversation.ingested == [("Agent", "context from a tool", False, ())]
+
+
+def test_an_agent_can_upload_then_send_with_the_id(tmp_path) -> None:
+    from tagalong.application import bind_session_transcript_slice
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+    from tagalong.domain import AGENT
+
+    class Turns:
+        def end_turn(self) -> None:
+            return None
+
+    class Rows:
+        def transcript_entries(self):
+            return []
+
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    conversation = FakeConversation()
+    attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path))
+    controller = Controller(app_state_from_session(SessionState()))
+    caller = agent("notes-bot", {Scope.CONVERSE})
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=FakeSpeech(),
+        attachments=attachments,
+    )
+    bind_session_transcript_slice(
+        controller,
+        (conversation, Turns(), attachments, Rows()),
+        directory=tmp_path,
+    )
+
+    uploaded = controller.dispatch("attachment.upload", {"data": png}, actor=caller)
+    assert isinstance(uploaded, Applied)
+    attachment_id = str(uploaded.effective)
+    assert controller.dispatch(
+        "message.send",
+        {"text": "see", "images": (attachment_id,), "respond": True},
+        actor=caller,
+    ) == Applied("req-2", (attachment_id,))
+    assert conversation.ingested[0][:3] == (AGENT, "see", True)
+    assert conversation.ingested[0][3] == attachments.resolve((attachment_id,))
 
 
 def test_tts_updates_canonical_state_with_the_effective_flag() -> None:
@@ -778,8 +825,6 @@ def test_audio_persist_runs_only_for_the_applied_selection() -> None:
 
 
 def test_session_and_transcript_actions_are_wired(tmp_path) -> None:
-    from pathlib import Path
-
     from tagalong.application import bind_session_transcript_slice
     from tagalong.attachments import AttachmentRegistry, AttachmentStore
     from tagalong.domain import AGENT, TEXT
@@ -841,7 +886,9 @@ def test_session_and_transcript_actions_are_wired(tmp_path) -> None:
 
     saved = controller.dispatch("transcript.save", actor=OWNER)
     assert isinstance(saved, Applied)
-    assert Path(str(saved.effective)).read_text(encoding="utf-8").count("hello") == 1
+    name = str(saved.effective)
+    assert "/" not in name
+    assert (tmp_path / "out" / name).read_text(encoding="utf-8").count("hello") == 1
 
     assert controller.dispatch("session.quit", actor=OWNER) == Applied("req-7", None)
 

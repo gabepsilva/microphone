@@ -221,8 +221,6 @@ def _send_message(
     request: Request,
     state: AppState,
 ) -> Effect:
-    if request.actor.kind is not ActorKind.HUMAN:
-        raise Inapplicable("agent messages are not enabled in this session")
     text = str(request.payload["text"])
     image_ids = cast(tuple[str, ...], request.payload["images"])
     respond = bool(request.payload["respond"])
@@ -235,7 +233,9 @@ def _send_message(
             raise EffectFailed(f"unknown attachment: {error.args[0]}") from error
     else:
         images = ()
-    conversation.ingest(TEXT, text, respond=respond, images=images)
+    # Agents share message.send with humans; provenance is the speaker label.
+    speaker = AGENT if request.actor.kind is ActorKind.AGENT else TEXT
+    conversation.ingest(speaker, text, respond=respond, images=images)
     return Effect.applied(state, image_ids)
 
 
@@ -461,7 +461,8 @@ def bind_session_transcript_slice(
             path = write_transcript_export(entries, export_dir)
         except OSError as error:
             raise EffectFailed(str(error)) from error
-        return Effect.applied(state, str(path))
+        # Name only — absolute paths would sit oddly beside opaque attachment ids.
+        return Effect.applied(state, path.name)
 
     def end_voice_turn(_request: Request, state: AppState) -> Effect:
         turn.end_turn()

@@ -66,9 +66,9 @@ Canonical `AppState` in this slice carried only `tts_enabled`. Seeding the
 rest waited for milestone 6, which registers the handlers that keep those
 fields true.
 
-Agent `message.send` is refused as inapplicable until the `Agent` transcript
-source lands as its own evaluated change. That path has no live client yet, so
-it is not a user-visible deviation from today's session.
+Agent `message.send` was deferred here until the `Agent` transcript source
+landed. Milestone 7 lands that source and retires the deferral: agents send
+with `Agent` provenance, never `Text`.
 
 ## Milestone 4
 
@@ -138,11 +138,24 @@ Milestone 7 wires ``voice.end_turn``, ``transcript.save``, ``transcript.append``
 
 ``attachment.upload`` validates image bytes (same 20 MB / magic rules as paste)
 and returns an opaque id. ``message.send`` resolves those ids to paths for
-Codex; external callers never pass filesystem paths. Pinned by
-``test_session_and_transcript_actions_are_wired``.
+Codex; external callers never pass filesystem paths. The transport frame cap is
+30 MiB so a 20 MB image survives base64 on the wire; an oversize or non-image
+payload is an action-level ``Failed``, not a dropped connection. Pinned by
+``test_session_and_transcript_actions_are_wired`` and
+``test_frame_cap_covers_a_max_size_image_upload``.
 
 ``transcript.append`` ingests without a reply. An agent’s text enters as the
-``Agent`` source so it cannot masquerade as human ``Text``.
+``Agent`` source so it cannot masquerade as human ``Text``. The milestone-3
+deferral of agent ``message.send`` is retired for the same reason: agents may
+upload, then ``message.send`` with ``Agent`` provenance and optional images.
+
+``transcript.save`` returns the export file’s name, not an absolute path — the
+same opaque-id discipline as attachments. The file still lands under the
+configured transcript directory.
+
+The attachment registry is session-scoped, not actor-scoped: an id uploaded by
+one actor resolves for another. Milestone 8’s capability policy is the place to
+decide whether that boundary should tighten.
 
 ### Edge cases
 
