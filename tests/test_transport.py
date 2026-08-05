@@ -57,8 +57,8 @@ class Speech:
 class Conversation:
     generation = 1
 
-    def ingest(self, speaker, text, respond, images=()):
-        del speaker, text, respond, images
+    def ingest(self, speaker, text, respond, timestamp=None, images=()):
+        del speaker, text, respond, timestamp, images
 
     def interrupt(self) -> None:
         return None

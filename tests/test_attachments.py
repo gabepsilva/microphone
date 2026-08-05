@@ -12,6 +12,7 @@ from openai_codex import LocalImageInput, TextInput
 
 from tagalong.attachments import (
     MAX_IMAGE_BYTES,
+    AttachmentRegistry,
     AttachmentStore,
     ClipboardImage,
     DraftAttachments,
@@ -109,21 +110,17 @@ def test_attachment_store_rejects_non_images(tmp_path) -> None:
         store.save(ClipboardImage(data=b"nope", suffix=".png"))
 
 
-def test_draft_attachments_resolve_only_tokens_still_in_text(tmp_path) -> None:
+def test_draft_attachments_resolve_only_tokens_still_in_text() -> None:
     draft = DraftAttachments()
-    first = tmp_path / "a.png"
-    second = tmp_path / "b.png"
-    first.write_bytes(tiny_png())
-    second.write_bytes(tiny_png())
-    token_a = draft.add(first)
-    token_b = draft.add(second)
+    token_a = draft.add("id-a")
+    token_b = draft.add("id-b")
 
     assert token_a == "[Image #1]"
     assert token_b == "[Image #2]"
-    assert draft.resolve(f"only {token_b}") == (str(second),)
-    assert draft.resolve(f"{token_a} {token_b}") == (str(first), str(second))
+    assert draft.resolve(f"only {token_b}") == ("id-b",)
+    assert draft.resolve(f"{token_a} {token_b}") == ("id-a", "id-b")
     assert draft.resolve("no tokens") == ()
-    assert draft.resolve(f"{token_a} {token_a}") == (str(first),)
+    assert draft.resolve(f"{token_a} {token_a}") == ("id-a",)
     assert draft.resolve("[Image #9]") == ()
 
 
@@ -361,22 +358,24 @@ def _app_with_image_ports(
     *,
     on_user_text=None,
     image: ClipboardImage | None = None,
-) -> VoiceCodexApp:
-    """Build an app whose prompt will see the injected clipboard and store."""
+) -> tuple[VoiceCodexApp, AttachmentRegistry]:
+    """Build an app whose prompt will see the injected clipboard and registry."""
+    registry = AttachmentRegistry(store=AttachmentStore(directory=tmp_path))
     app = VoiceCodexApp(
         SessionState(),
         TuiHooks(on_user_text=on_user_text),
     )
     app.prompt_ports = PromptPorts(
         clipboard=FakeImageClipboard(image),
-        store=AttachmentStore(directory=tmp_path),
+        store=registry.store,
+        attachments=registry,
     )
-    return app
+    return app, registry
 
 
-def test_pasting_an_image_inserts_a_token_and_submits_paths(tmp_path) -> None:
+def test_pasting_an_image_inserts_a_token_and_submits_ids(tmp_path) -> None:
     received: list[UserTextMessage] = []
-    app = _app_with_image_ports(
+    app, registry = _app_with_image_ports(
         tmp_path,
         on_user_text=received.append,
         image=ClipboardImage(data=tiny_png(), suffix=".png"),
@@ -398,12 +397,13 @@ def test_pasting_an_image_inserts_a_token_and_submits_paths(tmp_path) -> None:
     message = received[0]
     assert message.text == "[Image #1]"
     assert len(message.images) == 1
-    assert Path(message.images[0]).parent == tmp_path.resolve()
-    assert Path(message.images[0]).read_bytes() == tiny_png()
+    paths = registry.resolve(message.images)
+    assert Path(paths[0]).parent == tmp_path.resolve()
+    assert Path(paths[0]).read_bytes() == tiny_png()
 
 
 def test_clearing_the_prompt_drops_staged_attachments(tmp_path) -> None:
-    app = _app_with_image_ports(
+    app, _registry = _app_with_image_ports(
         tmp_path,
         image=ClipboardImage(data=tiny_png(), suffix=".png"),
     )
@@ -423,7 +423,7 @@ def test_clearing_the_prompt_drops_staged_attachments(tmp_path) -> None:
 
 def test_deleting_a_token_before_submit_drops_that_image(tmp_path) -> None:
     received: list[UserTextMessage] = []
-    app = _app_with_image_ports(
+    app, _registry = _app_with_image_ports(
         tmp_path,
         on_user_text=received.append,
         image=ClipboardImage(data=tiny_png(), suffix=".png"),
@@ -445,11 +445,11 @@ def test_deleting_a_token_before_submit_drops_that_image(tmp_path) -> None:
     assert len(received) == 1
     assert received[0].text == "[Image #2]"
     assert len(received[0].images) == 1
-    assert received[0].images[0].endswith(".png")
+    assert len(received[0].images[0]) == 32
 
 
 def test_text_paste_still_works_when_clipboard_has_no_image(tmp_path) -> None:
-    app = _app_with_image_ports(tmp_path, image=None)
+    app, _registry = _app_with_image_ports(tmp_path, image=None)
 
     async def exercise() -> None:
         async with app.run_test() as pilot:
@@ -463,6 +463,6 @@ def test_text_paste_still_works_when_clipboard_has_no_image(tmp_path) -> None:
 
 
 def test_user_text_message_is_the_hook_payload() -> None:
-    message = UserTextMessage(text="hi", images=("/a.png",))
+    message = UserTextMessage(text="hi", images=("deadbeef",))
     assert message.text == "hi"
-    assert message.images == ("/a.png",)
+    assert message.images == ("deadbeef",)

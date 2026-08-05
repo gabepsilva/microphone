@@ -20,15 +20,16 @@ VOICE = "Voice"
 TEXT = "Text"
 AUDIO = "Audio"
 TAGA = "Taga"
+AGENT = "Agent"
 
 
 @dataclass(frozen=True, slots=True)
 class UserTextMessage:
-    """A typed Text turn, optionally carrying pasted image files.
+    """A typed Text turn, optionally carrying pasted image attachments.
 
-    ``images`` holds absolute filesystem paths for files staged while the user
-    composed the message. Tokens like ``[Image #1]`` in ``text`` are the
-    human-facing handles; the paths are what Codex receives as local inputs.
+    ``images`` holds opaque attachment ids returned by ``attachment.upload``.
+    Tokens like ``[Image #1]`` in ``text`` are the human-facing handles; the
+    controller resolves ids to on-disk paths before Codex sees the turn.
     """
 
     text: str

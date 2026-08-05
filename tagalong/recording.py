@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
@@ -79,6 +79,23 @@ def format_entry(entry: Entry) -> str:
         lines.append(_inline_first_line(header, text))
 
     return "\n".join(lines) + "\n\n"
+
+
+def write_transcript_export(
+    entries: Sequence[Entry],
+    directory: Path,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> Path:
+    """Write a complete transcript snapshot and return the new file path."""
+    when = (clock or (lambda: datetime.now(UTC).astimezone()))()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / transcript_filename(when)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(f"# TagAlong transcript · {_header_stamp(when)}\n\n")
+        for entry in entries:
+            handle.write(format_entry(entry))
+    return path.resolve()
 
 
 class TranscriptRecorder:

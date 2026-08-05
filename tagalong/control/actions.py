@@ -23,6 +23,8 @@ those bounds is accepted, coerced, and answered with the effective value.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -113,9 +115,15 @@ def _check_ids(value: object) -> tuple[str, ...]:
 
 
 def _check_data(value: object) -> bytes:
-    if not isinstance(value, bytes | bytearray):
-        raise InvalidPayload("expected binary data")
-    return bytes(value)
+    if isinstance(value, bytes | bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        # JSON-RPC and MCP carry binary as base64; in-process callers pass bytes.
+        try:
+            return base64.b64decode(value, validate=True)
+        except binascii.Error as error:
+            raise InvalidPayload("expected binary data") from error
+    raise InvalidPayload("expected binary data")
 
 
 _CHECKS = {
@@ -246,6 +254,11 @@ CATALOG: tuple[ActionSpec, ...] = (
                 "generation", Kind.NUMBER, required=False, nullable=True, default=None
             ),
         ),
+    ),
+    ActionSpec(
+        "session.quit",
+        "Shut down the running session",
+        Scope.SESSION,
     ),
     ActionSpec("voice.end_turn", "Submit the pending spoken turn now", Scope.SESSION),
     ActionSpec(

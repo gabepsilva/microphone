@@ -130,3 +130,29 @@ Pinned by ``test_a_controller_settings_change_is_remembered`` and
 Re-enabling TTS when the sidebar speech picker leaves ``No voice reply`` is
 still a TUI composition: the picker then dispatches ``tts.set_enabled``.
 ``tts.set_provider`` itself does not unmute, for any client.
+
+## Milestone 7
+
+Milestone 7 wires ``voice.end_turn``, ``transcript.save``, ``transcript.append``,
+``attachment.upload``, and registers ``session.quit``.
+
+``attachment.upload`` validates image bytes (same 20 MB / magic rules as paste)
+and returns an opaque id. ``message.send`` resolves those ids to paths for
+Codex; external callers never pass filesystem paths. Pinned by
+``test_session_and_transcript_actions_are_wired``.
+
+``transcript.append`` ingests without a reply. An agent’s text enters as the
+``Agent`` source so it cannot masquerade as human ``Text``.
+
+### Edge cases
+
+**Copying selected transcript rows to the seat clipboard is presentation.**
+``action_copy_selected_transcript`` reads session data and writes the local
+terminal’s clipboard. An agent that wants transcript text uses a transcript
+query (or the socket event stream), not the operator’s pasteboard. Electron
+will have its own seat-local copy path. Not a catalog action.
+
+**Quitting is a session action, refused for agents.** ``session.quit`` is
+registered and the TUI dispatches it before exiting. Agents receive
+``INAPPLICABLE`` — the human owns the runtime lifecycle. That is an explicit
+denial, not a silent absence. Pinned by ``test_an_agent_cannot_quit_the_session``.

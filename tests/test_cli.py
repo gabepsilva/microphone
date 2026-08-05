@@ -63,8 +63,11 @@ class FakeTUI:
         self.microphones: list[tuple[str, str]] = []
         self.microphone_reports: list[list[tuple[str, str]]] = []
         self.closed_speakers: list[str] = []
-        self.app: object | None = None
+        self.app = SimpleNamespace()
         self._call: object | None = None
+
+    def transcript_entries(self):
+        return []
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
@@ -135,7 +138,8 @@ class FakeConversation:
         self.sessions = 0
         self.new_session_ok = True
 
-    def ingest(self, speaker, text, respond, images=()):
+    def ingest(self, speaker, text, respond, timestamp=None, images=()):
+        del timestamp
         self.ingested.append((speaker, text, respond, images))
 
     def prefire(self, speaker, text):
@@ -909,11 +913,19 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_audio_mute",
         "on_microphone",
         "on_audio_stream",
+        "on_end_turn",
+        "on_save",
+        "on_attachment_upload",
+        "on_quit",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
     assert tui.hooks.on_audio_mute is not None
     assert tui.hooks.on_entry is not None
     assert tui.hooks.on_command is not None
+    assert tui.hooks.on_end_turn is not None
+    assert tui.hooks.on_save is not None
+    assert tui.hooks.on_attachment_upload is not None
+    assert tui.hooks.on_quit is not None
 
 
 def test_main_finishes_transcript_recording_after_the_session(
@@ -1163,11 +1175,11 @@ def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
     assert controller.state.tts_enabled is True
     assert wiring["actor"].id == "tui"
 
-    tui.hooks.on_user_text(UserTextMessage("hello", images=("/tmp/shot.png",)))
+    tui.hooks.on_user_text(UserTextMessage("hello"))
     tui.hooks.on_interrupt()
     tui.hooks.on_command("/new")
 
-    assert conversation.ingested == [("Text", "hello", True, ("/tmp/shot.png",))]
+    assert conversation.ingested == [("Text", "hello", True, ())]
     assert conversation.interrupts == 1
     assert conversation.sessions == 1
     assert getattr(tui, "resets", 0) == 1

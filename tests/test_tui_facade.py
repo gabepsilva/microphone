@@ -1507,6 +1507,8 @@ HOST_ONLY_METHODS = frozenset(
         "stop",
         # Flush unfinished rows into the session file before shutdown.
         "finish_recording",
+        # Snapshot of live rows for transcript.save — application, not paint.
+        "transcript_entries",
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",

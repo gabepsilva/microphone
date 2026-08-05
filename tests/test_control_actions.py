@@ -177,6 +177,28 @@ def test_uploaded_bytes_arrive_as_bytes() -> None:
     assert checked == {"data": b"PNG"}
 
 
+def test_uploaded_base64_arrives_as_bytes() -> None:
+    import base64
+
+    checked = action("attachment.upload").validate(
+        {"data": base64.b64encode(b"PNG").decode("ascii")}
+    )
+
+    assert checked == {"data": b"PNG"}
+
+
+def test_uploaded_data_rejects_non_binary_shapes() -> None:
+    with pytest.raises(InvalidPayload, match="binary data"):
+        action("attachment.upload").validate({"data": 12})
+    with pytest.raises(InvalidPayload, match="binary data"):
+        action("attachment.upload").validate({"data": "!!!!"})
+
+
+def test_session_quit_is_in_the_catalog() -> None:
+    assert action("session.quit").scope is Scope.SESSION
+    assert action("session.quit").validate({}) == {}
+
+
 def test_a_value_may_be_null_only_where_the_action_says_so() -> None:
     required = Parameter("name", Kind.NAME)
 

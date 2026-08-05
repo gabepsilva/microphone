@@ -1,11 +1,13 @@
 """Typed-message image attachments.
 
 Images never ride in the prompt as base64. They are saved under the TagAlong
-cache, referenced by ``[Image #N]`` tokens in the draft, and attached to the
-Codex turn as local files.
+cache, referenced by opaque ids and ``[Image #N]`` tokens in the draft, and
+attached to the Codex turn as local files. External callers upload bytes and
+receive ids — they never pass filesystem paths.
 
-This module owns pure token logic, disk storage, and the OS clipboard adapter.
-The TUI owns the draft; Codex owns turning stored paths into SDK inputs.
+This module owns pure token logic, disk storage, the id registry, and the OS
+clipboard adapter. The TUI owns the draft; Codex owns turning resolved paths
+into SDK inputs.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import subprocess
 import sys
 from binascii import Error as BinasciiError
 from binascii import unhexlify
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -128,6 +131,19 @@ def looks_like_image(data: bytes) -> bool:
         and len(data) >= 12
         and data[8:12] == _WEBP_MAGIC_SUFFIX
     )
+
+
+def image_suffix(data: bytes) -> str:
+    """File suffix for a recognised image payload, or raise ``ValueError``."""
+    if not looks_like_image(data):
+        raise ValueError("data is not a recognised image")
+    if data.startswith(_PNG_MAGIC):
+        return ".png"
+    if data.startswith(_JPEG_MAGIC):
+        return ".jpg"
+    if data.startswith(_GIF_MAGIC):
+        return ".gif"
+    return ".webp"
 
 
 def _normalise_suffix(suffix: str) -> str:
@@ -244,38 +260,68 @@ DEFAULT_IMAGE_CLIPBOARD: ImageClipboard = default_image_clipboard()
 
 
 @dataclass
+class AttachmentRegistry:
+    """Opaque attachment ids over an on-disk store.
+
+    Callers never see filesystem paths. ``upload`` returns an id; ``resolve``
+    turns ids back into absolute paths for Codex local-image inputs.
+    """
+
+    store: AttachmentStore = field(default_factory=AttachmentStore)
+    _paths: dict[str, Path] = field(default_factory=dict)
+
+    def upload(self, data: bytes) -> str:
+        """Persist *data* and return an opaque id. Raises ``ValueError`` if rejected."""
+        path = self.store.save(ClipboardImage(data=data, suffix=image_suffix(data)))
+        attachment_id = uuid4().hex
+        self._paths[attachment_id] = path
+        return attachment_id
+
+    def resolve(self, ids: Sequence[str]) -> tuple[str, ...]:
+        """Absolute paths for *ids*, in order. Unknown ids raise ``KeyError``."""
+        resolved: list[str] = []
+        for attachment_id in ids:
+            path = self._paths.get(attachment_id)
+            if path is None:
+                raise KeyError(attachment_id)
+            resolved.append(str(path))
+        return tuple(resolved)
+
+
+@dataclass
 class DraftAttachments:
     """Images staged for the current prompt draft, keyed by ``[Image #N]``.
 
-    Numbering is 1-based and stable for the life of the draft. Deleting a
-    token from the text drops that image from the submit set; unused files are
-    left on disk (cache) rather than deleted mid-edit, so undo stays safe.
+    Numbering is 1-based and stable for the life of the draft. Values are
+    opaque attachment ids, never filesystem paths. Deleting a token from the
+    text drops that image from the submit set; unused files are left on disk
+    (cache) rather than deleted mid-edit, so undo stays safe.
     """
 
-    paths: list[str] = field(default_factory=list)
+    ids: list[str] = field(default_factory=list)
 
-    def add(self, path: str | Path) -> str:
-        """Register a saved image and return the token to insert in the prompt."""
-        self.paths.append(str(path))
-        return image_token(len(self.paths))
+    def add(self, attachment_id: str) -> str:
+        """Register an uploaded image id and return the token to insert."""
+        self.ids.append(attachment_id)
+        return image_token(len(self.ids))
 
     def resolve(self, text: str) -> tuple[str, ...]:
-        """Paths for tokens still present in ``text``, in number order.
+        """Attachment ids for tokens still present in ``text``, in number order.
 
         Unknown numbers and duplicates after the first mention are ignored so
-        a hand-edited draft cannot invent paths or attach the same file twice.
+        a hand-edited draft cannot invent ids or attach the same file twice.
         """
         resolved: list[str] = []
         for number in parse_image_numbers(text):
             index = number - 1
-            if 0 <= index < len(self.paths):
-                path = self.paths[index]
-                if path not in resolved:
-                    resolved.append(path)
+            if 0 <= index < len(self.ids):
+                attachment_id = self.ids[index]
+                if attachment_id not in resolved:
+                    resolved.append(attachment_id)
         return tuple(resolved)
 
     def clear(self) -> None:
-        self.paths.clear()
+        self.ids.clear()
 
     def __bool__(self) -> bool:
-        return bool(self.paths)
+        return bool(self.ids)
