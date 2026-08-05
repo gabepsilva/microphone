@@ -57,8 +57,12 @@ class Speech:
 class Conversation:
     generation = 1
 
-    def ingest(self, speaker, text, respond, images=()):
-        del speaker, text, respond, images
+    def __init__(self) -> None:
+        self.ingested: list[tuple] = []
+
+    def ingest(self, speaker, text, respond, timestamp=None, images=()):
+        del timestamp
+        self.ingested.append((speaker, text, respond, images))
 
     def interrupt(self) -> None:
         return None
@@ -70,9 +74,12 @@ class Conversation:
         del started
 
 
-def wired(tmp_path: Path) -> tuple[Controller, LocalServer, LocalClient]:
+def wired(
+    tmp_path: Path, *, conversation: Conversation | None = None
+) -> tuple[Controller, LocalServer, LocalClient]:
+    talk = conversation if conversation is not None else Conversation()
     controller = Controller()
-    bind_first_slice(controller, conversation=Conversation(), tts=Speech())
+    bind_first_slice(controller, conversation=talk, tts=Speech())
     server = LocalServer(controller, path=tmp_path / "tagalong.sock")
     server.start()
     client = LocalClient(server.path)
@@ -100,7 +107,9 @@ def test_prepare_runtime_dir_is_owner_only(tmp_path: Path) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o700
 
 
-def test_frames_are_ndjson_and_capped() -> None:
+def test_frames_are_ndjson_and_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tagalong.transport as transport
+
     frame = encode_frame({"ok": True})
 
     assert frame.endswith(b"\n")
@@ -111,10 +120,14 @@ def test_frames_are_ndjson_and_capped() -> None:
         decode_frame(b"\xff")
     with pytest.raises(TransportError, match="JSON object"):
         decode_frame(b"[]")
-    with pytest.raises(TransportError, match="1 MiB"):
-        decode_frame(b"x" * (1_048_576 + 1))
-    with pytest.raises(TransportError, match="1 MiB"):
-        encode_frame({"blob": "x" * 1_048_576})
+    # Keep the oversize probe cheap; production MAX_FRAME is 30 MiB for uploads.
+    monkeypatch.setattr(transport, "MAX_FRAME", 64)
+    monkeypatch.setattr(transport, "_FRAME_LIMIT_LABEL", "0 MiB")
+    with pytest.raises(TransportError, match="0 MiB"):
+        transport.decode_frame(b"x" * 65)
+    with pytest.raises(TransportError, match="0 MiB"):
+        transport.encode_frame({"blob": "x" * 64})
+    assert MAX_FRAME == 30 * 1024 * 1024
 
 
 def test_outcomes_round_trip_to_json() -> None:
@@ -274,28 +287,42 @@ def test_initialize_cannot_be_replayed_to_change_actor(tmp_path: Path) -> None:
         server.stop()
 
 
-def test_socket_message_send_is_inapplicable_even_when_labelled_electron(
-    tmp_path: Path,
-) -> None:
-    _, server, client = wired(tmp_path)
+def test_socket_message_send_ingests_as_agent_not_text(tmp_path: Path) -> None:
+    talk = Conversation()
+    _, server, client = wired(tmp_path, conversation=talk)
     try:
         client.call("initialize", {"client": "electron"})
         outcome = client.call(
             "dispatch", {"action": "message.send", "payload": {"text": "hi"}}
         )
-        assert outcome["type"] == "rejected"
-        assert outcome["reason"] == "inapplicable"
+        assert outcome["type"] == "applied"
+        assert talk.ingested == [("Agent", "hi", True, ())]
     finally:
         client.close()
         server.stop()
 
 
-def test_a_frame_without_a_newline_is_capped(tmp_path: Path) -> None:
+def test_frame_cap_covers_a_max_size_image_upload() -> None:
+    from tagalong.attachments import MAX_IMAGE_BYTES
+
+    # Base64 expands by 4/3; leave 64 KiB for the JSON-RPC envelope.
+    wire_bytes = -(-MAX_IMAGE_BYTES * 4 // 3) + 65_536
+    assert wire_bytes <= MAX_FRAME
+    assert MAX_FRAME > 1_048_576
+
+
+def test_a_frame_without_a_newline_is_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tagalong.transport as transport
+
+    # Avoid pushing 30 MiB across the socket just to prove the cap.
+    monkeypatch.setattr(transport, "MAX_FRAME", 64)
     _, server, _client = wired(tmp_path)
     raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         raw.connect(str(server.path))
-        raw.sendall(b"x" * (MAX_FRAME + 1))
+        raw.sendall(b"x" * 65)
         assert raw.recv(4096) == b""
     finally:
         raw.close()

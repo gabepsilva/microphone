@@ -33,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Any, cast
 
 from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
@@ -41,12 +42,15 @@ from .application import (
     app_state_from_session,
     bind_audio_slice,
     bind_first_slice,
+    bind_session_transcript_slice,
     bind_settings_slice,
     install_audio_hooks,
     install_first_slice_hooks,
+    install_session_transcript_hooks,
     install_settings_hooks,
     run_new_session,
 )
+from .attachments import AttachmentRegistry, AttachmentStore
 from .capture import (
     ApplicationStreamTranscriber,
     CaptureSettings,
@@ -714,11 +718,13 @@ def microphone_presence(mic_activity, audio_activity, tts):
     return SpeakerPresence(mic_activity, suppressors)
 
 
-def attach_conversation_hooks(tui, conversation, tts):
+def attach_conversation_hooks(tui, conversation, tts, attachments):
     """Point the interface's first-slice controls at the controller."""
     actor = local_user("tui")
     controller = Controller(app_state_from_session(tui.state))
-    bind_first_slice(controller, conversation=conversation, tts=tts)
+    bind_first_slice(
+        controller, conversation=conversation, tts=tts, attachments=attachments
+    )
     install_first_slice_hooks(tui, controller, actor)
     return controller, actor
 
@@ -742,7 +748,6 @@ def start_capture_channels(controller, tui, actor, microphone, audio_setup):
     audio.start()
     applications = ApplicationRefresher(tui)
     applications.start()
-    tui.hooks.on_quit = applications.stop
     controller.dispatch("audio_stream.select", {"name": audio_stream}, actor=actor)
     return applications
 
@@ -876,7 +881,8 @@ def main():
 
     gate = speaker_gate(selection)
 
-    from .tui import VoiceCodexTUI
+    from .attachments import DEFAULT_IMAGE_CLIPBOARD
+    from .tui import PromptPorts, VoiceCodexTUI
 
     turn_silence = TurnSilence(args.turn_silence)
     countdown = TurnSilenceClock(turn_silence)
@@ -888,6 +894,14 @@ def main():
     )
     recorder = TranscriptRecorder()
     transcript_display = tui
+    attachments = AttachmentRegistry(store=AttachmentStore())
+    prompt_ports = PromptPorts(
+        clipboard=DEFAULT_IMAGE_CLIPBOARD,
+        store=attachments.store,
+        attachments=attachments,
+    )
+    prompt_host = cast(Any, getattr(tui, "app", None) or tui)
+    prompt_host.prompt_ports = prompt_ports
     conversation = CodexConversation(
         CodexSettings(
             sandbox=args.sandbox,
@@ -900,7 +914,7 @@ def main():
         tts,
     )
 
-    controller, actor = attach_conversation_hooks(tui, conversation, tts)
+    controller, actor = attach_conversation_hooks(tui, conversation, tts, attachments)
     bind_settings_slice(
         controller,
         (conversation, tts, gate, turn_silence),
@@ -918,7 +932,10 @@ def main():
             PrefirePlan(conversation.latency) if args.codex_prefire else None
         ),
     )
-    tui.hooks.on_end_turn = submitter.end_turn
+    bind_session_transcript_slice(
+        controller,
+        (conversation, submitter, attachments, tui),
+    )
 
     # Built before the listeners because each one reads the other's tap: the
     # microphone has to know when the far end is playing to tell its voice
@@ -971,6 +988,9 @@ def main():
             else args.microphone,
             audio_stream,
         ),
+    )
+    install_session_transcript_hooks(
+        tui, controller, actor, on_quit_cleanup=applications.stop
     )
     run_attached_session(controller, tui, conversation, microphone, them)
     finish_recorded_session(tui, recorder, applications)

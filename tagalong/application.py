@@ -3,10 +3,11 @@
 Milestone 3 of issue #81 converts the first Textual slice onto the controller:
 ``message.send``, ``tts.set_enabled``, ``session.interrupt``, and
 ``session.new``. Milestone 6 adds the settings and audio actions so every
-sidebar field the catalog names is kept true in ``AppState``. The controller
-itself stays UI-neutral; this module is where the running session's
-conversation, speech engine, gate, silence window, and capture channels
-become those handlers.
+sidebar field the catalog names is kept true in ``AppState``. Milestone 7
+wires session and transcript actions — ``voice.end_turn``, ``transcript.save``,
+``transcript.append``, ``attachment.upload``, and ``session.quit``. The
+controller itself stays UI-neutral; this module is where the running session's
+collaborators become those handlers.
 
 The Textual interface still speaks through ``TuiHooks``. The hooks installed
 here dispatch, so journey tests that drive the interface without a controller
@@ -27,9 +28,10 @@ keystroke that overtook an in-flight open is superseded rather than applied.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from .control import (
@@ -50,7 +52,9 @@ from .control import (
     with_desired,
     with_effective,
 )
-from .domain import TEXT, UserTextMessage
+from .domain import AGENT, TEXT, UserTextMessage
+from .presentation import Entry
+from .recording import default_transcript_dir, write_transcript_export
 
 
 class ConversationPort(Protocol):
@@ -59,7 +63,12 @@ class ConversationPort(Protocol):
     generation: int
 
     def ingest(
-        self, speaker: str, text: str, respond: bool, images: tuple[str, ...] = ()
+        self,
+        speaker: str,
+        text: str,
+        respond: bool,
+        timestamp: str | None = None,
+        images: tuple[str, ...] = (),
     ) -> None: ...
 
     def interrupt(self) -> None: ...
@@ -135,6 +144,26 @@ class RecorderPort(Protocol):
     def roll(self) -> None: ...
 
 
+class TurnPort(Protocol):
+    """Flush a spoken turn without waiting for the silence window."""
+
+    def end_turn(self) -> None: ...
+
+
+class TranscriptEntriesPort(Protocol):
+    """The live transcript rows a save export reads."""
+
+    def transcript_entries(self) -> Sequence[Entry]: ...
+
+
+class AttachmentPort(Protocol):
+    """Opaque attachment ids over validated image bytes."""
+
+    def upload(self, data: bytes) -> str: ...
+
+    def resolve(self, ids: Sequence[str]) -> tuple[str, ...]: ...
+
+
 class FirstSliceHost(Protocol):
     """Anything that exposes the hook bag this slice overwrites."""
 
@@ -186,22 +215,38 @@ def app_state_from_session(state: SessionView) -> AppState:
     )
 
 
+def _send_message(
+    conversation: ConversationPort,
+    attachments: AttachmentPort | None,
+    request: Request,
+    state: AppState,
+) -> Effect:
+    text = str(request.payload["text"])
+    image_ids = cast(tuple[str, ...], request.payload["images"])
+    respond = bool(request.payload["respond"])
+    if image_ids:
+        if attachments is None:
+            raise EffectFailed("attachments are not available in this session")
+        try:
+            images = attachments.resolve(image_ids)
+        except KeyError as error:
+            raise EffectFailed(f"unknown attachment: {error.args[0]}") from error
+    else:
+        images = ()
+    # Agents share message.send with humans; provenance is the speaker label.
+    speaker = AGENT if request.actor.kind is ActorKind.AGENT else TEXT
+    conversation.ingest(speaker, text, respond=respond, images=images)
+    return Effect.applied(state, image_ids)
+
+
 def bind_first_slice(
     controller: Controller,
     *,
     conversation: ConversationPort,
     tts: SpeechPort,
+    attachments: AttachmentPort | None = None,
 ) -> None:
     """Register the four first-slice handlers on *controller*."""
-
-    def send_message(request: Request, state: AppState) -> Effect:
-        if request.actor.kind is not ActorKind.HUMAN:
-            raise Inapplicable("agent messages are not enabled in this session")
-        text = str(request.payload["text"])
-        images = cast(tuple[str, ...], request.payload["images"])
-        respond = bool(request.payload["respond"])
-        conversation.ingest(TEXT, text, respond=respond, images=images)
-        return Effect.applied(state, images)
 
     def set_tts_enabled(request: Request, state: AppState) -> Effect:
         enabled = bool(request.payload["enabled"])
@@ -222,7 +267,9 @@ def bind_first_slice(
     def start_session(_request: Request, state: AppState) -> Effect:
         return Effect.pending(state, settle=lambda current, _effective: current)
 
-    controller.register("message.send", send_message)
+    controller.register(
+        "message.send", partial(_send_message, conversation, attachments)
+    )
     controller.register("tts.set_enabled", set_tts_enabled)
     controller.register("session.interrupt", interrupt_session)
     controller.register("session.new", start_session)
@@ -378,6 +425,61 @@ def bind_audio_slice(
     controller.register("audio_stream.set_muted", set_audio_muted)
 
 
+def bind_session_transcript_slice(
+    controller: Controller,
+    collaborators: tuple[
+        ConversationPort, TurnPort, AttachmentPort, TranscriptEntriesPort
+    ],
+    directory: Path | None = None,
+) -> None:
+    """Register session and transcript handlers on *controller*.
+
+    ``attachment.upload`` validates bytes and returns opaque ids.
+    ``message.send`` resolves those ids; callers never pass filesystem paths.
+    ``session.quit`` is refused for agents — the human owns the runtime.
+    """
+    conversation, turn, attachments, transcript = collaborators
+    export_dir = directory if directory is not None else default_transcript_dir()
+
+    def upload_attachment(request: Request, state: AppState) -> Effect:
+        data = cast(bytes, request.payload["data"])
+        try:
+            attachment_id = attachments.upload(data)
+        except ValueError as error:
+            raise EffectFailed(str(error)) from error
+        return Effect.applied(state, attachment_id)
+
+    def append_transcript(request: Request, state: AppState) -> Effect:
+        text = str(request.payload["text"])
+        speaker = AGENT if request.actor.kind is ActorKind.AGENT else TEXT
+        conversation.ingest(speaker, text, respond=False)
+        return Effect.applied(state, speaker)
+
+    def save_transcript(_request: Request, state: AppState) -> Effect:
+        entries = list(transcript.transcript_entries())
+        try:
+            path = write_transcript_export(entries, export_dir)
+        except OSError as error:
+            raise EffectFailed(str(error)) from error
+        # Name only — absolute paths would sit oddly beside opaque attachment ids.
+        return Effect.applied(state, path.name)
+
+    def end_voice_turn(_request: Request, state: AppState) -> Effect:
+        turn.end_turn()
+        return Effect.applied(state, None)
+
+    def quit_session(request: Request, state: AppState) -> Effect:
+        if request.actor.kind is ActorKind.AGENT:
+            raise Inapplicable("agents may not shut down the session")
+        return Effect.applied(state, None)
+
+    controller.register("attachment.upload", upload_attachment)
+    controller.register("transcript.append", append_transcript)
+    controller.register("transcript.save", save_transcript)
+    controller.register("voice.end_turn", end_voice_turn)
+    controller.register("session.quit", quit_session)
+
+
 def _completer(
     controller: Controller,
     request_id: str,
@@ -495,6 +597,41 @@ def install_audio_hooks(
     tui.hooks.on_audio_stream = on_audio_stream
     tui.hooks.on_mute = on_mute
     tui.hooks.on_audio_mute = on_audio_mute
+
+
+def install_session_transcript_hooks(
+    tui: FirstSliceHost,
+    controller: Controller,
+    actor: Actor,
+    *,
+    on_quit_cleanup: Callable[[], object] | None = None,
+) -> None:
+    """Point end-turn, save, upload, and quit hooks at *controller*."""
+
+    def on_end_turn() -> None:
+        controller.dispatch("voice.end_turn", actor=actor)
+
+    def on_save(_entries: object) -> None:
+        controller.dispatch("transcript.save", actor=actor)
+
+    def on_attachment_upload(data: bytes) -> str | None:
+        outcome = controller.dispatch("attachment.upload", {"data": data}, actor=actor)
+        if isinstance(outcome, Applied):
+            return str(outcome.effective)
+        return None
+
+    def on_quit() -> bool:
+        outcome = controller.dispatch("session.quit", actor=actor)
+        if not isinstance(outcome, Applied):
+            return False
+        if on_quit_cleanup is not None:
+            on_quit_cleanup()
+        return True
+
+    tui.hooks.on_end_turn = on_end_turn
+    tui.hooks.on_save = on_save
+    tui.hooks.on_attachment_upload = on_attachment_upload
+    tui.hooks.on_quit = on_quit
 
 
 def run_new_session(

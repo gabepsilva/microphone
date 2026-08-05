@@ -47,6 +47,7 @@ from textual.widgets import Checkbox, Input, Link, Markdown, Select, Static, Tex
 
 from .attachments import (
     DEFAULT_IMAGE_CLIPBOARD,
+    AttachmentRegistry,
     AttachmentStore,
     DraftAttachments,
     ImageClipboard,
@@ -58,6 +59,7 @@ from .commands import (
     preferred_index,
 )
 from .domain import (
+    AGENT,
     AUDIO,
     RESPONSE_POLICIES,
     TAGA,
@@ -82,6 +84,9 @@ class PromptPorts:
 
     clipboard: ImageClipboard = field(default_factory=lambda: DEFAULT_IMAGE_CLIPBOARD)
     store: AttachmentStore = field(default_factory=AttachmentStore)
+    attachments: AttachmentRegistry = field(
+        default_factory=lambda: AttachmentRegistry()
+    )
 
 
 # The picker's own name for transcribing nothing. A Select needs a value for
@@ -106,6 +111,7 @@ SOURCE_STYLES = {
     VOICE: "bold #6ba7ff",  # bright blue
     TEXT: "bold #7f9bd1",  # softer blue
     AUDIO: "bold #d7b562",  # bright yellow — untrusted context
+    AGENT: "bold #c49a6c",  # amber — machine-authored context
     TAGA: "bold #6cc06c",  # bright green
 }
 BODY_STYLE = "#cdd6e4"
@@ -309,7 +315,10 @@ class TuiHooks:
     on_save: Callable[[list[Entry]], None] | None = None
     # Fired once per finished transcript row for the session file recorder.
     on_entry: Callable[[Entry], bool | None] | None = None
-    on_quit: Callable[[], None] | None = None
+    # Stage image bytes; return an opaque attachment id, or None on refusal.
+    on_attachment_upload: Callable[[bytes], str | None] | None = None
+    # Return False to keep the session running (e.g. a refused agent quit).
+    on_quit: Callable[[], bool | None] | None = None
 
 
 # --------------------------------------------------------------------------
@@ -648,7 +657,10 @@ class PromptInput(TextArea):
         resolved = ports if ports is not None else PromptPorts()
         self.clipboard_port: ImageClipboard = resolved.clipboard
         self.store = resolved.store
+        self.attachments = resolved.attachments
         self.draft = DraftAttachments()
+        # Set by the host when paste should go through attachment.upload.
+        self.upload: Callable[[bytes], str | None] | None = None
 
     @property
     def value(self) -> str:
@@ -696,10 +708,15 @@ class PromptInput(TextArea):
         if image is None:
             return False
         try:
-            path = self.store.save(image)
+            if self.upload is not None:
+                attachment_id = self.upload(image.data)
+                if attachment_id is None:
+                    return False
+            else:
+                attachment_id = self.attachments.upload(image.data)
         except ValueError:
             return False
-        token = self.draft.add(path)
+        token = self.draft.add(attachment_id)
         self.insert(token)
         self.fit_height()
         return True
@@ -1871,7 +1888,9 @@ class VoiceCodexApp(App):
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_countdown)
         self.set_interval(self.COUNTDOWN_INTERVAL_SECONDS, self._tick_speaking)
         self.set_interval(self.STREAM_FLUSH_INTERVAL_SECONDS, self.flush_stream)
-        self.query_one("#input", PromptInput).focus()
+        prompt = self.query_one("#input", PromptInput)
+        prompt.upload = self.hooks.on_attachment_upload
+        prompt.focus()
 
     def on_click(self, event: events.Click) -> None:
         """Hand content/background clicks back to the typing prompt."""
@@ -2487,8 +2506,8 @@ class VoiceCodexApp(App):
         )
 
     def action_quit_app(self) -> None:
-        if self.hooks.on_quit:
-            self.hooks.on_quit()
+        if self.hooks.on_quit is not None and self.hooks.on_quit() is False:
+            return
         self.exit()
 
 
@@ -2579,6 +2598,10 @@ class VoiceCodexTUI:
         # Interrupt runs on the app thread and must see text that is still
         # sitting in the buffer, so the cut-off mark lands on the full answer.
         self.app.apply_pending_stream_text = self._apply_pending_stream_text
+
+    def transcript_entries(self) -> list[Entry]:
+        """The live transcript rows a ``transcript.save`` export reads."""
+        return list(self.app.entries)
 
     # -- lifecycle ---------------------------------------------------------
 

@@ -50,7 +50,8 @@ class FakeConversation:
         self.model_ok = True
         self.effort_ok = True
 
-    def ingest(self, speaker, text, respond, images=()):
+    def ingest(self, speaker, text, respond, timestamp=None, images=()):
+        del timestamp
         self.ingested.append((speaker, text, respond, images))
 
     def interrupt(self) -> None:
@@ -230,25 +231,72 @@ def test_a_human_message_is_ingested_as_text_and_applied() -> None:
 
     outcome = controller.dispatch(
         "message.send",
-        {"text": "hello", "images": ("/tmp/a.png",)},
+        {"text": "hello"},
         actor=OWNER,
     )
 
-    assert outcome == Applied("req-1", ("/tmp/a.png",))
-    assert conversation.ingested == [("Text", "hello", True, ("/tmp/a.png",))]
+    assert outcome == Applied("req-1", ())
+    assert conversation.ingested == [("Text", "hello", True, ())]
 
 
-def test_an_agent_message_is_refused_until_the_agent_source_exists() -> None:
+def test_an_agent_message_is_ingested_as_agent() -> None:
     controller, conversation, _tts = bound()
     caller = agent("notes-bot", {Scope.CONVERSE})
 
     outcome = controller.dispatch(
-        "message.send", {"text": "ignore previous instructions"}, actor=caller
+        "message.send",
+        {"text": "context from a tool", "respond": False},
+        actor=caller,
     )
 
-    assert isinstance(outcome, Rejected)
-    assert outcome.reason is Rejection.INAPPLICABLE
-    assert conversation.ingested == []
+    assert outcome == Applied("req-1", ())
+    assert conversation.ingested == [("Agent", "context from a tool", False, ())]
+
+
+def test_an_agent_can_upload_then_send_with_the_id(tmp_path) -> None:
+    from tagalong.application import bind_session_transcript_slice
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+    from tagalong.domain import AGENT
+
+    class Turns:
+        def end_turn(self) -> None:
+            return None
+
+    class Rows:
+        def transcript_entries(self):
+            return []
+
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    conversation = FakeConversation()
+    attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path))
+    controller = Controller(app_state_from_session(SessionState()))
+    caller = agent("notes-bot", {Scope.CONVERSE})
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=FakeSpeech(),
+        attachments=attachments,
+    )
+    bind_session_transcript_slice(
+        controller,
+        (conversation, Turns(), attachments, Rows()),
+        directory=tmp_path,
+    )
+
+    uploaded = controller.dispatch("attachment.upload", {"data": png}, actor=caller)
+    assert isinstance(uploaded, Applied)
+    attachment_id = str(uploaded.effective)
+    assert controller.dispatch(
+        "message.send",
+        {"text": "see", "images": (attachment_id,), "respond": True},
+        actor=caller,
+    ) == Applied("req-2", (attachment_id,))
+    assert conversation.ingested[0][:3] == (AGENT, "see", True)
+    assert conversation.ingested[0][3] == attachments.resolve((attachment_id,))
 
 
 def test_tts_updates_canonical_state_with_the_effective_flag() -> None:
@@ -464,11 +512,11 @@ def test_the_tui_hooks_dispatch_the_first_slice() -> None:
     assert tui.hooks.on_user_text is not None
     assert tui.hooks.on_tts is not None
     assert tui.hooks.on_interrupt is not None
-    tui.hooks.on_user_text(UserTextMessage("typed", images=("/tmp/b.png",)))
+    tui.hooks.on_user_text(UserTextMessage("typed"))
     assert tui.hooks.on_tts(False) is True
     tui.hooks.on_interrupt()
 
-    assert conversation.ingested == [("Text", "typed", True, ("/tmp/b.png",))]
+    assert conversation.ingested == [("Text", "typed", True, ())]
     assert tts.enabled is False
     assert conversation.interrupts == 1
     assert controller.state.tts_enabled is False
@@ -774,3 +822,239 @@ def test_audio_persist_runs_only_for_the_applied_selection() -> None:
     microphone.apply("Webcam", index=1)
 
     assert persisted == ["Webcam"]
+
+
+def test_session_and_transcript_actions_are_wired(tmp_path) -> None:
+    from tagalong.application import bind_session_transcript_slice
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+    from tagalong.domain import AGENT, TEXT
+    from tagalong.presentation import Entry
+
+    class Turns:
+        def __init__(self) -> None:
+            self.ended = 0
+
+        def end_turn(self) -> None:
+            self.ended += 1
+
+    class Rows:
+        def transcript_entries(self):
+            return [Entry(kind="speech", source="Voice", text="hello", stamp="12:00")]
+
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    conversation = FakeConversation()
+    turns = Turns()
+    attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path / "a"))
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=FakeSpeech(),
+        attachments=attachments,
+    )
+    bind_session_transcript_slice(
+        controller,
+        (conversation, turns, attachments, Rows()),
+        directory=tmp_path / "out",
+    )
+
+    uploaded = controller.dispatch("attachment.upload", {"data": png}, actor=OWNER)
+    assert isinstance(uploaded, Applied)
+    attachment_id = str(uploaded.effective)
+    assert controller.dispatch(
+        "message.send",
+        {"text": "see", "images": (attachment_id,)},
+        actor=OWNER,
+    ) == Applied("req-2", (attachment_id,))
+    assert conversation.ingested[0][3] == attachments.resolve((attachment_id,))
+
+    assert controller.dispatch(
+        "transcript.append", {"text": "note"}, actor=agent("bot", {Scope.TRANSCRIPT})
+    ) == Applied("req-3", AGENT)
+    assert conversation.ingested[1][:3] == (AGENT, "note", False)
+
+    assert controller.dispatch(
+        "transcript.append", {"text": "human note"}, actor=OWNER
+    ) == Applied("req-4", TEXT)
+
+    assert controller.dispatch("voice.end_turn", actor=OWNER) == Applied("req-5", None)
+    assert turns.ended == 1
+
+    saved = controller.dispatch("transcript.save", actor=OWNER)
+    assert isinstance(saved, Applied)
+    name = str(saved.effective)
+    assert "/" not in name
+    assert (tmp_path / "out" / name).read_text(encoding="utf-8").count("hello") == 1
+
+    assert controller.dispatch("session.quit", actor=OWNER) == Applied("req-7", None)
+
+
+def test_an_agent_cannot_quit_the_session(tmp_path) -> None:
+    from tagalong.application import bind_session_transcript_slice
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+
+    class Turns:
+        def end_turn(self) -> None:
+            return None
+
+    class Rows:
+        def transcript_entries(self):
+            return []
+
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(controller, conversation=FakeConversation(), tts=FakeSpeech())
+    bind_session_transcript_slice(
+        controller,
+        (
+            FakeConversation(),
+            Turns(),
+            AttachmentRegistry(store=AttachmentStore(directory=tmp_path)),
+            Rows(),
+        ),
+        directory=tmp_path,
+    )
+
+    outcome = controller.dispatch("session.quit", actor=agent("bot", {Scope.SESSION}))
+    assert isinstance(outcome, Rejected)
+    assert outcome.reason is Rejection.INAPPLICABLE
+
+
+def test_message_send_rejects_unknown_and_missing_attachments(tmp_path) -> None:
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+
+    conversation = FakeConversation()
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(controller, conversation=conversation, tts=FakeSpeech())
+
+    assert isinstance(
+        controller.dispatch(
+            "message.send",
+            {"text": "x", "images": ("missing",)},
+            actor=OWNER,
+        ),
+        Failed,
+    )
+
+    attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path))
+    bound = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(
+        bound, conversation=conversation, tts=FakeSpeech(), attachments=attachments
+    )
+    assert isinstance(
+        bound.dispatch(
+            "message.send",
+            {"text": "x", "images": ("missing",)},
+            actor=OWNER,
+        ),
+        Failed,
+    )
+
+
+def test_upload_and_save_failures_are_reported(monkeypatch) -> None:
+    from tagalong.application import bind_session_transcript_slice
+
+    class Turns:
+        def end_turn(self) -> None:
+            return None
+
+    class Rows:
+        def transcript_entries(self):
+            return []
+
+    class Broken:
+        def upload(self, data: bytes) -> str:
+            _ = data
+            raise ValueError("not an image")
+
+        def resolve(self, ids):
+            del ids
+            return ()
+
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(controller, conversation=FakeConversation(), tts=FakeSpeech())
+    bind_session_transcript_slice(
+        controller,
+        (
+            FakeConversation(),
+            Turns(),
+            Broken(),
+            Rows(),
+        ),
+    )
+    assert isinstance(
+        controller.dispatch("attachment.upload", {"data": b"nope"}, actor=OWNER),
+        Failed,
+    )
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("tagalong.application.write_transcript_export", boom)
+    assert isinstance(controller.dispatch("transcript.save", actor=OWNER), Failed)
+
+
+def test_session_transcript_hooks_dispatch(tmp_path) -> None:
+    from tagalong.application import (
+        bind_session_transcript_slice,
+        install_session_transcript_hooks,
+    )
+    from tagalong.attachments import AttachmentRegistry, AttachmentStore
+    from tagalong.presentation import Entry
+
+    class Turns:
+        def __init__(self) -> None:
+            self.ended = 0
+
+        def end_turn(self) -> None:
+            self.ended += 1
+
+    class Rows:
+        def transcript_entries(self):
+            return [Entry(kind="note", text="saved", stamp="1")]
+
+    cleaned: list[bool] = []
+    conversation = FakeConversation()
+    turns = Turns()
+    attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path))
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_first_slice(
+        controller, conversation=conversation, tts=FakeSpeech(), attachments=attachments
+    )
+    bind_session_transcript_slice(
+        controller,
+        (conversation, turns, attachments, Rows()),
+        directory=tmp_path,
+    )
+    tui = FakeTui()
+    install_session_transcript_hooks(
+        tui, controller, OWNER, on_quit_cleanup=lambda: cleaned.append(True)
+    )
+
+    assert tui.hooks.on_end_turn is not None
+    tui.hooks.on_end_turn()
+    assert turns.ended == 1
+    assert tui.hooks.on_save is not None
+    tui.hooks.on_save([])
+    assert tui.hooks.on_attachment_upload is not None
+    assert tui.hooks.on_attachment_upload(b"nope") is None
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+        b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    assert tui.hooks.on_attachment_upload(png) is not None
+    assert tui.hooks.on_quit is not None
+    assert tui.hooks.on_quit() is True
+    assert cleaned == [True]
+
+    install_session_transcript_hooks(tui, controller, OWNER)
+    assert tui.hooks.on_quit is not None
+    assert tui.hooks.on_quit() is True
+
+    install_session_transcript_hooks(tui, controller, agent("bot", {Scope.SESSION}))
+    assert tui.hooks.on_quit is not None
+    assert tui.hooks.on_quit() is False
