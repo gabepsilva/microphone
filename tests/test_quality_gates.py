@@ -277,6 +277,30 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
                 'test "$LANE_RESULTS" != "failure"',
             ),
         ),
+        (
+            "workflow whose jobs section cannot be parsed",
+            ("workflow", "jobs:\n", "tasks:\n"),
+        ),
+        (
+            "renamed protected aggregator check",
+            (
+                "workflow",
+                "name: Quality and security",
+                "name: Quality summary",
+            ),
+        ),
+        (
+            "aggregator that does not collect every dependency result",
+            (
+                "workflow",
+                "LANE_RESULTS: ${{ join(needs.*.result, ' ') }}",
+                "LANE_RESULTS: success",
+            ),
+        ),
+        (
+            "missing protected aggregator job",
+            ("workflow", "  quality-gate:\n", "  quality-summary:\n"),
+        ),
     ],
 )
 def test_orchestration_gate_rejects_a_planted_omission(
