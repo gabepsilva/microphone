@@ -98,3 +98,8 @@ socket ``0600``, ``SO_PEERCRED`` same-uid only). There is no ``/tmp``
 fallback: if the runtime dir is unset the TUI still runs and remote clients
 cannot attach. MCP tools are generated from the static catalog; Electron is a
 preload-isolated client of the same socket, not a second Python runtime.
+
+Socket callers are agents. The ``client`` string on ``initialize`` is a label
+for the actor id, not a way to mint ``ActorKind.HUMAN``. The person at the
+TUI is still ``local_user`` in-process; a same-uid socket process that claims
+to be Electron cannot ingest ``Text``.

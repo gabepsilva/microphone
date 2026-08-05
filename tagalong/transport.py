@@ -33,12 +33,11 @@ from .control import (
     Snapshot,
     Superseded,
     agent,
-    local_user,
 )
 from .control.actions import PROTOCOL_VERSION, Scope
 from .discovery import list_commands
 
-SO_PEERCRED = 17
+SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 _CRED_FORMAT = "3i"
 MAX_FRAME = 1_048_576
 ACCEPT_TIMEOUT = 0.25
@@ -96,7 +95,7 @@ def read_peer(connection: socket.socket) -> Peer:
 
 
 def encode_frame(payload: Mapping[str, object]) -> bytes:
-    body = json.dumps(payload, separators=(",", ":"), default=str)
+    body = json.dumps(payload, separators=(",", ":"))
     frame = body.encode("utf-8") + b"\n"
     if len(frame) > MAX_FRAME:
         raise TransportError("frame exceeds the 1 MiB limit")
@@ -152,19 +151,24 @@ def outcome_payload(outcome: Outcome) -> dict[str, object]:
 
 
 def actor_for_client(client: str, peer: Peer) -> Actor:
-    """Connection-derived actor. The client name is a label, not a capability."""
-    if client == "mcp":
-        return agent(
-            f"mcp-{peer.uid}",
-            {
-                Scope.CONVERSE,
-                Scope.SESSION,
-                Scope.AUDIO,
-                Scope.SETTINGS,
-                Scope.TRANSCRIPT,
-            },
-        )
-    return local_user(f"{client}-{peer.uid}")
+    """Socket peers are agents. The client name is a label, not a capability.
+
+    The transport authenticates uid, not which program connected. A self-asserted
+    ``client`` string therefore cannot mint :class:`ActorKind.HUMAN` — that
+    would let any same-uid process pose as a person in the room. The in-process
+    TUI is still :func:`local_user`; only socket callers go through here.
+    """
+    label = client.strip() or "local"
+    return agent(
+        f"{label}-{peer.uid}",
+        {
+            Scope.CONVERSE,
+            Scope.SESSION,
+            Scope.AUDIO,
+            Scope.SETTINGS,
+            Scope.TRANSCRIPT,
+        },
+    )
 
 
 class LocalServer:
@@ -262,6 +266,8 @@ class LocalServer:
                 if not chunk:
                     return
                 buffer += chunk
+                if len(buffer) > MAX_FRAME and b"\n" not in buffer:
+                    return
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
                     if not line.strip():
@@ -319,6 +325,8 @@ class LocalServer:
     def _rpc_initialize(
         self, rpc_id: object, params: Mapping[str, Any], session: _Session
     ) -> dict[str, object]:
+        if session.actor is not None:
+            return _error(rpc_id, -32003, "already initialized")
         session.actor = actor_for_client(
             str(params.get("client") or "local"), session.peer
         )

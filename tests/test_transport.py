@@ -23,6 +23,7 @@ from tagalong.control import (
 from tagalong.control.actions import PROTOCOL_VERSION
 from tagalong.control.outcomes import Applied, Rejected, Rejection
 from tagalong.transport import (
+    MAX_FRAME,
     EventPump,
     LocalClient,
     LocalServer,
@@ -148,7 +149,7 @@ def test_a_same_uid_client_can_dispatch_tts(tmp_path: Path) -> None:
     try:
         hello = client.call("initialize", {"client": "electron"})
         assert hello["protocol_version"] == PROTOCOL_VERSION
-        assert hello["actor_kind"] == "human"
+        assert hello["actor_kind"] == "agent"
 
         snapped = client.call("snapshot")
         assert snapped["state"]["tts_enabled"] is True
@@ -233,6 +234,69 @@ def test_unknown_method_is_a_json_rpc_error(tmp_path: Path) -> None:
             client.call("explode")
     finally:
         client.close()
+        server.stop()
+
+
+def test_a_closed_then_reopened_connection_must_initialize_again(
+    tmp_path: Path,
+) -> None:
+    """The pattern a per-call Electron client used: initialize, hang up, retry."""
+    _, server, first = wired(tmp_path)
+    try:
+        first.call("initialize", {"client": "electron"})
+        first.close()
+        second = LocalClient(server.path)
+        try:
+            with pytest.raises(TransportError, match="initialize first"):
+                second.call("snapshot")
+            hello = second.call("initialize", {"client": "electron"})
+            assert hello["actor_kind"] == "agent"
+            assert second.call("snapshot")["state"]["tts_enabled"] is True
+        finally:
+            second.close()
+    finally:
+        server.stop()
+
+
+def test_initialize_cannot_be_replayed_to_change_actor(tmp_path: Path) -> None:
+    _, server, client = wired(tmp_path)
+    try:
+        first = client.call("initialize", {"client": "electron"})
+        with pytest.raises(TransportError, match="already initialized"):
+            client.call("initialize", {"client": "mcp"})
+        assert client.call("snapshot")["state"]["tts_enabled"] is True
+        assert first["actor_id"].startswith("electron-")
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_socket_message_send_is_inapplicable_even_when_labelled_electron(
+    tmp_path: Path,
+) -> None:
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        outcome = client.call(
+            "dispatch", {"action": "message.send", "payload": {"text": "hi"}}
+        )
+        assert outcome["type"] == "rejected"
+        assert outcome["reason"] == "inapplicable"
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_a_frame_without_a_newline_is_capped(tmp_path: Path) -> None:
+    _, server, _client = wired(tmp_path)
+    raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        raw.connect(str(server.path))
+        raw.sendall(b"x" * (MAX_FRAME + 1))
+        assert raw.recv(4096) == b""
+    finally:
+        raw.close()
+        _client.close()
         server.stop()
 
 
@@ -419,13 +483,14 @@ def test_peer_credentials_match_this_process() -> None:
         right.close()
 
 
-def test_mcp_actor_is_an_agent_and_electron_is_human() -> None:
+def test_socket_client_labels_do_not_mint_a_human_actor() -> None:
     peer = Peer(pid=1, uid=7, gid=7)
 
     assert actor_for_client("mcp", peer).kind.value == "agent"
-    assert actor_for_client("electron", peer).kind.value == "human"
+    assert actor_for_client("electron", peer).kind.value == "agent"
     assert actor_for_client("electron", peer).id == "electron-7"
     assert actor_for_client("local", peer).id == "local-7"
+    assert actor_for_client("  ", peer).id == "local-7"
 
 
 def test_event_pump_applies_tts_fragments() -> None:
