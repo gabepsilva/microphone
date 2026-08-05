@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from tagalong.control.actions import (
@@ -201,3 +203,15 @@ def test_a_capability_pairs_a_static_action_with_this_actor_s_authority() -> Non
 
     assert entry.action.id == "message.send"
     assert entry.allowed is False
+
+
+def test_a_validated_payload_is_a_canonical_description_not_a_view() -> None:
+    """What a retry has to match cannot be something the caller still owns."""
+    images = ["img-a"]
+
+    checked = action("message.send").validate({"text": "hi", "images": images})
+    images[0] = "img-b"
+
+    assert checked == {"text": "hi", "images": ("img-a",), "respond": True}
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        cast(dict, checked)["text"] = "bye"

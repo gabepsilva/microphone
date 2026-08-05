@@ -27,6 +27,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 
 from ..domain import POLICY_NAMES
 from ..speech import PROVIDERS
@@ -171,12 +172,20 @@ class ActionSpec:
     scope: Scope
     parameters: tuple[Parameter, ...] = ()
 
-    def validate(self, payload: Mapping[str, object]) -> dict[str, object]:
+    def validate(self, payload: Mapping[str, object]) -> Mapping[str, object]:
         """Return the normalized payload for this action, or raise.
 
         Unknown keys are refused rather than dropped. A caller that misspells
         ``respond`` means something by it, and silently sending the message
         with the default is the outcome hardest to notice.
+
+        What comes back is read-only and holds only immutable values — a list
+        of attachment ids arrives as a tuple, a whole number of seconds as a
+        float, an omitted optional as its default. It is therefore a canonical
+        description of the request rather than a view of what the caller still
+        owns: two spellings of the same request normalize to the same payload,
+        and a caller that goes on editing its own dict cannot change what the
+        session understood it to have asked for.
         """
         known = {parameter.name for parameter in self.parameters}
         unexpected = sorted(set(payload) - known)
@@ -194,7 +203,7 @@ class ActionSpec:
                 checked[parameter.name] = parameter.check(payload[parameter.name])
             except InvalidPayload as error:
                 raise InvalidPayload(f"{self.id}: {error}") from error
-        return checked
+        return MappingProxyType(checked)
 
 
 # A device or application is chosen from a catalog the session refreshes while

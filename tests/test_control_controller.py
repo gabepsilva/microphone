@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -88,9 +90,15 @@ def never_called(_request, _state):
     raise AssertionError("the handler ran for a request that should not reach it")
 
 
+def sending(request, state):
+    """A message, whose effective value is the attachments it went out with."""
+    return Effect.applied(state, request.payload["images"])
+
+
 def wired() -> Controller:
     """A controller with the handlers these tests dispatch against."""
     controller = Controller()
+    controller.register("message.send", sending)
     controller.register("microphone.select", selecting("microphone"))
     controller.register("audio_stream.select", selecting("audio_stream"))
     controller.register("turn_silence.set", setting_turn_silence)
@@ -943,3 +951,75 @@ def test_the_controller_stamps_its_events_from_the_clock_it_was_given() -> None:
     controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
 
     assert [event.at for event in subscription.drain()] == [STAMP, STAMP]
+
+
+def test_a_key_is_bound_to_the_request_the_session_understood() -> None:
+    """A caller that keeps editing its own list must not rewrite what it asked."""
+    controller = wired()
+    images = ["img-a"]
+
+    first = controller.dispatch(
+        "message.send",
+        {"text": "hi", "images": images},
+        actor=OWNER,
+        idempotency_key="k1",
+    )
+    images[0] = "img-b"
+    retried = controller.dispatch(
+        "message.send",
+        {"text": "hi", "images": ["img-a"]},
+        actor=OWNER,
+        idempotency_key="k1",
+    )
+
+    assert first == retried == Applied("req-1", ("img-a",))
+
+
+def test_two_spellings_of_one_request_are_one_request() -> None:
+    """The key matches the validated payload, not the container it arrived in."""
+    controller = wired()
+    controller.dispatch(
+        "message.send",
+        {"text": "hi", "images": ["img-a"]},
+        actor=OWNER,
+        idempotency_key="k1",
+    )
+
+    retried = controller.dispatch(
+        "message.send",
+        {"text": "hi", "images": ("img-a",), "respond": True},
+        actor=OWNER,
+        idempotency_key="k1",
+    )
+
+    assert retried == Applied("req-1", ("img-a",))
+
+
+def test_a_key_used_on_a_refused_payload_is_free_for_the_corrected_retry() -> None:
+    """Nothing ran, so nothing is bound; the caller fixes it and sends again."""
+    controller = wired()
+    refused = controller.dispatch(
+        "message.send", {"text": 3}, actor=OWNER, idempotency_key="k1"
+    )
+
+    corrected = controller.dispatch(
+        "message.send", {"text": "hi"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert isinstance(refused, Rejected)
+    assert corrected == Applied("req-2", ())
+
+
+def test_a_handler_cannot_edit_the_payload_it_was_given() -> None:
+    controller = Controller()
+    payloads: list[Mapping[str, object]] = []
+
+    def recording(request, state):
+        payloads.append(request.payload)
+        return Effect.applied(state, None)
+
+    controller.register("tts.set_enabled", recording)
+    controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
+
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        cast(dict, payloads[0])["enabled"] = True

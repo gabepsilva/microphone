@@ -39,6 +39,29 @@ DEFAULT_CAPACITY = 512
 _NOTHING: Mapping[str, object] = MappingProxyType({})
 
 
+def frozen(value: object) -> object:
+    """Return *value* with every container in it replaced by a read-only one.
+
+    Deep rather than shallow because the demonstrated corruption is one level
+    down: a read-only mapping still hands out the list inside it, and a client
+    that appends to that list has edited what every other subscriber is about
+    to read. Values that are not containers are returned as they are — see
+    :class:`Event` for why that is the boundary.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: frozen(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(frozen(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(frozen(item) for item in value)
+    return value
+
+
+def frozen_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
+    """Freeze a whole payload, so publication owns a copy nobody else can edit."""
+    return MappingProxyType({key: frozen(value) for key, value in payload.items()})
+
+
 def utc_now() -> datetime:
     """The wall clock the log stamps with, aware so a transcript can be read."""
     return datetime.now(UTC)
@@ -52,11 +75,17 @@ class Event:
     operator reads. Both are needed — a number says how much was missed and
     nothing about when, and a clock can repeat or run backwards.
 
-    One event object is delivered to every subscriber, so its payload is a
-    read-only mapping: a client that drained it cannot rewrite history queued
-    for the others. Values must themselves be immutable — state fragments are
-    frozen dataclasses, and identifiers, numbers, and tuples are values — since
-    a read-only mapping only protects the top level.
+    One event object is delivered to every subscriber, so its payload is
+    frozen on publication, all the way down: a client that drained it cannot
+    rewrite history queued for the others. Lists become tuples, sets become
+    frozensets, and nested mappings become read-only, so the containers a
+    payload is built from cannot be edited in place by whoever drained it
+    first.
+
+    What that cannot reach is a mutable object of some other type. Publishing
+    one is a mistake this module can neither detect nor undo, so payload values
+    are the values the session already deals in — strings, numbers, byte
+    strings, and frozen dataclasses like the state fragments.
     """
 
     sequence: int
@@ -149,12 +178,12 @@ class EventLog:
     def publish(self, name: str, payload: Mapping[str, object] | None = None) -> Event:
         """Number an event and hand it to every open subscriber."""
         self._sequence += 1
-        # Copied, then made read-only: the caller keeps its own dict, and no
-        # consumer can reach into what every other consumer is holding.
+        # Copied, then frozen: the caller keeps its own dict, and no consumer
+        # can reach into what every other consumer is holding.
         event = Event(
             self._sequence,
             name,
-            MappingProxyType(dict(payload or {})),
+            frozen_payload(payload or {}),
             self._clock(),
         )
         # Closed subscriptions are swept here rather than on close, so a client

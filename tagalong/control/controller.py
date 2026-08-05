@@ -257,6 +257,13 @@ class Controller:
         used for — reusing it for something else is refused rather than
         answered with an outcome that belongs to a different operation.
 
+        The key is bound to the *validated* request, not to what arrived: a
+        list of attachment ids and the same ids as a tuple are one request, and
+        a caller that goes on editing the dict it passed cannot make the
+        session believe it asked for something else. A key is only bound once
+        the request is one the session would run, so a payload that was refused
+        leaves the key free for the corrected retry.
+
         What comes back is the request's latest outcome, not a frozen copy of
         the first answer: a keyed selection that has since applied or been
         superseded says so. A client that retries after a disconnect therefore
@@ -264,34 +271,23 @@ class Controller:
         published before the client resubscribed.
         """
         with self._lock:
-            sent = dict(payload or {})
-            slot = None if idempotency_key is None else (actor.id, idempotency_key)
-            if slot is not None:
-                answered = self._answered.get(slot)
-                if answered is not None:
-                    return self._replay(answered, slot, action_id, sent, actor)
-            outcome = self._dispatch(action_id, sent, actor)
-            if slot is not None:
-                self._remember(slot, _Answer(action_id, sent, outcome))
-            return outcome
+            return self._dispatch(
+                action_id, payload or {}, actor, idempotency_key=idempotency_key
+            )
 
-    def _replay(
-        self,
-        answered: _Answer,
-        slot: tuple[str, str],
-        action_id: str,
-        payload: Mapping[str, object],
-        actor: Actor,
-    ) -> Outcome:
+    def _replay(self, answered: _Answer, request: Request, key: str) -> Outcome:
         """Answer a repeated key, or refuse it if it now means something else."""
-        if (answered.action_id, answered.payload) == (action_id, payload):
+        if (answered.action_id, answered.payload) == (
+            request.action.id,
+            request.payload,
+        ):
             return answered.outcome
         return self._reject(
-            self._next_id(),
-            action_id,
-            actor,
+            request.id,
+            request.action.id,
+            request.actor,
             Rejection.INVALID,
-            f"idempotency key {slot[1]!r} was already used for "
+            f"idempotency key {key!r} was already used for "
             f"{answered.action_id} with a different payload",
         )
 
@@ -326,7 +322,12 @@ class Controller:
         return f"req-{self._counter}"
 
     def _dispatch(
-        self, action_id: str, payload: Mapping[str, object], actor: Actor
+        self,
+        action_id: str,
+        payload: Mapping[str, object],
+        actor: Actor,
+        *,
+        idempotency_key: str | None,
     ) -> Outcome:
         request_id = self._next_id()
 
@@ -354,6 +355,15 @@ class Controller:
                 request_id, action_id, actor, Rejection.INVALID, str(error)
             )
 
+        # Only now is the request canonical enough to answer for a key: what a
+        # retry has to match is the request as the session understood it.
+        request = Request(request_id, action, checked, actor)
+        slot = None if idempotency_key is None else (actor.id, idempotency_key)
+        if slot is not None:
+            answered = self._answered.get(slot)
+            if answered is not None:
+                return self._replay(answered, request, slot[1])
+
         handler = self._handlers.get(action_id)
         if handler is None:
             return self._reject(
@@ -364,7 +374,14 @@ class Controller:
                 f"{action_id} is not available in this session",
             )
 
-        request = Request(request_id, action, checked, actor)
+        outcome = self._run(request, handler)
+        if slot is not None:
+            self._remember(slot, _Answer(action_id, checked, outcome))
+        return outcome
+
+    def _run(self, request: Request, handler: Handler) -> Outcome:
+        """Run the handler for a request that is valid, allowed, and wired."""
+        request_id, action_id, actor = request.id, request.action.id, request.actor
         try:
             effect = handler(request, self._state)
         except Inapplicable as error:

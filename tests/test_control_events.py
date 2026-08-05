@@ -6,7 +6,13 @@ from typing import cast
 
 import pytest
 
-from tagalong.control.events import Event, EventLog, Subscription, utc_now
+from tagalong.control.events import (
+    Event,
+    EventLog,
+    Subscription,
+    frozen,
+    utc_now,
+)
 
 STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
@@ -137,6 +143,33 @@ def test_a_closed_subscriber_stops_costing_the_publisher() -> None:
 
     assert len(staying.drain()) == 2
     assert log.subscribers == 1
+
+
+def test_a_container_inside_a_payload_is_frozen_too() -> None:
+    """A read-only mapping still hands out the list inside it."""
+    log = EventLog()
+    mine, theirs = log.subscribe(), log.subscribe()
+
+    log.publish("example", {"items": ["kept"], "nested": {"inner": ["kept"]}})
+
+    (event,) = mine.drain()
+    assert event.payload["items"] == ("kept",)
+    with pytest.raises(AttributeError, match="append"):
+        cast(list, event.payload["items"]).append("corrupted")
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        cast(dict, event.payload["nested"])["inner"] = "corrupted"
+
+    (theirs_event,) = theirs.drain()
+    assert theirs_event.payload["nested"] == {"inner": ("kept",)}
+
+
+def test_freezing_leaves_the_values_a_payload_is_made_of_alone() -> None:
+    """Strings, numbers, and frozen dataclasses are values; only holders change."""
+    assert frozen("Yeti") == "Yeti"
+    assert frozen(3.0) == 3.0
+    assert frozen(None) is None
+    assert frozen({"a", "b"}) == frozenset({"a", "b"})
+    assert frozen(("kept",)) == ("kept",)
 
 
 def test_publishing_reports_the_event_it_numbered() -> None:

@@ -50,7 +50,7 @@ all three execute exactly the same parsing behavior.
 
 tagalong/control/ joined on 2026-08-05, the whole package at once: it is pure
 logic with no device, process, or network boundary, so there is no adapter in
-it to make a survivor untestable. It took the run from 861 to 1,578 mutants
+it to make a survivor untestable. It took the run from 861 to 1,586 mutants
 and leaves two:
 
   * ``popitem(last=False)`` becomes ``popitem(last=None)``. Both are falsy, so
