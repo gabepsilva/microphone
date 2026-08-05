@@ -31,6 +31,7 @@ FLOORS = {
     # The gates themselves. tests/test_quality_gates.py plants a violation for
     # each and asserts it is caught, because a gate that matches nothing still
     # reports green.
+    "tools/boundary_gate.py": 98.0,
     "tools/context_budget.py": 93.0,
     "tools/coverage_gate.py": 75.0,
     "tools/mutation_gate.py": 78.0,

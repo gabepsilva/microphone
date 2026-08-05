@@ -37,6 +37,7 @@ bypassable. CI decides.
 | Shell syntax | `make shellcheck` | Parse the privileged setup script before it is run. |
 | Workflow integrity | `make workflows` | Validate GitHub Actions syntax and expressions. |
 | Worker threads | `make worker-threads` | Every background thread is a daemon and every join on one is bounded. |
+| Module boundaries | `make boundaries` | Textual stays in `tui.py`, core modules reach neither the interface nor an adapter, and nothing imports in a cycle. |
 | Threshold ratchet | `make ratchet` | Blocks a lowered floor, a narrowed mutation scope, or a deleted rule. |
 | Static policy/SAST | `make semgrep` | Blocks committed rules for dangerous APIs and project security policy. |
 | Static security | `make security-static` | Blocks Bandit medium/high findings and known dependency vulnerabilities. |
@@ -75,6 +76,14 @@ and prints what to do when it fails. This is the map, not the manual.
   all four shared a file, so whoever wrote the next one could see the other
   three. Splitting `cli.py` removed that, and the failure it prevents — a
   process that will not exit — raises nothing and loses no coverage.
+- **Module boundaries** (`tools/boundary_gate.py`) keep the interface, the
+  runtime, and the adapters pointing one way. This one has already been paid
+  for: `Entry` was a plain dataclass that lived in `tui.py`, so `recording`
+  took `entry: Any` and reached through `getattr` rather than import Textual to
+  write a text file. Nothing failed — no test, no coverage, no type error —
+  because a duck-typed dependency is invisible to every tool. The gate cannot
+  see that shape either; what it does is keep the honest way open, by failing
+  the import that would otherwise be the tempting alternative.
 - **Context budget** (`tools/context_budget.py`) caps `AGENTS.md`, the only
   file loaded on every task. Everything else here ratchets upward; instructions
   are the one thing that must not. The cap is raisable, but only against a
@@ -173,8 +182,12 @@ expression, not to the repository owner.
 ## Tooling boundaries
 
 Do not add tools simply because they exist. Hardware-in-the-loop tests belong
-only once a controlled test device or emulator exists. Add architecture-import
-rules once the project has stable package boundaries.
+only once a controlled test device or emulator exists.
+
+Architecture-import rules were held back until the package boundaries were
+stable enough to name, and are now in `tools/boundary_gate.py`. They went in
+green: every rule it enforces was already true, so it is a ratchet rather than
+a list of work nobody is going to do.
 
 Docstring linting (ruff `D`) was evaluated and rejected. It checks that a
 docstring exists, never that it is true, so the cheapest way to satisfy it is

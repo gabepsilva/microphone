@@ -17,7 +17,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads boundaries ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -79,6 +79,9 @@ context-budget:
 worker-threads:
 	uv run python tools/worker_gate.py
 
+boundaries:
+	uv run python tools/boundary_gate.py
+
 ratchet:
 	uv run python tools/ratchet_gate.py $(RATCHET_BASE)
 
@@ -91,7 +94,7 @@ workflows:
 
 security: security-static secrets
 
-verify: format-check lint types test-coverage test-integrity context-budget worker-threads mutation ratchet shellcheck workflows
+verify: format-check lint types test-coverage test-integrity context-budget worker-threads boundaries mutation ratchet shellcheck workflows
 
 ci: verify security
 

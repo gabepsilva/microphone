@@ -843,3 +843,139 @@ def test_mutmut_runs_the_reset_contract() -> None:
     selected = config["tool"]["mutmut"]["pytest_add_cli_args_test_selection"]
 
     assert "tests/test_new_session.py" in selected
+
+
+# --------------------------------------------------------------------------
+# tools/boundary_gate.py
+# --------------------------------------------------------------------------
+
+
+def _package_of(tmp_path, modules: dict[str, str]) -> Path:
+    package = tmp_path / "tagalong"
+    package.mkdir()
+    for name, source in modules.items():
+        (package / f"{name}.py").write_text(source, encoding="utf-8")
+    return package
+
+
+def _boundary_failures(tmp_path, modules: dict[str, str]) -> list[str]:
+    gate = _load_gate("boundary_gate")
+    package = _package_of(tmp_path, modules)
+    return gate.check_package(sorted(package.glob("*.py")))
+
+
+def test_boundary_gate_rejects_textual_outside_the_interface(tmp_path) -> None:
+    failures = _boundary_failures(
+        tmp_path, {"recording": "from textual.widgets import Static\n"}
+    )
+
+    assert any("only tui.py" in failure for failure in failures)
+
+
+def test_boundary_gate_allows_the_interface_its_own_library(tmp_path) -> None:
+    failures = _boundary_failures(
+        tmp_path, {"tui": "from textual.widgets import Static\n"}
+    )
+
+    assert failures == []
+
+
+def test_boundary_gate_rejects_a_core_module_importing_the_interface(
+    tmp_path,
+) -> None:
+    failures = _boundary_failures(tmp_path, {"recording": "from .tui import Entry\n"})
+
+    assert any("core module recording imports tui" in failure for failure in failures)
+
+
+def test_boundary_gate_rejects_a_core_module_importing_an_adapter(tmp_path) -> None:
+    failures = _boundary_failures(tmp_path, {"codex": "from .tts import Edge\n"})
+
+    assert any("tts adapter" in failure for failure in failures)
+
+
+def test_boundary_gate_reads_an_import_deferred_into_a_function(tmp_path) -> None:
+    """Deferring an import delays a load; it does not undo the dependency."""
+    source = (
+        "def build():\n    from .tui import SessionState\n\n    return SessionState\n"
+    )
+    failures = _boundary_failures(tmp_path, {"listener": source})
+
+    assert any("core module listener imports tui" in failure for failure in failures)
+
+
+def test_boundary_gate_reads_an_absolute_import_of_a_sibling(tmp_path) -> None:
+    """``from tagalong.tui import x`` is the same edge as ``from .tui``."""
+    failures = _boundary_failures(
+        tmp_path, {"listener": "from tagalong.tui import SessionState\n"}
+    )
+
+    assert any("core module listener imports tui" in failure for failure in failures)
+
+
+def test_boundary_gate_reads_a_plain_import_of_a_sibling(tmp_path) -> None:
+    """``import tagalong.tui`` names the same edge as either from-import."""
+    failures = _boundary_failures(tmp_path, {"listener": "import tagalong.tui\n"})
+
+    assert any("core module listener imports tui" in failure for failure in failures)
+
+
+def test_boundary_gate_lets_the_composition_root_know_both_sides(tmp_path) -> None:
+    """Wiring the interface to the runtime is the only job cli.py has."""
+    failures = _boundary_failures(
+        tmp_path, {"cli": "from .tui import VoiceCodexTUI\nfrom .tts import Edge\n"}
+    )
+
+    assert failures == []
+
+
+def test_boundary_gate_rejects_an_import_cycle(tmp_path) -> None:
+    failures = _boundary_failures(
+        tmp_path,
+        {
+            "domain": "from .presentation import Entry\n",
+            "presentation": "from .domain import Turn\n",
+        },
+    )
+
+    assert any(failure.startswith("import cycle:") for failure in failures)
+
+
+def test_boundary_gate_fails_when_it_scans_a_package_that_is_not_there(
+    tmp_path, monkeypatch
+) -> None:
+    """Scanning nothing must not be reported as a clean run."""
+    gate = _load_gate("boundary_gate")
+    monkeypatch.setattr(gate, "PACKAGE", tmp_path / "tagalong")
+    monkeypatch.chdir(tmp_path)
+
+    assert gate.main() == 1
+
+
+def test_boundary_gate_refuses_a_module_it_has_no_side_for(
+    tmp_path, monkeypatch
+) -> None:
+    """A new module is a boundary decision, and making it is the point."""
+    gate = _load_gate("boundary_gate")
+    package = _package_of(tmp_path, {"telemetry": "value = 1\n"})
+    monkeypatch.setattr(gate, "PACKAGE", package)
+
+    assert gate.main() == 1
+
+
+def test_boundary_gate_reports_a_planted_violation_through_main(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("boundary_gate")
+    package = _package_of(tmp_path, {"recording": "from .tui import Entry\n"})
+    monkeypatch.setattr(gate, "PACKAGE", package)
+
+    assert gate.main() == 1
+
+
+def test_boundary_gate_passes_on_this_repository(monkeypatch) -> None:
+    """The shape it enforces is the one the package already has."""
+    gate = _load_gate("boundary_gate")
+    monkeypatch.chdir(ROOT)
+
+    assert gate.main() == 0
