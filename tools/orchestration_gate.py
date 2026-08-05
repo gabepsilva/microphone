@@ -6,6 +6,8 @@ the workflow faster, but it also creates a silent failure mode: removing a
 target from a Make group, omitting a group from the workflow, or forgetting a
 lane in the protected aggregator all make CI greener. This gate treats those
 three lists as one contract and rejects drift in the permissive direction.
+It also forbids ``continue-on-error`` at job or step scope in every required
+lane and in the protected aggregator, regardless of the key's value.
 
 The parser is deliberately narrow. These files are repository-owned policy,
 not arbitrary Make or YAML, and accepting an unfamiliar spelling by guessing
@@ -101,6 +103,12 @@ def _aggregator_needs(job: str) -> set[str] | None:
     return {value.strip() for value in match.group(1).split(",") if value.strip()}
 
 
+def _declares_continue_on_error(job: str) -> bool:
+    return bool(
+        re.search(r"^\s+['\"]?continue-on-error['\"]?\s*:", job, flags=re.MULTILINE)
+    )
+
+
 def _check_makefile(source: str, failures: list[str]) -> None:
     for group_target, variable in GROUPS.items():
         actual = _make_words(source, variable)
@@ -135,6 +143,11 @@ def _check_makefile(source: str, failures: list[str]) -> None:
 
 
 def _check_aggregator(job: str, lane_jobs: set[str], failures: list[str]) -> None:
+    if _declares_continue_on_error(job):
+        failures.append(
+            f"{HOSTED_WORKFLOW}: {AGGREGATOR_JOB} must not declare continue-on-error."
+        )
+
     name = re.search(r"^\s+name:\s*(.+?)\s*$", job, re.MULTILINE)
     if name is None or name.group(1) != AGGREGATOR_NAME:
         failures.append(
@@ -179,9 +192,10 @@ def _check_workflow(source: str, failures: list[str]) -> None:
         group = _invoked_group(job)
         if group is not None:
             lanes_by_group[group].append(job_id)
-            if re.search(r"^\s+continue-on-error:\s*true\s*$", job, flags=re.MULTILINE):
+            if _declares_continue_on_error(job):
                 failures.append(
-                    f"{HOSTED_WORKFLOW}: lane {job_id} must not continue on error."
+                    f"{HOSTED_WORKFLOW}: lane {job_id} must not declare "
+                    "continue-on-error."
                 )
 
     for group, lane_jobs in lanes_by_group.items():

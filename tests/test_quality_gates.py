@@ -334,11 +334,29 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             ("workflow", "  quality-gate:\n", "  quality-summary:\n"),
         ),
         (
-            "quality lane allowed to continue after a failure",
+            "quality lane with expression-valued continue-on-error",
             (
                 "workflow",
                 "  mutation:\n",
-                "  mutation:\n    continue-on-error: true\n",
+                "  mutation:\n    continue-on-error: ${{ true }}\n",
+            ),
+        ),
+        (
+            "quality lane step declaring continue-on-error",
+            (
+                "workflow",
+                "      - name: Run mutation gate\n        run: make verify-mutation",
+                "      - name: Run mutation gate\n"
+                "        continue-on-error: false\n"
+                "        run: make verify-mutation",
+            ),
+        ),
+        (
+            "protected aggregator declaring continue-on-error",
+            (
+                "workflow",
+                "  quality-gate:\n",
+                "  quality-gate:\n    continue-on-error: true\n",
             ),
         ),
     ],
