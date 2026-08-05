@@ -147,7 +147,7 @@ skip_empty = true
 # tagalong/control/ joined on 2026-08-05 as a package rather than one module
 # at a time: it has no audio, process, or network boundary anywhere in it, so
 # the usual reason for staging a join — an adapter whose survivors cannot be
-# killed — does not apply. It took the run from 861 mutants to 1,459 and left
+# killed — does not apply. It took the run from 861 mutants to 1,578 and left
 # two survivors, both recorded in tools/mutation_gate.py.
 source_paths = [
     "tagalong/domain.py",

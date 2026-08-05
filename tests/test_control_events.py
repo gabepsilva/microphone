@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
+from typing import cast
 
-from tagalong.control.events import Event, EventLog, Subscription
+import pytest
+
+from tagalong.control.events import Event, EventLog, Subscription, utc_now
+
+STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
 
 def names(events: tuple[Event, ...]) -> list[str]:
@@ -134,11 +140,54 @@ def test_a_closed_subscriber_stops_costing_the_publisher() -> None:
 
 
 def test_publishing_reports_the_event_it_numbered() -> None:
-    log = EventLog()
+    log = EventLog(clock=lambda: STAMP)
 
     event = log.publish("state.changed", {"tts_enabled": True})
 
-    assert event == Event(1, "state.changed", {"tts_enabled": True})
+    assert event == Event(1, "state.changed", {"tts_enabled": True}, STAMP)
+
+
+def test_an_event_says_when_it_happened_as_well_as_in_what_order() -> None:
+    """A sequence number says how much was missed and nothing about when."""
+    log = EventLog(clock=lambda: STAMP)
+    subscription = log.subscribe()
+
+    log.publish("action.applied")
+
+    (event,) = subscription.drain()
+    assert event.at == STAMP
+    assert event.at.tzinfo is UTC
+
+
+def test_the_clock_is_read_at_the_moment_of_publication() -> None:
+    ticks = iter([STAMP, STAMP.replace(second=30)])
+    log = EventLog(clock=lambda: next(ticks))
+    subscription = log.subscribe()
+
+    log.publish("state.changed")
+    log.publish("action.applied")
+
+    assert [event.at.second for event in subscription.drain()] == [0, 30]
+
+
+def test_one_client_cannot_rewrite_what_another_has_queued() -> None:
+    """One event object reaches every subscriber, so its payload is read-only."""
+    log = EventLog()
+    mine, theirs = log.subscribe(), log.subscribe()
+    log.publish("state.changed", {"tts_enabled": True})
+
+    # Cast because that is the mistake being guarded against: a client that
+    # believes it holds a plain dict and writes to it.
+    (event,) = mine.drain()
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        cast(dict, event.payload)["tts_enabled"] = "corrupted"
+
+    assert theirs.drain()[0].payload == {"tts_enabled": True}
+
+
+def test_the_default_clock_is_an_aware_utc_reading() -> None:
+    """A naive stamp read back later cannot be placed against anything else."""
+    assert utc_now().tzinfo is UTC
 
 
 def test_an_event_payload_is_a_copy_of_what_was_published() -> None:

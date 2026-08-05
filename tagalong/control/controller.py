@@ -26,6 +26,14 @@ keystroke — so a pending request for an action is superseded by the next, and
 a superseded request never applies its result. This is what stops a slow
 device that finally opened from overwriting the choice made after it, and what
 keeps a failed or overtaken request from being persisted as though it ran.
+Losing the slot is the end of that request: it is retired there and then, and
+only its id is kept, because the reconcilers this serves coalesce and an
+overtaken request is exactly the one that may never call back.
+
+**Every attempt is on the record.** Each lifecycle event names the actor whose
+connection authenticated it and the moment it happened, refusals included. A
+record of successes only cannot show an agent being turned away, which is the
+question an operator asks first.
 """
 
 from __future__ import annotations
@@ -33,7 +41,8 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 
 from .actions import (
     CATALOG,
@@ -43,7 +52,7 @@ from .actions import (
     InvalidPayload,
 )
 from .actors import Actor
-from .events import DEFAULT_CAPACITY, EventLog, Subscription
+from .events import DEFAULT_CAPACITY, EventLog, Subscription, utc_now
 from .outcomes import (
     Accepted,
     Applied,
@@ -90,12 +99,27 @@ class Snapshot:
 
 
 @dataclass(frozen=True)
-class _Pending:
-    """A request a reconciler still owes an answer for."""
+class _Answer:
+    """What an idempotency key was used for, and where that request stands.
+
+    The action and payload are kept so a reused key can be recognised as the
+    same request rather than answered with an outcome belonging to a different
+    one. The outcome is replaced as the request progresses, so a retry after a
+    disconnect learns the terminal result rather than the acceptance forever.
+    """
 
     action_id: str
+    payload: Mapping[str, object]
+    outcome: Outcome
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A request a reconciler still owes an answer for, and who asked for it."""
+
+    action_id: str
+    actor_id: str
     settle: Callable[[AppState, object], AppState]
-    superseded: bool = False
 
 
 @dataclass
@@ -106,29 +130,45 @@ class _Requests:
     slots: dict[str, str] = field(default_factory=dict)
     superseded: OrderedDict[str, None] = field(default_factory=OrderedDict)
 
-    def start(self, request_id: str, pending: _Pending) -> str | None:
-        """Take the slot for this action, returning whoever held it before."""
-        displaced = self.slots.get(pending.action_id)
-        if displaced is not None:
-            self.pending[displaced] = _Pending(
-                pending.action_id, self.pending[displaced].settle, superseded=True
-            )
+    def start(self, request_id: str, pending: _Pending) -> tuple[str, _Pending] | None:
+        """Take the slot for this action, returning whoever held it before.
+
+        Losing the slot is terminal, so the displaced request is retired here
+        rather than left waiting for a callback. The reconcilers this serves
+        coalesce on purpose — a run of picker keystrokes is meant to cost one
+        device open — so an overtaken request is precisely the one that may
+        never be reported. Keeping it would hold its settle closure for the
+        rest of the session, once per keystroke.
+        """
+        displaced_id = self.slots.get(pending.action_id)
+        displaced = None
+        if displaced_id is not None:
+            displaced = (displaced_id, self.pending.pop(displaced_id))
+            self._remember_superseded(displaced_id)
         self.slots[pending.action_id] = request_id
         self.pending[request_id] = pending
         return displaced
 
     def finish(self, request_id: str) -> _Pending | None:
-        """Retire a request, freeing its slot when it still held one."""
+        """Retire a request and free the slot it held.
+
+        A pending request always holds its action's slot: taking the slot is
+        what makes it pending, and losing it retires it in ``start``. So there
+        is no case here of a pending request whose slot belongs to someone
+        else, and freeing it unconditionally is the invariant rather than an
+        assumption.
+        """
         pending = self.pending.pop(request_id, None)
         if pending is None:
             return None
-        if self.slots.get(pending.action_id) == request_id:
-            del self.slots[pending.action_id]
-        if pending.superseded:
-            self.superseded[request_id] = None
-            while len(self.superseded) > SUPERSEDED_MEMORY:
-                self.superseded.popitem(last=False)
+        del self.slots[pending.action_id]
         return pending
+
+    def _remember_superseded(self, request_id: str) -> None:
+        """Keep the id, not the request, so a late callback gets an answer."""
+        self.superseded[request_id] = None
+        while len(self.superseded) > SUPERSEDED_MEMORY:
+            self.superseded.popitem(last=False)
 
 
 class Controller:
@@ -140,15 +180,18 @@ class Controller:
         *,
         catalog: tuple[ActionSpec, ...] = CATALOG,
         capacity: int = DEFAULT_CAPACITY,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._lock = threading.Lock()
         self._state = AppState() if state is None else state
         self._catalog = catalog
         self._by_id = {action.id: action for action in catalog}
-        self._events = EventLog(capacity)
+        self._events = EventLog(capacity, clock)
         self._handlers: dict[str, Handler] = {}
         self._requests = _Requests()
-        self._answered: OrderedDict[tuple[str, str], Outcome] = OrderedDict()
+        self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
+        # Which key, if any, is waiting on a request that has not ended yet.
+        self._keyed: dict[str, tuple[str, str]] = {}
         self._counter = 0
 
     # -- wiring ---------------------------------------------------------
@@ -206,55 +249,117 @@ class Controller:
     ) -> Outcome:
         """Run one action for *actor* and answer with its outcome.
 
-        An ``idempotency_key`` makes a retry safe: the second call with a key
-        this actor already used returns the first call's outcome without
-        running anything. Keys are scoped to the actor, so two clients that
-        both count from one cannot answer each other's requests.
+        An ``idempotency_key`` makes a retry safe: repeating a key this actor
+        already used for the same request answers with what that request has
+        come to, without running anything again. Keys are scoped to the actor,
+        so two clients that both count from one cannot answer each other's
+        requests, and a key is bound to the action and payload it was first
+        used for — reusing it for something else is refused rather than
+        answered with an outcome that belongs to a different operation.
+
+        What comes back is the request's latest outcome, not a frozen copy of
+        the first answer: a keyed selection that has since applied or been
+        superseded says so. A client that retries after a disconnect therefore
+        learns the terminal result even though the event announcing it was
+        published before the client resubscribed.
         """
         with self._lock:
-            remembered = self._remembered(actor, idempotency_key)
-            if remembered is not None:
-                return remembered
-            outcome = self._dispatch(action_id, payload or {}, actor)
-            self._remember(actor, idempotency_key, outcome)
+            sent = dict(payload or {})
+            slot = None if idempotency_key is None else (actor.id, idempotency_key)
+            if slot is not None:
+                answered = self._answered.get(slot)
+                if answered is not None:
+                    return self._replay(answered, slot, action_id, sent, actor)
+            outcome = self._dispatch(action_id, sent, actor)
+            if slot is not None:
+                self._remember(slot, _Answer(action_id, sent, outcome))
             return outcome
 
-    def _remembered(self, actor: Actor, key: str | None) -> Outcome | None:
-        return None if key is None else self._answered.get((actor.id, key))
+    def _replay(
+        self,
+        answered: _Answer,
+        slot: tuple[str, str],
+        action_id: str,
+        payload: Mapping[str, object],
+        actor: Actor,
+    ) -> Outcome:
+        """Answer a repeated key, or refuse it if it now means something else."""
+        if (answered.action_id, answered.payload) == (action_id, payload):
+            return answered.outcome
+        return self._reject(
+            self._next_id(),
+            action_id,
+            actor,
+            Rejection.INVALID,
+            f"idempotency key {slot[1]!r} was already used for "
+            f"{answered.action_id} with a different payload",
+        )
 
-    def _remember(self, actor: Actor, key: str | None, outcome: Outcome) -> None:
-        if key is None:
-            return
-        self._answered[(actor.id, key)] = outcome
+    def _remember(self, slot: tuple[str, str], answer: _Answer) -> None:
+        """Record what this key was used for, and what it is still waiting on.
+
+        Only an accepted request is tracked in ``_keyed``: every other outcome
+        is already terminal, so there is nothing left to update it with. That
+        keeps the reverse index the size of the in-flight set — at most one
+        request per action — rather than growing with every key ever used.
+        """
+        self._answered[slot] = answer
+        if isinstance(answer.outcome, Accepted):
+            self._keyed[answer.outcome.request_id] = slot
         while len(self._answered) > IDEMPOTENCY_MEMORY:
             self._answered.popitem(last=False)
+
+    def _conclude(self, request_id: str, outcome: Outcome) -> Outcome:
+        """Record a terminal outcome against the key that asked for it, if any.
+
+        The key may have been evicted while its request was still in flight —
+        a long-running session can use a great many keys — so the entry has to
+        still be there, not merely have been there once.
+        """
+        slot = self._keyed.pop(request_id, None)
+        if slot is not None and slot in self._answered:
+            self._answered[slot] = replace(self._answered[slot], outcome=outcome)
+        return outcome
+
+    def _next_id(self) -> str:
+        self._counter += 1
+        return f"req-{self._counter}"
 
     def _dispatch(
         self, action_id: str, payload: Mapping[str, object], actor: Actor
     ) -> Outcome:
-        self._counter += 1
-        request_id = f"req-{self._counter}"
+        request_id = self._next_id()
 
         action = self._by_id.get(action_id)
         if action is None:
-            return Rejected(
-                request_id, Rejection.UNKNOWN_ACTION, f"no such action: {action_id}"
+            return self._reject(
+                request_id,
+                action_id,
+                actor,
+                Rejection.UNKNOWN_ACTION,
+                f"no such action: {action_id}",
             )
         if not actor.may(action):
-            return Rejected(
+            return self._reject(
                 request_id,
+                action_id,
+                actor,
                 Rejection.FORBIDDEN,
                 f"{actor.id} does not hold the {action.scope} scope",
             )
         try:
             checked = action.validate(payload)
         except InvalidPayload as error:
-            return Rejected(request_id, Rejection.INVALID, str(error))
+            return self._reject(
+                request_id, action_id, actor, Rejection.INVALID, str(error)
+            )
 
         handler = self._handlers.get(action_id)
         if handler is None:
-            return Rejected(
+            return self._reject(
                 request_id,
+                action_id,
+                actor,
                 Rejection.INAPPLICABLE,
                 f"{action_id} is not available in this session",
             )
@@ -263,22 +368,35 @@ class Controller:
         try:
             effect = handler(request, self._state)
         except Inapplicable as error:
-            return Rejected(request_id, Rejection.INAPPLICABLE, str(error))
+            return self._reject(
+                request_id, action_id, actor, Rejection.INAPPLICABLE, str(error)
+            )
         except EffectFailed as error:
-            self._publish_outcome("action.failed", request_id, action_id, str(error))
+            self._publish_outcome(
+                "action.failed", request_id, action_id, actor.id, str(error)
+            )
             return Failed(request_id, str(error))
 
         if effect.settle is None:
             self._commit(effect.state)
-            self._publish_applied(request_id, action_id, effect.effective)
+            self._publish_applied(request_id, action_id, actor.id, effect.effective)
             return Applied(request_id, effect.effective)
 
-        displaced = self._requests.start(request_id, _Pending(action_id, effect.settle))
+        displaced = self._requests.start(
+            request_id, _Pending(action_id, actor.id, effect.settle)
+        )
         self._commit(effect.state)
         if displaced is not None:
-            self._publish_outcome("action.superseded", displaced, action_id)
-        self._publish_outcome("action.accepted", request_id, action_id)
+            self._supersede(*displaced)
+        self._publish_outcome("action.accepted", request_id, action_id, actor.id)
         return Accepted(request_id)
+
+    def _supersede(self, request_id: str, pending: _Pending) -> None:
+        """Retire the request that just lost its slot, under its own actor."""
+        self._publish_outcome(
+            "action.superseded", request_id, pending.action_id, pending.actor_id
+        )
+        self._conclude(request_id, Superseded(request_id))
 
     # -- reconciler callbacks -------------------------------------------
 
@@ -295,11 +413,11 @@ class Controller:
             pending = self._requests.finish(request_id)
             if pending is None:
                 return self._unknown_request(request_id)
-            if pending.superseded:
-                return Superseded(request_id)
             self._commit(pending.settle(self._state, effective))
-            self._publish_applied(request_id, pending.action_id, effective)
-            return Applied(request_id, effective)
+            self._publish_applied(
+                request_id, pending.action_id, pending.actor_id, effective
+            )
+            return self._conclude(request_id, Applied(request_id, effective))
 
     def fail(self, request_id: str, detail: str) -> Outcome:
         """Report that an accepted request was attempted and did not succeed.
@@ -314,14 +432,18 @@ class Controller:
             pending = self._requests.finish(request_id)
             if pending is None:
                 return self._unknown_request(request_id)
-            if pending.superseded:
-                return Superseded(request_id)
             self._publish_outcome(
-                "action.failed", request_id, pending.action_id, detail
+                "action.failed", request_id, pending.action_id, pending.actor_id, detail
             )
-            return Failed(request_id, detail)
+            return self._conclude(request_id, Failed(request_id, detail))
 
     def _unknown_request(self, request_id: str) -> Outcome:
+        """Answer a reconciler about a request this controller no longer holds.
+
+        A request that lost its slot was retired the moment it lost it, so it
+        is recognised here rather than in ``pending``. Anything else is a
+        report about a request that was never accepted.
+        """
         if request_id in self._requests.superseded:
             return Superseded(request_id)
         return Rejected(
@@ -338,21 +460,64 @@ class Controller:
             self._events.publish("state.changed", changed)
 
     def _publish_outcome(
-        self, name: str, request_id: str, action_id: str, detail: str = ""
+        self,
+        name: str,
+        request_id: str,
+        action_id: str,
+        actor_id: str,
+        detail: str = "",
     ) -> None:
         """Announce an outcome after the state it describes is already visible.
 
         State first, then the lifecycle event: a client that reacts to
         ``action.applied`` by reading the snapshot it has been maintaining
         finds the change already there rather than one event too early.
+
+        Every lifecycle event names the actor whose request it belongs to, and
+        the event log stamps it. With the request id, that is the audit record:
+        who attempted what, when, and how it ended. The actor is the one the
+        connection authenticated — a payload never supplies it — and it is
+        carried through the pending lifecycle so a result reported minutes
+        later is still attributed to whoever asked for it.
         """
-        payload: dict[str, object] = {"request_id": request_id, "action": action_id}
+        payload: dict[str, object] = {
+            "request_id": request_id,
+            "action": action_id,
+            "actor": actor_id,
+        }
         if detail:
             payload["detail"] = detail
         self._events.publish(name, payload)
 
+    def _reject(
+        self,
+        request_id: str,
+        action_id: str,
+        actor: Actor,
+        reason: Rejection,
+        detail: str,
+    ) -> Rejected:
+        """Refuse a request, and record the attempt.
+
+        A refusal changes no state, so it publishes no ``state.changed``. It is
+        still published: an audit trail that omits what was turned away is
+        missing the half an operator needs, and an agent whose scopes are wrong
+        is invisible in a record of successes only.
+        """
+        self._events.publish(
+            "action.rejected",
+            {
+                "request_id": request_id,
+                "action": action_id,
+                "actor": actor.id,
+                "reason": reason,
+                "detail": detail,
+            },
+        )
+        return Rejected(request_id, reason, detail)
+
     def _publish_applied(
-        self, request_id: str, action_id: str, effective: object
+        self, request_id: str, action_id: str, actor_id: str, effective: object
     ) -> None:
         """Announce a finished effect, always carrying the effective value.
 
@@ -362,5 +527,10 @@ class Controller:
         """
         self._events.publish(
             "action.applied",
-            {"request_id": request_id, "action": action_id, "effective": effective},
+            {
+                "request_id": request_id,
+                "action": action_id,
+                "actor": actor_id,
+                "effective": effective,
+            },
         )

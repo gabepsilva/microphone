@@ -50,7 +50,8 @@ all three execute exactly the same parsing behavior.
 
 tagalong/control/ joined on 2026-08-05, the whole package at once: it is pure
 logic with no device, process, or network boundary, so there is no adapter in
-it to make a survivor untestable. It added 598 mutants and left two:
+it to make a survivor untestable. It took the run from 861 to 1,578 mutants
+and leaves two:
 
   * ``popitem(last=False)`` becomes ``popitem(last=None)``. Both are falsy, so
     both evict the oldest idempotency key.
@@ -58,8 +59,10 @@ it to make a survivor untestable. It added 598 mutants and left two:
     forever. A test that killed it would be a test that hangs, so it times out
     rather than dying, and a timeout counts against the score.
 
-The floor moved 94 -> 95 with that run (96.0% measured), which is the point of
-adding a module: the scope grows and the number it has to clear grows with it.
+The floor moved 94 -> 95 with that run, against 96.3% measured. It is not set
+at 96 because that timeout is the difference: a mutant that times out rather
+than dying is scored by how loaded the machine is, and a floor a busy CI run
+can trip is a floor people learn to rerun rather than believe.
 
 Do not chase the difference, and do not silence it with `# pragma: no mutate`
 either — an equivalent mutant is evidence the code is precise, not evidence a

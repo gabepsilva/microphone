@@ -27,21 +27,42 @@ from __future__ import annotations
 import threading
 import uuid
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from types import MappingProxyType
 
 # Room for a client that stops reading for a moment without losing anything,
 # and small enough that a client that stopped for good is not a memory leak.
 DEFAULT_CAPACITY = 512
 
+_NOTHING: Mapping[str, object] = MappingProxyType({})
+
+
+def utc_now() -> datetime:
+    """The wall clock the log stamps with, aware so a transcript can be read."""
+    return datetime.now(UTC)
+
 
 @dataclass(frozen=True)
 class Event:
-    """One thing that happened, numbered in the order it happened."""
+    """One thing that happened, numbered and stamped in the order it happened.
+
+    The sequence number is what a client resumes from; the timestamp is what an
+    operator reads. Both are needed — a number says how much was missed and
+    nothing about when, and a clock can repeat or run backwards.
+
+    One event object is delivered to every subscriber, so its payload is a
+    read-only mapping: a client that drained it cannot rewrite history queued
+    for the others. Values must themselves be immutable — state fragments are
+    frozen dataclasses, and identifiers, numbers, and tuples are values — since
+    a read-only mapping only protects the top level.
+    """
 
     sequence: int
     name: str
-    payload: Mapping[str, object] = field(default_factory=dict)
+    payload: Mapping[str, object] = _NOTHING
+    at: datetime = field(default_factory=utc_now)
 
 
 class Subscription:
@@ -104,9 +125,14 @@ class Subscription:
 class EventLog:
     """Numbers events and fans them out to the subscribers that are still open."""
 
-    def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
+    def __init__(
+        self,
+        capacity: int = DEFAULT_CAPACITY,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
         self.instance = uuid.uuid4().hex
         self.capacity = capacity
+        self._clock = clock
         self._sequence = 0
         self._subscribers: list[Subscription] = []
 
@@ -123,7 +149,14 @@ class EventLog:
     def publish(self, name: str, payload: Mapping[str, object] | None = None) -> Event:
         """Number an event and hand it to every open subscriber."""
         self._sequence += 1
-        event = Event(self._sequence, name, dict(payload or {}))
+        # Copied, then made read-only: the caller keeps its own dict, and no
+        # consumer can reach into what every other consumer is holding.
+        event = Event(
+            self._sequence,
+            name,
+            MappingProxyType(dict(payload or {})),
+            self._clock(),
+        )
         # Closed subscriptions are swept here rather than on close, so a client
         # that disconnects without closing costs one pass and not a leak.
         self._subscribers = [

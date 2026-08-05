@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
@@ -34,6 +35,7 @@ from tagalong.control.state import (
 from tagalong.domain import TurnSilence
 
 OWNER = local_user()
+STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
 
 def selecting(field: str):
@@ -209,14 +211,25 @@ def test_a_handler_may_refuse_a_valid_request_the_session_cannot_honour() -> Non
     assert controller.state == AppState()
 
 
-def test_a_refusal_changes_nothing_and_publishes_nothing() -> None:
-    """Nothing happened, so there is nothing for another client to render."""
+def test_a_refusal_changes_no_state_but_is_still_recorded() -> None:
+    """An audit trail of successes only cannot show an agent being turned away."""
     controller = wired()
     _, subscription = controller.subscribe()
 
     controller.dispatch("turn_silence.set", {"seconds": "soon"}, actor=OWNER)
 
-    assert events(subscription) == []
+    assert events(subscription) == [
+        (
+            "action.rejected",
+            {
+                "request_id": "req-1",
+                "action": "turn_silence.set",
+                "actor": "local",
+                "reason": Rejection.INVALID,
+                "detail": "turn_silence.set: seconds: expected a number",
+            },
+        )
+    ]
 
 
 def test_a_request_that_was_tried_and_broke_is_not_a_refusal() -> None:
@@ -234,6 +247,7 @@ def test_a_request_that_was_tried_and_broke_is_not_a_refusal() -> None:
             {
                 "request_id": "req-1",
                 "action": "tts.set_enabled",
+                "actor": "local",
                 "detail": "speech engine is gone",
             },
         )
@@ -283,7 +297,12 @@ def test_state_is_published_before_the_outcome_that_describes_it() -> None:
         ("state.changed", {"turn_silence": 30.0}),
         (
             "action.applied",
-            {"request_id": "req-1", "action": "turn_silence.set", "effective": 30.0},
+            {
+                "request_id": "req-1",
+                "action": "turn_silence.set",
+                "actor": "local",
+                "effective": 30.0,
+            },
         ),
     ]
 
@@ -322,7 +341,10 @@ def test_a_selection_is_accepted_before_the_device_is_open() -> None:
     assert controller.state.microphone == Selection(desired="Yeti", effective=None)
     assert events(subscription) == [
         ("state.changed", {"microphone": Selection("Yeti", None)}),
-        ("action.accepted", {"request_id": "req-1", "action": "microphone.select"}),
+        (
+            "action.accepted",
+            {"request_id": "req-1", "action": "microphone.select", "actor": "local"},
+        ),
     ]
 
 
@@ -342,6 +364,7 @@ def test_a_settled_selection_reports_what_the_device_became() -> None:
             {
                 "request_id": "req-1",
                 "action": "microphone.select",
+                "actor": "local",
                 "effective": "Yeti",
             },
         ),
@@ -378,6 +401,7 @@ def test_a_failed_selection_keeps_what_was_asked_for() -> None:
             {
                 "request_id": "req-1",
                 "action": "microphone.select",
+                "actor": "local",
                 "detail": "device is busy",
             },
         )
@@ -406,8 +430,14 @@ def test_the_superseded_request_is_named_when_it_loses_its_slot() -> None:
 
     assert events(subscription) == [
         ("state.changed", {"microphone": Selection("Webcam", None)}),
-        ("action.superseded", {"request_id": "req-1", "action": "microphone.select"}),
-        ("action.accepted", {"request_id": "req-2", "action": "microphone.select"}),
+        (
+            "action.superseded",
+            {"request_id": "req-1", "action": "microphone.select", "actor": "local"},
+        ),
+        (
+            "action.accepted",
+            {"request_id": "req-2", "action": "microphone.select", "actor": "local"},
+        ),
     ]
 
 
@@ -630,3 +660,286 @@ def test_only_recent_superseded_requests_are_remembered() -> None:
 
     assert isinstance(outcome, Rejected)
     assert outcome.reason is Rejection.INVALID
+
+
+# -- provenance ---------------------------------------------------------
+
+
+def test_every_lifecycle_event_names_the_actor_that_asked() -> None:
+    """Who attempted what, and when, is the record an operator reads."""
+    controller = wired()
+    bot = agent("notes-bot", set(Scope))
+    _, subscription = controller.subscribe()
+
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=bot)
+    controller.settle(accepted.request_id, "Yeti")
+
+    assert [(name, payload.get("actor")) for name, payload in events(subscription)] == [
+        ("state.changed", None),
+        ("action.accepted", "notes-bot"),
+        ("state.changed", None),
+        ("action.applied", "notes-bot"),
+    ]
+
+
+def test_a_result_reported_much_later_is_still_attributed_to_who_asked() -> None:
+    controller = wired()
+    bot = agent("notes-bot", set(Scope))
+    accepted = controller.dispatch("microphone.select", {"name": "Yeti"}, actor=bot)
+    controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
+    _, subscription = controller.subscribe()
+
+    controller.fail(accepted.request_id, "device is busy")
+
+    assert events(subscription) == [
+        (
+            "action.failed",
+            {
+                "request_id": "req-1",
+                "action": "microphone.select",
+                "actor": "notes-bot",
+                "detail": "device is busy",
+            },
+        )
+    ]
+
+
+def test_a_refusal_records_the_actor_that_was_turned_away() -> None:
+    controller = wired()
+    reader = agent("notes-bot", {Scope.TRANSCRIPT})
+    _, subscription = controller.subscribe()
+
+    controller.dispatch("microphone.select", {"name": "Yeti"}, actor=reader)
+
+    assert events(subscription) == [
+        (
+            "action.rejected",
+            {
+                "request_id": "req-1",
+                "action": "microphone.select",
+                "actor": "notes-bot",
+                "reason": Rejection.FORBIDDEN,
+                "detail": "notes-bot does not hold the audio scope",
+            },
+        )
+    ]
+
+
+# -- retries after a disconnect -----------------------------------------
+
+
+def test_a_key_reused_for_a_different_request_is_refused() -> None:
+    """Answering it would drop the second action and report the first result."""
+    controller = wired()
+    controller.dispatch(
+        "tts.set_enabled", {"enabled": False}, actor=OWNER, idempotency_key="k1"
+    )
+
+    outcome = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert isinstance(outcome, Rejected)
+    assert outcome.reason is Rejection.INVALID
+    assert "already used for tts.set_enabled" in outcome.detail
+    assert controller.state.microphone == Selection()
+
+
+def test_a_key_reused_for_the_same_request_with_a_new_value_is_refused() -> None:
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    outcome = controller.dispatch(
+        "microphone.select", {"name": "Webcam"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert isinstance(outcome, Rejected)
+    assert controller.state.microphone == Selection(desired="Yeti")
+
+
+def test_a_retry_learns_the_outcome_the_request_has_since_reached() -> None:
+    """The event announcing it may have been published before the reconnect."""
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    controller.settle("req-1", "Yeti")
+
+    retried = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert retried == Applied("req-1", "Yeti")
+
+
+def test_a_retry_of_a_request_that_was_overtaken_says_so() -> None:
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    controller.dispatch("microphone.select", {"name": "Webcam"}, actor=OWNER)
+
+    retried = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert retried == Superseded("req-1")
+
+
+def test_a_retry_of_a_request_that_failed_says_so() -> None:
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    controller.fail("req-1", "device is busy")
+
+    retried = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert retried == Failed("req-1", "device is busy")
+
+
+# -- bounded supersession -----------------------------------------------
+
+
+def test_an_overtaken_request_is_retired_the_moment_it_loses_its_slot() -> None:
+    """Selection reconcilers coalesce, so the overtaken one may never report."""
+    controller = wired()
+
+    for number in range(1000):
+        controller.dispatch(
+            "microphone.select", {"name": f"device-{number}"}, actor=OWNER
+        )
+
+    assert len(controller._requests.pending) == 1
+    assert len(controller._requests.superseded) == SUPERSEDED_MEMORY
+    assert controller.settle("req-999", "device-998") == Superseded("req-999")
+
+
+@pytest.mark.parametrize(
+    ("action_id", "payload", "reason", "detail"),
+    [
+        (
+            "microphone.explode",
+            {},
+            Rejection.UNKNOWN_ACTION,
+            "no such action: microphone.explode",
+        ),
+        (
+            "turn_silence.set",
+            {"seconds": "soon"},
+            Rejection.INVALID,
+            "turn_silence.set: seconds: expected a number",
+        ),
+        (
+            "session.new",
+            {},
+            Rejection.INAPPLICABLE,
+            "session.new is not available in this session",
+        ),
+        (
+            "audio_stream.select",
+            {"name": "Zoom"},
+            Rejection.INAPPLICABLE,
+            "no such application: Zoom",
+        ),
+    ],
+)
+def test_a_rejection_records_the_action_it_was_sent_to(
+    action_id, payload, reason, detail
+) -> None:
+    """The audit record has to say what was attempted, not only that it failed."""
+    controller = wired()
+    controller.register("audio_stream.select", refusing("no such application: Zoom"))
+    _, subscription = controller.subscribe()
+
+    outcome = controller.dispatch(action_id, payload, actor=OWNER)
+
+    assert outcome == Rejected("req-1", reason, detail)
+    assert events(subscription) == [
+        (
+            "action.rejected",
+            {
+                "request_id": "req-1",
+                "action": action_id,
+                "actor": "local",
+                "reason": reason,
+                "detail": detail,
+            },
+        )
+    ]
+
+
+def test_a_conflicting_key_is_recorded_as_its_own_attempt() -> None:
+    controller = wired()
+    controller.dispatch(
+        "tts.set_enabled", {"enabled": False}, actor=OWNER, idempotency_key="k1"
+    )
+    _, subscription = controller.subscribe()
+
+    outcome = controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+
+    assert outcome.request_id == "req-2"
+    assert events(subscription) == [
+        (
+            "action.rejected",
+            {
+                "request_id": "req-2",
+                "action": "microphone.select",
+                "actor": "local",
+                "reason": Rejection.INVALID,
+                "detail": (
+                    "idempotency key 'k1' was already used for tts.set_enabled "
+                    "with a different payload"
+                ),
+            },
+        )
+    ]
+
+
+def test_a_key_evicted_while_its_request_was_in_flight_still_settles() -> None:
+    """The request outlives its key; settling it must not go looking for one."""
+    controller = wired()
+    controller.dispatch(
+        "microphone.select", {"name": "Yeti"}, actor=OWNER, idempotency_key="k1"
+    )
+    for number in range(IDEMPOTENCY_MEMORY):
+        controller.dispatch(
+            "tts.set_enabled",
+            {"enabled": True},
+            actor=OWNER,
+            idempotency_key=f"filler-{number}",
+        )
+
+    assert controller.settle("req-1", "Yeti") == Applied("req-1", "Yeti")
+    assert controller.state.microphone == Selection("Yeti", "Yeti")
+
+
+def test_only_a_request_still_in_flight_is_tracked_by_its_key() -> None:
+    """A terminal outcome has nothing left to update, so it is not indexed."""
+    controller = wired()
+
+    for number in range(20):
+        controller.dispatch(
+            "tts.set_enabled",
+            {"enabled": True},
+            actor=OWNER,
+            idempotency_key=f"k{number}",
+        )
+
+    assert controller._keyed == {}
+
+
+def test_the_controller_stamps_its_events_from_the_clock_it_was_given() -> None:
+    controller = Controller(clock=lambda: STAMP)
+    controller.register("tts.set_enabled", setting_tts)
+    _, subscription = controller.subscribe()
+
+    controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
+
+    assert [event.at for event in subscription.drain()] == [STAMP, STAMP]
