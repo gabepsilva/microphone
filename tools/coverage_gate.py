@@ -34,6 +34,8 @@ FLOORS = {
     "tools/context_budget.py": 93.0,
     "tools/coverage_gate.py": 75.0,
     "tools/mutation_gate.py": 78.0,
+    # Recorded 2026-08-05 with the hosted lane split from issue #87.
+    "tools/orchestration_gate.py": 98.0,
     "tools/ratchet_gate.py": 90.0,
     "tools/test_integrity.py": 93.0,
     "tools/worker_gate.py": 97.0,

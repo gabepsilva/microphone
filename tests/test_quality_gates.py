@@ -215,6 +215,239 @@ def test_mutation_gate_rejects_a_run_that_mutated_nothing(
 
 
 # --------------------------------------------------------------------------
+# tools/orchestration_gate.py and make workflows
+# --------------------------------------------------------------------------
+
+
+def _copied_orchestration_gate(tmp_path, monkeypatch):
+    gate = _load_gate("orchestration_gate")
+    makefile = tmp_path / "Makefile"
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    makefile.write_text((ROOT / "Makefile").read_text(encoding="utf-8"))
+    workflow.write_text(
+        (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "MAKEFILE", makefile)
+    monkeypatch.setattr(gate, "HOSTED_WORKFLOW", workflow)
+    return gate, makefile, workflow
+
+
+def test_orchestration_gate_accepts_the_local_and_hosted_contract(
+    tmp_path, monkeypatch
+) -> None:
+    gate, _, _ = _copied_orchestration_gate(tmp_path, monkeypatch)
+
+    assert gate.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "plant"),
+    [
+        (
+            "required target dropped from its Make group",
+            (
+                "makefile",
+                "VERIFY_QUICK := format-check lint types",
+                "VERIFY_QUICK := format-check types",
+            ),
+        ),
+        (
+            "required Make group variable missing",
+            (
+                "makefile",
+                "VERIFY_QUICK := format-check lint types",
+                "VERIFY_FAST := format-check lint types",
+            ),
+        ),
+        (
+            "Make group target detached from its variable",
+            (
+                "makefile",
+                "verify-quick: $(VERIFY_QUICK)",
+                "verify-quick: lint",
+            ),
+        ),
+        (
+            "required group omitted from the local verify target",
+            (
+                "makefile",
+                "verify: verify-quick verify-coverage verify-mutation",
+                "verify: verify-quick verify-coverage",
+            ),
+        ),
+        (
+            "required group no longer invoked by a hosted lane",
+            ("workflow", "run: make verify-mutation", "run: make mutation"),
+        ),
+        (
+            "quality lane omitted from the protected aggregator",
+            (
+                "workflow",
+                "needs: [quick, coverage, mutation, security-static]",
+                "needs: [quick, coverage, security-static]",
+            ),
+        ),
+        (
+            "aggregator with no parseable needs list",
+            (
+                "workflow",
+                "needs: [quick, coverage, mutation, security-static]",
+                "depends-on: [quick, coverage, mutation, security-static]",
+            ),
+        ),
+        (
+            "aggregator that can skip instead of reporting a result",
+            ("workflow", "if: ${{ always() }}", "if: ${{ !cancelled() }}"),
+        ),
+        (
+            "aggregator that does not positively require success",
+            (
+                "workflow",
+                'test "$LANE_RESULTS" = "success success success success"',
+                'test "$LANE_RESULTS" != "failure"',
+            ),
+        ),
+        (
+            "workflow whose jobs section cannot be parsed",
+            ("workflow", "jobs:\n", "tasks:\n"),
+        ),
+        (
+            "renamed protected aggregator check",
+            (
+                "workflow",
+                "name: Quality and security",
+                "name: Quality summary",
+            ),
+        ),
+        (
+            "aggregator that does not collect every dependency result",
+            (
+                "workflow",
+                "LANE_RESULTS: ${{ join(needs.*.result, ' ') }}",
+                "LANE_RESULTS: success",
+            ),
+        ),
+        (
+            "missing protected aggregator job",
+            ("workflow", "  quality-gate:\n", "  quality-summary:\n"),
+        ),
+        (
+            "quality lane with expression-valued continue-on-error",
+            (
+                "workflow",
+                "  mutation:\n",
+                "  mutation:\n    continue-on-error: ${{ true }}\n",
+            ),
+        ),
+        (
+            "quality lane step declaring continue-on-error",
+            (
+                "workflow",
+                "      - name: Run mutation gate\n        run: make verify-mutation",
+                "      - name: Run mutation gate\n"
+                "        continue-on-error: false\n"
+                "        run: make verify-mutation",
+            ),
+        ),
+        (
+            "protected aggregator declaring continue-on-error",
+            (
+                "workflow",
+                "  quality-gate:\n",
+                "  quality-gate:\n    continue-on-error: true\n",
+            ),
+        ),
+        (
+            "protected secret scan declaring continue-on-error",
+            (
+                "workflow",
+                "  secret-scan:\n",
+                "  secret-scan:\n    continue-on-error: true\n",
+            ),
+        ),
+    ],
+)
+def test_orchestration_gate_rejects_a_planted_omission(
+    tmp_path, monkeypatch, label, plant
+) -> None:
+    gate, makefile, workflow = _copied_orchestration_gate(tmp_path, monkeypatch)
+    path_name, before, after = plant
+    path = makefile if path_name == "makefile" else workflow
+    source = path.read_text(encoding="utf-8")
+    assert source.count(before) == 1
+    path.write_text(source.replace(before, after), encoding="utf-8")
+
+    assert gate.main() == 1, f"orchestration gate accepted a {label}"
+
+
+@pytest.mark.parametrize("missing", ["makefile", "workflow"])
+def test_orchestration_gate_rejects_a_missing_policy_file(
+    tmp_path, monkeypatch, missing
+) -> None:
+    gate, makefile, workflow = _copied_orchestration_gate(tmp_path, monkeypatch)
+    path = makefile if missing == "makefile" else workflow
+    path.unlink()
+
+    assert gate.main() == 1
+
+
+def test_workflow_gate_rejects_a_directory_with_no_workflows(tmp_path) -> None:
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+
+    result = subprocess.run(
+        ["make", "-f", str(ROOT / "Makefile"), "workflows"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "holds no YAML workflows to lint" in result.stdout
+
+
+def test_workflow_gate_lints_every_yaml_workflow(tmp_path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    nested = workflows / "scheduled"
+    nested.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+    (nested / "audit.yaml").write_text("name: Audit\n", encoding="utf-8")
+    (workflows / "notes.txt").write_text("not a workflow\n", encoding="utf-8")
+
+    arguments = tmp_path / "actionlint-arguments"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$WORKFLOW_ARGUMENTS"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
+    environment["WORKFLOW_ARGUMENTS"] = str(arguments)
+
+    result = subprocess.run(
+        ["make", "-f", str(ROOT / "Makefile"), "workflows"],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    linted = set(arguments.read_text(encoding="utf-8").splitlines())
+    assert "run" in linted
+    assert "actionlint" in linted
+    assert ".github/workflows/ci.yml" in linted
+    assert ".github/workflows/scheduled/audit.yaml" in linted
+    assert ".github/workflows/notes.txt" not in linted
+
+
+# --------------------------------------------------------------------------
 # tools/verify_regression.sh
 # --------------------------------------------------------------------------
 
