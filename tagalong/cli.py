@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -298,6 +299,59 @@ def close_audio_channel(parts, activity, transcriber, listener):
     parts.submitter.remove_listener(listener)
 
 
+@dataclass(frozen=True)
+class _SelectionRequest:
+    """One desired selection and the work to run if it becomes effective."""
+
+    value: str | None
+    on_applied: Callable[[str | None], object] | None = None
+
+
+class _SelectionRequests:
+    """Keep selection completion attached to the request that produced it.
+
+    Device selection is intentionally asynchronous. A tiny lock protects only
+    replacement and completion of the desired intent; slow device work never
+    holds it, so a newer UI choice can supersede an in-flight request without
+    waiting for a model or capture device to finish opening.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._request = _SelectionRequest(None)
+
+    @property
+    def desired(self):
+        with self._lock:
+            return self._request.value
+
+    def replace(self, value, on_applied=None):
+        request = _SelectionRequest(value, on_applied)
+        with self._lock:
+            self._request = request
+        return request
+
+    def snapshot(self):
+        with self._lock:
+            return self._request
+
+    def complete(self, request, effective):
+        """Notify only if *request* is still the newest desired selection."""
+        with self._lock:
+            if self._request is not request:
+                return False
+            self._request = _SelectionRequest(request.value)
+        if request.on_applied is not None:
+            request.on_applied(effective)
+        return True
+
+    def abandon(self, request):
+        """Forget a failed request unless a newer selection superseded it."""
+        with self._lock:
+            if self._request is request:
+                self._request = _SelectionRequest(None)
+
+
 class MicrophoneChannel:
     """Keep a session alive while input devices appear, disappear, or change."""
 
@@ -319,7 +373,7 @@ class MicrophoneChannel:
         self.discover = input_devices if discover is None else discover
         self.poll = self.POLL_SECONDS
         self.devices = self._by_name(devices)
-        self.desired = None
+        self._selection = _SelectionRequests()
         self.current = None
         self.transcriber = None
         self.listener = None
@@ -350,9 +404,14 @@ class MicrophoneChannel:
         )
         self.worker.start()
 
-    def select(self, microphone):
+    @property
+    def desired(self):
+        """Return the newest requested microphone name."""
+        return self._selection.desired
+
+    def select(self, microphone, *, on_applied=None):
         """Ask for a named microphone, or for none. Always accepted."""
-        self.desired = microphone
+        self._selection.replace(microphone, on_applied)
         self.wake.set()
         return True
 
@@ -396,27 +455,33 @@ class MicrophoneChannel:
         old callback is torn down cleanly. Building from scratch (or retiring
         entirely) is reserved for going to or from no microphone at all.
         """
+        applied = False
+        effective = None
         with self.lock:
-            wanted = self.desired
+            request = self._selection.snapshot()
+            wanted = request.value
             if wanted == self.current:
-                return
-            if wanted is None:
+                applied = True
+            elif wanted is None:
                 self._retire()
-                return
-            selected = self.devices.get(wanted)
-            if selected is None:
-                return
-            index, device = selected
-            if self.transcriber is not None:
-                self._retarget(index, device)
-                return
-            self._open(index, device)
+                applied = True
+            else:
+                selected = self.devices.get(wanted)
+                if selected is not None:
+                    index, device = selected
+                    if self.transcriber is not None:
+                        applied = self._retarget(index, device)
+                    else:
+                        applied = self._open(index, device)
+            effective = self.current
+        if applied:
+            self._selection.complete(request, effective)
 
     def _retarget(self, device_index, device):
         """Point the live capture at another input without reloading the model."""
         transcriber = self.transcriber
         if transcriber is None:
-            return
+            return False
         try:
             transcriber.switch_device(device_index)
         except Exception as error:
@@ -424,9 +489,10 @@ class MicrophoneChannel:
             if message != self._open_error:
                 self.tui.note(message)
                 self._open_error = message
-            return
+            return False
         self._open_error = None
         self.current = device["name"]
+        return True
 
     def _open(self, device_index, device):
         transcriber = None
@@ -441,13 +507,14 @@ class MicrophoneChannel:
             if message != self._open_error:
                 self.tui.note(message)
                 self._open_error = message
-            return
+            return False
         self._open_error = None
         self.transcriber, self.listener = transcriber, listener
         self.current = device["name"]
         self.tui.hooks.on_mute = muting(transcriber, listener)
         if self.tui.state.mic.muted:
             self.tui.hooks.on_mute(True)
+        return True
 
     def _retire(self):
         transcriber, listener = self.transcriber, self.listener
@@ -464,7 +531,7 @@ class MicrophoneChannel:
         if self.worker is not None:
             self.worker.join(timeout=self.JOIN_TIMEOUT_SECONDS)
             self.worker = None
-        self.desired = None
+        self.select(None)
         self.reconcile()
 
 
@@ -495,7 +562,7 @@ class AudioChannel:
         self.gate = gate
         self.open_channel = open_channel
         self.close_channel = close_channel
-        self.desired = None
+        self._selection = _SelectionRequests()
         self.current = None
         self.tap = None
         self.transcriber = None
@@ -514,9 +581,14 @@ class AudioChannel:
         )
         self.worker.start()
 
-    def select(self, application):
+    @property
+    def desired(self):
+        """Return the newest requested application name."""
+        return self._selection.desired
+
+    def select(self, application, *, on_applied=None):
         """Ask for an application, or for none. Always accepted."""
-        self.desired = application
+        self._selection.replace(application, on_applied)
         self.wake.set()
         return True
 
@@ -535,17 +607,28 @@ class AudioChannel:
         is closing the session, and two of these running at once would build a
         channel the other is retiring.
         """
+        applied = False
+        effective = None
         with self.lock:
-            wanted = self.desired
+            request = self._selection.snapshot()
+            wanted = request.value
             if wanted == self.current:
-                return
-            if wanted is None:
+                applied = True
+            elif wanted is None:
                 self._retire()
+                applied = True
             elif self.tap is None:
-                self._open(wanted)
+                if self._open(wanted):
+                    applied = True
+                else:
+                    self._selection.abandon(request)
             else:
                 self.tap.follow(wanted)
                 self.current = wanted
+                applied = True
+            effective = self.current
+        if applied:
+            self._selection.complete(request, effective)
 
     def _open(self, application):
         tap = StreamTap(application)
@@ -556,12 +639,14 @@ class AudioChannel:
             # A far end that cannot be opened leaves the session running
             # without one, which is the state it was already in.
             self.tui.note(f"could not listen to {application}: {error}")
-            self.desired = None
-            return
+            return False
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
         self.tui.hooks.on_audio_mute = muting(transcriber, listener)
+        if self.tui.state.audio.muted:
+            self.tui.hooks.on_audio_mute(True)
         self.gate.set_available(BASE_SPEAKERS | {"Audio"})
         self.current = application
+        return True
 
     def _retire(self):
         """Close the channel, if one is open, and forget the far end."""
@@ -616,6 +701,18 @@ def remembering(hook, config, key, encode=lambda value: value):
         if accepted is not False:
             config.record(key, encode(value))
         return accepted
+
+    return apply
+
+
+def remembering_applied(hook, config, key, encode=lambda value: value):
+    """Record an asynchronous selection only after it becomes effective."""
+
+    def apply(value):
+        return hook(
+            value,
+            on_applied=lambda applied: config.record(key, encode(applied)),
+        )
 
     return apply
 
@@ -825,7 +922,9 @@ def main():
     desired_microphone = (
         selection.device["name"] if selection.device is not None else args.microphone
     )
-    tui.hooks.on_microphone = remembering(microphone.select, config, "microphone")
+    tui.hooks.on_microphone = remembering_applied(
+        microphone.select, config, "microphone"
+    )
     microphone.select(desired_microphone)
     microphone.reconcile()
     microphone.start()
@@ -840,7 +939,7 @@ def main():
     applications = ApplicationRefresher(tui)
     applications.start()
     tui.hooks.on_quit = applications.stop
-    tui.hooks.on_audio_stream = remembering(
+    tui.hooks.on_audio_stream = remembering_applied(
         them.select, config, "audio_stream", encode=audio_stream_setting
     )
     them.select(audio_stream)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -113,15 +114,20 @@ class StartupConfigFile:
         self._save = save_startup_config if save is None else save
         self._stream = stream
         self._reported = False
+        self._lock = threading.Lock()
 
     def record(self, key, value):
         """Store a changed setting; report whether the file was rewritten."""
         if key not in STARTUP_CONFIG_KEYS:
             raise RuntimeError(f"{key!r} is not a startup config key.")
-        if self.settings.get(key) == value:
-            return False
-        self.settings[key] = value
-        return self._write()
+        # Applied device selections arrive from reconciler threads while the
+        # TUI can save another setting. Keep update plus whole-file rewrite one
+        # transaction so concurrent records cannot interleave or lose a value.
+        with self._lock:
+            if self.settings.get(key) == value:
+                return False
+            self.settings[key] = value
+            return self._write()
 
     def _write(self):
         try:
