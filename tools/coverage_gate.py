@@ -45,6 +45,9 @@ FLOORS = {
     "tagalong/application.py": 100.0,
     # Recorded 2026-08-05 with slash adapters over the typed catalog.
     "tagalong/discovery.py": 100.0,
+    # Recorded 2026-08-05 with the local JSON-RPC transport and MCP adapter.
+    "tagalong/transport.py": 100.0,
+    "tagalong/mcp.py": 100.0,
     # Raised 2026-07-30 from 94 when microphone retarget/release paths
     # closed the remaining null-stream branches.
     "tagalong/capture.py": 95.0,
