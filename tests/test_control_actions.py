@@ -38,6 +38,7 @@ def test_every_catalog_entry_has_a_distinct_id() -> None:
 def test_slash_commands_are_not_an_action() -> None:
     """Commands are human syntax over these actions, never a second API."""
     assert not [spec for spec in CATALOG if spec.id.startswith("command.")]
+    assert "commands.list" not in {spec.id for spec in CATALOG}
     assert action("session.new").scope is Scope.SESSION
 
 

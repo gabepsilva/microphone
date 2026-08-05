@@ -71,3 +71,16 @@ their actions in later slices.
 Agent `message.send` is refused as inapplicable until the `Agent` transcript
 source lands as its own evaluated change. That path has no live client yet, so
 it is not a user-visible deviation from today's session.
+
+## Milestone 4
+
+Milestone 4 makes `/new` an adapter over `session.new` and `/help` a rendering
+of `commands.list`. Observable TUI journeys are unchanged: `/new` still starts
+a fresh session, `/help` still lists `/new` and `/help` with the same copy,
+and `/help <name>` still names aliases or reports an unknown command.
+
+`commands.list` is a query that returns structured rows (name, aliases,
+summary, target action). It is not a catalog action and not
+`command.invoke`. `/new`'s summary is `session.new`'s summary, so the palette
+and an agent tool schema cannot drift. `/help` itself has no typed equivalent;
+it only renders that listing.
