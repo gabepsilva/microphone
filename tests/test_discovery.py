@@ -55,13 +55,24 @@ def test_render_help_formats_the_listing_without_a_display() -> None:
         render_command_help(listing, "clear") == "/new (aliases: /clear): Fresh session"
     )
     assert render_command_help(listing, "/help") == "/help (aliases: /?): List commands"
+    assert (
+        render_command_help(listing, "/clear")
+        == "/new (aliases: /clear): Fresh session"
+    )
     assert render_command_help(listing, "missing") == "unknown command: /missing"
+
+
+def test_a_help_only_adapter_without_copy_lists_an_empty_summary() -> None:
+    listing = list_commands((SlashAdapter("status"),))
+
+    assert listing[0].summary == ""
+    assert listing[0].action_id is None
 
 
 def test_list_commands_refuses_an_adapter_aimed_at_a_missing_action() -> None:
     adapters = (SlashAdapter("boom", action_id="session.explode"),)
 
-    with pytest.raises(KeyError, match=r"session\.explode"):
+    with pytest.raises(KeyError, match=r"no such action: session\.explode"):
         list_commands(adapters)
 
 

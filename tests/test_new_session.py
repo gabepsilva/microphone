@@ -7,6 +7,9 @@ import os
 import threading
 from types import SimpleNamespace
 
+import pytest
+
+from tagalong import cli
 from tagalong import codex as codex_module
 from tagalong.application import bind_first_slice
 from tagalong.cli import build_command_router
@@ -18,6 +21,7 @@ from tagalong.codex import (
 )
 from tagalong.commands import CommandRouter
 from tagalong.control import Controller, local_user
+from tagalong.discovery import ListedCommand, list_commands
 from tagalong.domain import TEXT
 from tagalong.tui import PromptInput, VoiceCodexTUI
 
@@ -597,9 +601,38 @@ def test_help_for_one_command_names_aliases_and_unknowns() -> None:
     commands = _router(RouterConversation(), tui, RouterRecorder())
 
     commands.handle("/help clear")
+    commands.handle("/help /clear")
     commands.handle("/help missing")
 
     assert tui.notes == [
         "/new (aliases: /clear): Start a fresh session and clear the transcript",
+        "/new (aliases: /clear): Start a fresh session and clear the transcript",
         "unknown command: /missing",
     ]
+
+
+def test_router_build_rejects_a_listed_adapter_with_no_handler(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "list_commands",
+        lambda: (
+            *list_commands(),
+            ListedCommand(
+                "interrupt", "Stop the reply in progress", action_id="session.interrupt"
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="listed without handler: \\['interrupt'\\]"):
+        _router(RouterConversation(), RouterTui(), RouterRecorder())
+
+
+def test_router_build_rejects_a_handler_with_no_adapter(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "list_commands",
+        lambda: tuple(entry for entry in list_commands() if entry.name != "new"),
+    )
+
+    with pytest.raises(ValueError, match="handler without adapter: \\['new'\\]"):
+        _router(RouterConversation(), RouterTui(), RouterRecorder())

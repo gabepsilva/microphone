@@ -756,34 +756,43 @@ def wire_transcript_recording(tui, conversation, recorder, controller, actor):
 def build_command_router(
     tui, conversation, recorder, controller, actor
 ) -> CommandRouter:
-    """Register slash adapters over the typed catalog and their palette copy."""
-    listing = list_commands()
-    by_name = {entry.name: entry for entry in listing}
+    """Register slash adapters over the typed catalog and their palette copy.
 
-    def start_new(command):
-        reset_codex_session(
+    Registration is driven by ``list_commands()``. A listed adapter with no
+    handler, or a handler with no adapter, fails here rather than advertising
+    a command the router cannot run.
+    """
+    listing = list_commands()
+    handlers = {
+        "new": lambda command: reset_codex_session(
             command,
             tui,
             lambda: run_new_session(controller, actor, conversation, tui, recorder),
+        ),
+        "help": lambda command: tui.note(
+            render_command_help(
+                listing, command.arguments[0] if command.arguments else None
+            )
+        ),
+    }
+    listed = {entry.name for entry in listing}
+    missing_handlers = sorted(listed - handlers.keys())
+    extra_handlers = sorted(handlers.keys() - listed)
+    if missing_handlers or extra_handlers:
+        raise ValueError(
+            "slash adapters and handlers must match: "
+            f"listed without handler: {missing_handlers}; "
+            f"handler without adapter: {extra_handlers}"
         )
 
-    def show_help(command):
-        topic = command.arguments[0] if command.arguments else None
-        tui.note(render_command_help(listing, topic))
-
     commands = CommandRouter(tui)
-    commands.register(
-        "new",
-        start_new,
-        description=by_name["new"].summary,
-        aliases=by_name["new"].aliases,
-    )
-    commands.register(
-        "help",
-        show_help,
-        description=by_name["help"].summary,
-        aliases=by_name["help"].aliases,
-    )
+    for entry in listing:
+        commands.register(
+            entry.name,
+            handlers[entry.name],
+            description=entry.summary,
+            aliases=entry.aliases,
+        )
     return commands
 
 

@@ -53,6 +53,10 @@ logic with no device, process, or network boundary, so there is no adapter in
 it to make a survivor untestable. It took the run from 861 to 1,586 mutants
 and leaves two:
 
+tagalong/discovery.py joined on 2026-08-05 on the same rule. It transforms
+the static catalog and slash table into listing rows and help text; there is
+no collaborator to fake, so a survivor is an assertion gap.
+
   * ``popitem(last=False)`` becomes ``popitem(last=None)``. Both are falsy, so
     both evict the oldest idempotency key.
   * ``self._arrived.wait(timeout)`` becomes ``wait(None)``, which blocks
