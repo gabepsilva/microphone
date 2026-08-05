@@ -766,6 +766,20 @@ def test_the_speaker_mute_box_stops_the_audio_capture(wiring) -> None:
     assert channels[0][0].muted is False
 
 
+def test_an_application_opened_while_muted_starts_muted(wiring) -> None:
+    """Desired mute state must survive the absence of an audio channel."""
+    cli.main()
+    tui, _, _ = wiring["session"]
+    them = wiring["audio"]
+    tui.state.audio.muted = True
+
+    tui.hooks.on_audio_stream(THEM_APPLICATION)
+    them.reconcile()
+
+    assert them.transcriber.muted is True
+    assert them.listener.muted is True
+
+
 def test_the_microphone_mute_box_stops_the_microphone_capture(wiring) -> None:
     """The same for the channel the user speaks on."""
     cli.main()
@@ -1265,7 +1279,7 @@ class FakeGate:
 
 def audio_channel(open_channel=None, close_channel=None):
     """A far-end channel over fakes, with its worker thread left unstarted."""
-    tui = FakeTUI(SimpleNamespace(), on_audio_mute=None)
+    tui = FakeTUI(SessionState(), on_audio_mute=None)
     opened: list[object] = []
     closed: list[object] = []
 

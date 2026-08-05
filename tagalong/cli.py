@@ -637,6 +637,8 @@ class AudioChannel:
             return False
         self.tap, self.transcriber, self.listener = tap, transcriber, listener
         self.tui.hooks.on_audio_mute = muting(transcriber, listener)
+        if self.tui.state.audio.muted:
+            self.tui.hooks.on_audio_mute(True)
         self.gate.set_available(BASE_SPEAKERS | {"Audio"})
         self.current = application
         return True
