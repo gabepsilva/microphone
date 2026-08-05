@@ -48,6 +48,22 @@ catalog.py joined on 2026-07-29. Its three survivors replace static-only
 ``typing.cast`` calls with other cast targets. A cast is erased at runtime, so
 all three execute exactly the same parsing behavior.
 
+tagalong/control/ joined on 2026-08-05, the whole package at once: it is pure
+logic with no device, process, or network boundary, so there is no adapter in
+it to make a survivor untestable. It took the run from 861 to 1,586 mutants
+and leaves two:
+
+  * ``popitem(last=False)`` becomes ``popitem(last=None)``. Both are falsy, so
+    both evict the oldest idempotency key.
+  * ``self._arrived.wait(timeout)`` becomes ``wait(None)``, which blocks
+    forever. A test that killed it would be a test that hangs, so it times out
+    rather than dying, and a timeout counts against the score.
+
+The floor moved 94 -> 95 with that run, against 96.3% measured. It is not set
+at 96 because that timeout is the difference: a mutant that times out rather
+than dying is scored by how loaded the machine is, and a floor a busy CI run
+can trip is a floor people learn to rerun rather than believe.
+
 Do not chase the difference, and do not silence it with `# pragma: no mutate`
 either — an equivalent mutant is evidence the code is precise, not evidence a
 test is missing.
@@ -59,7 +75,7 @@ import json
 import sys
 from pathlib import Path
 
-MUTATION_SCORE_FLOOR = 94.0
+MUTATION_SCORE_FLOOR = 95.0
 STATS_PATH = Path("mutants/mutmut-cicd-stats.json")
 
 
