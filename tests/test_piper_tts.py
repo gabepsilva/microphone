@@ -462,6 +462,42 @@ def test_re_enabling_speech_lets_the_next_turn_speak(piper, playback) -> None:
     assert playback.wait_for(1)
 
 
+def test_an_interrupt_stops_treating_dropped_speech_as_an_echo(
+    monkeypatch, playback, voice
+) -> None:
+    """A sentence the interrupt threw away must not filter the microphones.
+
+    Queued speech is remembered for two minutes because it may not be said
+    for a while. One that is dropped is never said at all, so its retention
+    has to fall back to a spoken sentence's — otherwise the speaker's own
+    words are filtered as echo of a reply they cut off and never heard.
+    """
+    playback.gate = threading.Event()
+    piper = start_engine(monkeypatch, playback, voice)
+    try:
+        piper.begin_turn()
+        piper.speak("The deploy finished.")
+        assert playback.wait_for(1)
+
+        piper.speak("I can roll it back if you would rather not ship today.")
+        piper.interrupt()
+
+        # Never synthesized: the interrupt drained it out of the queue.
+        assert voice.spoken == ["The deploy finished."]
+
+        elapsed = piper.SPOKEN_RETENTION_SECONDS + 1
+        piper.echo._clock = lambda: time.monotonic() + elapsed
+        assert (
+            piper.is_likely_echo(
+                "i can roll it back if you would rather not ship today"
+            )
+            is False
+        )
+    finally:
+        playback.gate.set()
+        piper.close()
+
+
 def test_queued_speech_is_recognized_as_its_own_echo(piper) -> None:
     piper.begin_turn()
     piper.speak("The build finished.")
