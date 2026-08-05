@@ -215,6 +215,138 @@ def test_mutation_gate_rejects_a_run_that_mutated_nothing(
 
 
 # --------------------------------------------------------------------------
+# tools/orchestration_gate.py and make workflows
+# --------------------------------------------------------------------------
+
+
+def _copied_orchestration_gate(tmp_path, monkeypatch):
+    gate = _load_gate("orchestration_gate")
+    makefile = tmp_path / "Makefile"
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    makefile.write_text((ROOT / "Makefile").read_text(encoding="utf-8"))
+    workflow.write_text(
+        (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "MAKEFILE", makefile)
+    monkeypatch.setattr(gate, "HOSTED_WORKFLOW", workflow)
+    return gate, makefile, workflow
+
+
+def test_orchestration_gate_accepts_the_local_and_hosted_contract(
+    tmp_path, monkeypatch
+) -> None:
+    gate, _, _ = _copied_orchestration_gate(tmp_path, monkeypatch)
+
+    assert gate.main() == 0
+
+
+@pytest.mark.parametrize(
+    ("label", "plant"),
+    [
+        (
+            "required target dropped from its Make group",
+            (
+                "makefile",
+                "VERIFY_QUICK := format-check lint types",
+                "VERIFY_QUICK := format-check types",
+            ),
+        ),
+        (
+            "required group no longer invoked by a hosted lane",
+            ("workflow", "run: make verify-mutation", "run: make mutation"),
+        ),
+        (
+            "quality lane omitted from the protected aggregator",
+            (
+                "workflow",
+                "needs: [quick, coverage, mutation, security-static]",
+                "needs: [quick, coverage, security-static]",
+            ),
+        ),
+        (
+            "aggregator that can skip instead of reporting a result",
+            ("workflow", "if: ${{ always() }}", "if: ${{ !cancelled() }}"),
+        ),
+        (
+            "aggregator that does not positively require success",
+            (
+                "workflow",
+                'test "$LANE_RESULTS" = "success success success success"',
+                'test "$LANE_RESULTS" != "failure"',
+            ),
+        ),
+    ],
+)
+def test_orchestration_gate_rejects_a_planted_omission(
+    tmp_path, monkeypatch, label, plant
+) -> None:
+    gate, makefile, workflow = _copied_orchestration_gate(tmp_path, monkeypatch)
+    path_name, before, after = plant
+    path = makefile if path_name == "makefile" else workflow
+    source = path.read_text(encoding="utf-8")
+    assert source.count(before) == 1
+    path.write_text(source.replace(before, after), encoding="utf-8")
+
+    assert gate.main() == 1, f"orchestration gate accepted a {label}"
+
+
+def test_workflow_gate_rejects_a_directory_with_no_workflows(tmp_path) -> None:
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+
+    result = subprocess.run(
+        ["make", "-f", str(ROOT / "Makefile"), "workflows"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "holds no YAML workflows to lint" in result.stdout
+
+
+def test_workflow_gate_lints_every_yaml_workflow(tmp_path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    nested = workflows / "scheduled"
+    nested.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+    (nested / "audit.yaml").write_text("name: Audit\n", encoding="utf-8")
+    (workflows / "notes.txt").write_text("not a workflow\n", encoding="utf-8")
+
+    arguments = tmp_path / "actionlint-arguments"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$WORKFLOW_ARGUMENTS"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
+    environment["WORKFLOW_ARGUMENTS"] = str(arguments)
+
+    result = subprocess.run(
+        ["make", "-f", str(ROOT / "Makefile"), "workflows"],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    linted = set(arguments.read_text(encoding="utf-8").splitlines())
+    assert "run" in linted
+    assert "actionlint" in linted
+    assert ".github/workflows/ci.yml" in linted
+    assert ".github/workflows/scheduled/audit.yaml" in linted
+    assert ".github/workflows/notes.txt" not in linted
+
+
+# --------------------------------------------------------------------------
 # tools/verify_regression.sh
 # --------------------------------------------------------------------------
 

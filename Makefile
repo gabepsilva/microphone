@@ -3,6 +3,14 @@
 SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
 PYTHON_SOURCES := tagalong.py tagalong
 
+# Keep the local gate and its hosted lanes defined from the same lists. The
+# orchestration gate rejects a dropped target or a hosted lane that stops
+# invoking one of these groups.
+VERIFY_QUICK := format-check lint types test-integrity context-budget worker-threads ratchet shellcheck workflows orchestration
+VERIFY_COVERAGE := test-coverage
+VERIFY_MUTATION := mutation
+VERIFY_SECURITY := security-static
+
 # Lines this change touches must be tested even where the file's own floor is
 # still low. Overridable so a stacked branch can compare against its base.
 #
@@ -17,7 +25,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration verify-quick verify-coverage verify-mutation verify-security verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -87,15 +95,28 @@ shellcheck:
 	bash -n tools/verify_regression.sh
 
 workflows:
-	uv run actionlint .github/workflows/ci.yml
+	@workflow_file="$$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print -quit)"; \
+		test -n "$$workflow_file" || { echo "error: .github/workflows holds no YAML workflows to lint."; exit 1; }; \
+		find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -exec uv run actionlint {} +
+
+orchestration:
+	uv run python tools/orchestration_gate.py
+
+verify-quick: $(VERIFY_QUICK)
+
+verify-coverage: $(VERIFY_COVERAGE)
+
+verify-mutation: $(VERIFY_MUTATION)
+
+verify-security: $(VERIFY_SECURITY)
 
 security: security-static secrets
 
-verify: format-check lint types test-coverage test-integrity context-budget worker-threads mutation ratchet shellcheck workflows
+verify: verify-quick verify-coverage verify-mutation
 
 ci: verify security
 
-ci-hosted: verify security-static
+ci-hosted: verify verify-security
 
 hooks:
 	uv run pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push
