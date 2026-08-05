@@ -179,6 +179,10 @@ def _check_workflow(source: str, failures: list[str]) -> None:
         group = _invoked_group(job)
         if group is not None:
             lanes_by_group[group].append(job_id)
+            if re.search(r"^\s+continue-on-error:\s*true\s*$", job, flags=re.MULTILINE):
+                failures.append(
+                    f"{HOSTED_WORKFLOW}: lane {job_id} must not continue on error."
+                )
 
     for group, lane_jobs in lanes_by_group.items():
         if len(lane_jobs) != 1:

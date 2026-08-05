@@ -254,6 +254,30 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             ),
         ),
         (
+            "required Make group variable missing",
+            (
+                "makefile",
+                "VERIFY_QUICK := format-check lint types",
+                "VERIFY_FAST := format-check lint types",
+            ),
+        ),
+        (
+            "Make group target detached from its variable",
+            (
+                "makefile",
+                "verify-quick: $(VERIFY_QUICK)",
+                "verify-quick: lint",
+            ),
+        ),
+        (
+            "required group omitted from the local verify target",
+            (
+                "makefile",
+                "verify: verify-quick verify-coverage verify-mutation",
+                "verify: verify-quick verify-coverage",
+            ),
+        ),
+        (
             "required group no longer invoked by a hosted lane",
             ("workflow", "run: make verify-mutation", "run: make mutation"),
         ),
@@ -263,6 +287,14 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
                 "workflow",
                 "needs: [quick, coverage, mutation, security-static]",
                 "needs: [quick, coverage, security-static]",
+            ),
+        ),
+        (
+            "aggregator with no parseable needs list",
+            (
+                "workflow",
+                "needs: [quick, coverage, mutation, security-static]",
+                "depends-on: [quick, coverage, mutation, security-static]",
             ),
         ),
         (
@@ -301,6 +333,14 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "missing protected aggregator job",
             ("workflow", "  quality-gate:\n", "  quality-summary:\n"),
         ),
+        (
+            "quality lane allowed to continue after a failure",
+            (
+                "workflow",
+                "  mutation:\n",
+                "  mutation:\n    continue-on-error: true\n",
+            ),
+        ),
     ],
 )
 def test_orchestration_gate_rejects_a_planted_omission(
@@ -314,6 +354,17 @@ def test_orchestration_gate_rejects_a_planted_omission(
     path.write_text(source.replace(before, after), encoding="utf-8")
 
     assert gate.main() == 1, f"orchestration gate accepted a {label}"
+
+
+@pytest.mark.parametrize("missing", ["makefile", "workflow"])
+def test_orchestration_gate_rejects_a_missing_policy_file(
+    tmp_path, monkeypatch, missing
+) -> None:
+    gate, makefile, workflow = _copied_orchestration_gate(tmp_path, monkeypatch)
+    path = makefile if missing == "makefile" else workflow
+    path.unlink()
+
+    assert gate.main() == 1
 
 
 def test_workflow_gate_rejects_a_directory_with_no_workflows(tmp_path) -> None:
