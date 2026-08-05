@@ -1,0 +1,7 @@
+{
+  "name": "tagalong-electron",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "description": "Electron client for the TagAlong local JSON-RPC socket."
+}

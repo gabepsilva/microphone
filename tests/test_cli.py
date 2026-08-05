@@ -63,6 +63,8 @@ class FakeTUI:
         self.microphones: list[tuple[str, str]] = []
         self.microphone_reports: list[list[tuple[str, str]]] = []
         self.closed_speakers: list[str] = []
+        self.app: object | None = None
+        self._call: object | None = None
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
@@ -332,6 +334,9 @@ def wiring(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("tagalong.tui.VoiceCodexTUI", FakeTUI)
     monkeypatch.setattr(cli.sys, "argv", ["tagalong.py", "--config", str(config)])
+    # A live session on this machine already owns the XDG socket. Main-path
+    # tests still exercise the event pump; they must not bind that socket.
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
 
     built.update(
         input_device=MIC,
@@ -927,6 +932,193 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
     tui.hooks.on_user_text(UserTextMessage("what time is it?"))
 
     assert conversation.ingested == [("Text", "what time is it?", True, ())]
+
+
+def test_attach_remote_access_applies_remote_tts_to_the_tui(
+    tmp_path, monkeypatch
+) -> None:
+    from tagalong.application import bind_first_slice
+    from tagalong.control import Controller, local_user
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    tui = FakeTUI(SessionState(tts_enabled=True))
+    controller = Controller()
+
+    class Speech:
+        def set_enabled(self, enabled: bool) -> bool:
+            del enabled
+            return True
+
+    class Conversation:
+        generation = 1
+
+        def ingest(self, *_args, **_kwargs):
+            return None
+
+        def interrupt(self) -> None:
+            return None
+
+        def start_fresh_thread(self):
+            return None
+
+        def adopt_fresh_thread(self, started) -> None:
+            del started
+
+    bind_first_slice(controller, conversation=Conversation(), tts=Speech())
+    pump, server = cli.attach_remote_access(controller, tui)
+    try:
+        controller.dispatch(
+            "tts.set_enabled", {"enabled": False}, actor=local_user("tui")
+        )
+        deadline = time.time() + 1.0
+        while tui.state.tts_enabled is not False and time.time() < deadline:
+            time.sleep(0.05)
+        assert tui.state.tts_enabled is False
+        assert server is not None
+        assert server.path.exists()
+    finally:
+        pump.stop()
+        if server is not None:
+            server.stop()
+
+
+def test_attach_remote_access_refreshes_the_sidebar_on_the_ui_thread(
+    tmp_path, monkeypatch
+) -> None:
+    from tagalong.application import bind_first_slice
+    from tagalong.control import Controller, local_user
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    tui = FakeTUI(SessionState(tts_enabled=True))
+    tui.app = SimpleNamespace(refresh_sidebar=lambda: tui.notes.append("sidebar"))
+    tui._call = lambda callback: callback()
+    controller = Controller()
+
+    class Speech:
+        def set_enabled(self, enabled: bool) -> bool:
+            del enabled
+            return True
+
+    class Conversation:
+        generation = 1
+
+        def ingest(self, *_args, **_kwargs):
+            return None
+
+        def interrupt(self) -> None:
+            return None
+
+        def start_fresh_thread(self):
+            return None
+
+        def adopt_fresh_thread(self, started) -> None:
+            del started
+
+    bind_first_slice(controller, conversation=Conversation(), tts=Speech())
+    pump, server = cli.attach_remote_access(controller, tui)
+    try:
+        controller.dispatch(
+            "tts.set_enabled", {"enabled": False}, actor=local_user("tui")
+        )
+        deadline = time.time() + 1.0
+        while "sidebar" not in tui.notes and time.time() < deadline:
+            time.sleep(0.05)
+        assert "sidebar" in tui.notes
+        assert tui.state.tts_enabled is False
+    finally:
+        pump.stop()
+        if server is not None:
+            server.stop()
+
+
+def test_attach_remote_access_leaves_the_tui_running_without_xdg(
+    monkeypatch,
+) -> None:
+    from tagalong.control import Controller
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    tui = FakeTUI(SessionState(tts_enabled=True))
+    pump, server = cli.attach_remote_access(Controller(), tui)
+    try:
+        assert server is None
+    finally:
+        pump.stop()
+
+
+def test_attach_remote_access_survives_a_socket_bind_failure(
+    tmp_path, monkeypatch
+) -> None:
+    from tagalong.control import Controller
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
+    class BrokenServer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            return None
+
+        def start(self) -> None:
+            raise OSError("address already in use")
+
+    monkeypatch.setattr(cli, "LocalServer", BrokenServer)
+    pump, server = cli.attach_remote_access(Controller(), FakeTUI(SessionState()))
+    try:
+        assert server is None
+    finally:
+        pump.stop()
+
+
+def test_run_attached_session_stops_the_socket_when_the_tui_exits(
+    tmp_path, monkeypatch
+) -> None:
+    from tagalong.application import bind_first_slice
+    from tagalong.control import Controller
+    from tagalong.transport import LocalServer
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    controller = Controller()
+
+    class Speech:
+        def set_enabled(self, enabled: bool) -> bool:
+            del enabled
+            return True
+
+    class Conversation:
+        generation = 1
+
+        def ingest(self, *_args, **_kwargs):
+            return None
+
+        def interrupt(self) -> None:
+            return None
+
+        def start_fresh_thread(self):
+            return None
+
+        def adopt_fresh_thread(self, started) -> None:
+            del started
+
+    bind_first_slice(controller, conversation=Conversation(), tts=Speech())
+    seen: dict[str, object] = {}
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("session ended")
+
+    monkeypatch.setattr(cli, "run_session", boom)
+    original = cli.attach_remote_access
+
+    def tracking(controller, tui):
+        pump, server = original(controller, tui)
+        seen["server"] = server
+        return pump, server
+
+    monkeypatch.setattr(cli, "attach_remote_access", tracking)
+    with pytest.raises(RuntimeError, match="session ended"):
+        cli.run_attached_session(
+            controller, FakeTUI(SessionState()), Conversation(), None, None
+        )
+    server = seen["server"]
+    assert isinstance(server, LocalServer)
+    assert not server.path.exists()
 
 
 def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
