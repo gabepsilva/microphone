@@ -237,7 +237,16 @@ CATALOG: tuple[ActionSpec, ...] = (
     ActionSpec(
         "session.new", "Start a fresh session and clear the transcript", Scope.SESSION
     ),
-    ActionSpec("session.interrupt", "Stop the reply in progress", Scope.SESSION),
+    ActionSpec(
+        "session.interrupt",
+        "Stop the reply in progress",
+        Scope.SESSION,
+        (
+            Parameter(
+                "generation", Kind.NUMBER, required=False, nullable=True, default=None
+            ),
+        ),
+    ),
     ActionSpec("voice.end_turn", "Submit the pending spoken turn now", Scope.SESSION),
     ActionSpec(
         "microphone.select",

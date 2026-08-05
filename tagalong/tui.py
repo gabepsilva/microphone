@@ -2457,6 +2457,9 @@ class VoiceCodexTUI:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
         self.app = VoiceCodexApp(self.state, self.hooks, countdown, speech)
+        # Filled by the composition root when the first slice is bound.
+        self.controller: object | None = None
+        self.actor: object | None = None
         self._ready = threading.Event()
         self._app_thread: int | None = None
         # When the open reasoning section started, or None when none is open.

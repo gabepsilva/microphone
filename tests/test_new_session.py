@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 from tagalong import codex as codex_module
+from tagalong.application import apply_new_session
 from tagalong.cli import (
     build_command_router,
     reset_codex_session,
@@ -348,9 +349,21 @@ def test_reset_hook_clears_only_after_a_new_session_starts() -> None:
             self.rolls += 1
 
     recorder = Recorder()
-    reset_codex_session(Command("new", ()), Conversation(False), tui, recorder)
-    reset_codex_session(Command("new", ()), Conversation(True), tui, recorder)
-    reset_codex_session(Command("new", ("again",)), Conversation(True), tui, recorder)
+    reset_codex_session(
+        Command("new", ()),
+        tui,
+        lambda: apply_new_session(Conversation(False), tui, recorder),
+    )
+    reset_codex_session(
+        Command("new", ()),
+        tui,
+        lambda: apply_new_session(Conversation(True), tui, recorder),
+    )
+    reset_codex_session(
+        Command("new", ("again",)),
+        tui,
+        lambda: apply_new_session(Conversation(True), tui, recorder),
+    )
 
     assert tui.resets == 1
     assert recorder.rolls == 1

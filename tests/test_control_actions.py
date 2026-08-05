@@ -41,6 +41,14 @@ def test_slash_commands_are_not_an_action() -> None:
     assert action("session.new").scope is Scope.SESSION
 
 
+def test_an_interrupt_may_name_the_generation_it_targets() -> None:
+    """Omitting generation interrupts whatever is current; naming one pins it."""
+    assert action("session.interrupt").validate({}) == {"generation": None}
+    assert action("session.interrupt").validate({"generation": 3}) == {
+        "generation": 3.0
+    }
+
+
 def test_the_catalog_takes_its_choices_from_the_session_that_runs_them() -> None:
     """A schema copy of a fixed set is a copy that can disagree with the set."""
     assert action("response_policy.set").parameters[0].choices == POLICY_NAMES
@@ -176,16 +184,22 @@ def test_a_value_may_be_null_only_where_the_action_says_so() -> None:
 
 
 def test_the_person_at_the_session_may_do_everything_in_the_catalog() -> None:
+    from tagalong.control.actors import ActorKind
+
     owner = local_user()
 
     assert [spec for spec in CATALOG if not owner.may(spec)] == []
     assert owner.id == "local"
+    assert owner.kind is ActorKind.HUMAN
     assert local_user("gabriel").id == "gabriel"
 
 
 def test_an_agent_holds_only_the_scopes_it_was_granted() -> None:
+    from tagalong.control.actors import ActorKind
+
     reader = agent("notes-bot", {Scope.TRANSCRIPT})
 
+    assert reader.kind is ActorKind.AGENT
     assert reader.may(action("transcript.append"))
     assert not reader.may(action("microphone.select"))
     assert not reader.may(action("message.send"))

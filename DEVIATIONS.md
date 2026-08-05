@@ -52,3 +52,16 @@ self-contained application core with its own tests; no existing runtime path
 dispatches through it yet, so no observable session behavior changes. The
 first entries from wiring a client to it belong to milestone 3, where the TUI
 slice is converted.
+
+## Milestone 3
+
+Milestone 3 converts `message.send`, `tts.set_enabled`, `session.interrupt`,
+and `session.new` onto the controller. Observable TUI journeys are unchanged:
+typed text still ingests as `Text` and always requests a reply, a refused TTS
+toggle still leaves the sidebar as it was, interrupt still flushes pending
+stream text before cutting the turn, and `/new` still clears the transcript
+only after a new Codex thread starts.
+
+Agent `message.send` is refused as inapplicable until the `Agent` transcript
+source lands as its own evaluated change. That path has no live client yet, so
+it is not a user-visible deviation from today's session.

@@ -16,8 +16,24 @@ be read as a person speaking in the room.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from .actions import ActionSpec, Scope
+
+
+class ActorKind(StrEnum):
+    """What kind of principal a connection authenticated.
+
+    This is not a scope and not a transcript source. Kind answers how the
+    session should treat the actor's content — a human message is ``Text``, an
+    agent message is ``Agent`` — while scopes answer what the actor may ask
+    the session to do. An agent granted ``converse`` still cannot impersonate
+    a person in the room.
+    """
+
+    HUMAN = "human"
+    AGENT = "agent"
+    SYSTEM = "system"
 
 
 @dataclass(frozen=True)
@@ -25,6 +41,7 @@ class Actor:
     """An authenticated caller and the scopes its connection was granted."""
 
     id: str
+    kind: ActorKind = ActorKind.HUMAN
     scopes: frozenset[Scope] = field(default_factory=frozenset)
 
     def may(self, action: ActionSpec) -> bool:
@@ -34,7 +51,7 @@ class Actor:
 
 def local_user(id: str = "local") -> Actor:
     """The person sitting at the session: every scope, because they own it."""
-    return Actor(id, frozenset(Scope))
+    return Actor(id, ActorKind.HUMAN, frozenset(Scope))
 
 
 def agent(id: str, scopes: frozenset[Scope] | set[Scope]) -> Actor:
@@ -44,4 +61,4 @@ def agent(id: str, scopes: frozenset[Scope] | set[Scope]) -> Actor:
     someone made, and a signature that supplies one silently would make the
     unconsidered case the permissive one.
     """
-    return Actor(id, frozenset(scopes))
+    return Actor(id, ActorKind.AGENT, frozenset(scopes))

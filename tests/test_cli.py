@@ -128,6 +128,10 @@ class FakeConversation:
         self.ingested = []
         self.latency = TurnLatencyEstimator()
         self.prefired = []
+        self.generation = 0
+        self.interrupts = 0
+        self.sessions = 0
+        self.new_session_ok = True
 
     def ingest(self, speaker, text, respond, images=()):
         self.ingested.append((speaker, text, respond, images))
@@ -143,7 +147,14 @@ class FakeConversation:
         return True
 
     def interrupt(self):
-        pass
+        self.interrupts += 1
+
+    def new_session(self):
+        if not self.new_session_ok:
+            return False
+        self.generation += 1
+        self.sessions += 1
+        return True
 
     def request_model(self, _model):
         return True
@@ -898,6 +909,24 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
     assert conversation.ingested == [("Text", "what time is it?", True, ())]
 
 
+def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
+    cli.main()
+    tui, _, conversation = wiring["session"]
+
+    assert tui.controller.state.tts_enabled is True
+    assert tui.actor.id == "tui"
+
+    tui.hooks.on_user_text(UserTextMessage("hello", images=("/tmp/shot.png",)))
+    tui.hooks.on_interrupt()
+    tui.hooks.on_command("/new")
+
+    assert conversation.ingested == [("Text", "hello", True, ("/tmp/shot.png",))]
+    assert conversation.interrupts == 1
+    assert conversation.sessions == 1
+    assert getattr(tui, "resets", 0) == 1
+    assert tui.controller.state.tts_enabled is True
+
+
 def test_the_voice_toggle_mutes_the_session_engine(wiring) -> None:
     """Off is the engine told to stop generating, not the engine taken away."""
     cli.main()
@@ -905,9 +934,11 @@ def test_the_voice_toggle_mutes_the_session_engine(wiring) -> None:
 
     tui.hooks.on_tts(False)
     assert conversation.tts.enabled is False
+    assert tui.controller.state.tts_enabled is False
 
     tui.hooks.on_tts(True)
     assert conversation.tts.enabled is True
+    assert tui.controller.state.tts_enabled is True
 
 
 def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:

@@ -22,7 +22,7 @@ from .actions import (
     Parameter,
     Scope,
 )
-from .actors import Actor, agent, local_user
+from .actors import Actor, ActorKind, agent, local_user
 from .controller import Controller, Handler, Request, Snapshot
 from .events import Event, EventLog, Subscription
 from .outcomes import (
@@ -44,6 +44,7 @@ __all__ = [
     "Accepted",
     "ActionSpec",
     "Actor",
+    "ActorKind",
     "AppState",
     "Applied",
     "Capability",
