@@ -359,6 +359,14 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
                 "  quality-gate:\n    continue-on-error: true\n",
             ),
         ),
+        (
+            "protected secret scan declaring continue-on-error",
+            (
+                "workflow",
+                "  secret-scan:\n",
+                "  secret-scan:\n    continue-on-error: true\n",
+            ),
+        ),
     ],
 )
 def test_orchestration_gate_rejects_a_planted_omission(

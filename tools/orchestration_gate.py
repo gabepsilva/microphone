@@ -6,8 +6,8 @@ the workflow faster, but it also creates a silent failure mode: removing a
 target from a Make group, omitting a group from the workflow, or forgetting a
 lane in the protected aggregator all make CI greener. This gate treats those
 three lists as one contract and rejects drift in the permissive direction.
-It also forbids ``continue-on-error`` at job or step scope in every required
-lane and in the protected aggregator, regardless of the key's value.
+It also forbids ``continue-on-error`` at job or step scope anywhere in the
+designated CI workflow, regardless of the key's value.
 
 The parser is deliberately narrow. These files are repository-owned policy,
 not arbitrary Make or YAML, and accepting an unfamiliar spelling by guessing
@@ -143,11 +143,6 @@ def _check_makefile(source: str, failures: list[str]) -> None:
 
 
 def _check_aggregator(job: str, lane_jobs: set[str], failures: list[str]) -> None:
-    if _declares_continue_on_error(job):
-        failures.append(
-            f"{HOSTED_WORKFLOW}: {AGGREGATOR_JOB} must not declare continue-on-error."
-        )
-
     name = re.search(r"^\s+name:\s*(.+?)\s*$", job, re.MULTILINE)
     if name is None or name.group(1) != AGGREGATOR_NAME:
         failures.append(
@@ -187,16 +182,17 @@ def _check_workflow(source: str, failures: list[str]) -> None:
         failures.append(f"{HOSTED_WORKFLOW}: jobs are missing or could not be parsed.")
         return
 
+    for job_id, job in jobs.items():
+        if _declares_continue_on_error(job):
+            failures.append(
+                f"{HOSTED_WORKFLOW}: job {job_id} must not declare continue-on-error."
+            )
+
     lanes_by_group: dict[str, list[str]] = {group: [] for group in HOSTED_GROUPS}
     for job_id, job in jobs.items():
         group = _invoked_group(job)
         if group is not None:
             lanes_by_group[group].append(job_id)
-            if _declares_continue_on_error(job):
-                failures.append(
-                    f"{HOSTED_WORKFLOW}: lane {job_id} must not declare "
-                    "continue-on-error."
-                )
 
     for group, lane_jobs in lanes_by_group.items():
         if len(lane_jobs) != 1:
