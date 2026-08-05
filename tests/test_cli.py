@@ -422,6 +422,7 @@ def test_a_microphone_open_failure_leaves_the_session_running() -> None:
 
     assert opened == []
     assert microphone.current is None
+    assert microphone.desired == "Yeti"
     assert tui.notes == ["could not listen to Yeti: device busy"]
 
 
@@ -1330,6 +1331,32 @@ def test_the_newest_choice_wins_rather_than_each_one_building() -> None:
 
     assert len(opened) == 1
     assert channel.tap.application == "ZOOM VoiceEngine"
+
+
+def test_selection_completion_reports_the_effective_value() -> None:
+    applied: list[str | None] = []
+    selections = cli._SelectionRequests()
+    request = selections.replace("requested", applied.append)
+
+    assert selections.complete(request, "effective") is True
+    assert applied == ["effective"]
+
+
+def test_selection_completion_runs_after_the_channel_lock_is_released() -> None:
+    channel, _, _, _ = audio_channel()
+    observations: list[tuple[str | None, bool]] = []
+
+    def observe(effective):
+        acquired = channel.lock.acquire(blocking=False)
+        observations.append((effective, acquired))
+        if acquired:
+            channel.lock.release()
+
+    channel.select("Brave", on_applied=observe)
+
+    channel.reconcile()
+
+    assert observations == [("Brave", True)]
 
 
 def test_an_aba_selection_only_completes_the_newest_request() -> None:

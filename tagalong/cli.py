@@ -335,14 +335,14 @@ class _SelectionRequests:
         with self._lock:
             return self._request
 
-    def complete(self, request):
+    def complete(self, request, effective):
         """Notify only if *request* is still the newest desired selection."""
         with self._lock:
             if self._request is not request:
                 return False
             self._request = _SelectionRequest(request.value)
         if request.on_applied is not None:
-            request.on_applied(request.value)
+            request.on_applied(effective)
         return True
 
     def abandon(self, request):
@@ -455,26 +455,27 @@ class MicrophoneChannel:
         old callback is torn down cleanly. Building from scratch (or retiring
         entirely) is reserved for going to or from no microphone at all.
         """
+        applied = False
+        effective = None
         with self.lock:
             request = self._selection.snapshot()
             wanted = request.value
             if wanted == self.current:
-                self._selection.complete(request)
-                return
-            if wanted is None:
+                applied = True
+            elif wanted is None:
                 self._retire()
-                self._selection.complete(request)
-                return
-            selected = self.devices.get(wanted)
-            if selected is None:
-                return
-            index, device = selected
-            if self.transcriber is not None:
-                if self._retarget(index, device):
-                    self._selection.complete(request)
-                return
-            if self._open(index, device):
-                self._selection.complete(request)
+                applied = True
+            else:
+                selected = self.devices.get(wanted)
+                if selected is not None:
+                    index, device = selected
+                    if self.transcriber is not None:
+                        applied = self._retarget(index, device)
+                    else:
+                        applied = self._open(index, device)
+            effective = self.current
+        if applied:
+            self._selection.complete(request, effective)
 
     def _retarget(self, device_index, device):
         """Point the live capture at another input without reloading the model."""
@@ -606,24 +607,28 @@ class AudioChannel:
         is closing the session, and two of these running at once would build a
         channel the other is retiring.
         """
+        applied = False
+        effective = None
         with self.lock:
             request = self._selection.snapshot()
             wanted = request.value
             if wanted == self.current:
-                self._selection.complete(request)
-                return
-            if wanted is None:
+                applied = True
+            elif wanted is None:
                 self._retire()
-                self._selection.complete(request)
+                applied = True
             elif self.tap is None:
                 if self._open(wanted):
-                    self._selection.complete(request)
+                    applied = True
                 else:
                     self._selection.abandon(request)
             else:
                 self.tap.follow(wanted)
                 self.current = wanted
-                self._selection.complete(request)
+                applied = True
+            effective = self.current
+        if applied:
+            self._selection.complete(request, effective)
 
     def _open(self, application):
         tap = StreamTap(application)
