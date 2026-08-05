@@ -9,8 +9,6 @@ import sys
 from dataclasses import dataclass
 from typing import cast
 
-from .presentation import SessionStatusSink
-
 
 @dataclass(frozen=True)
 class CodexModelOption:
@@ -105,18 +103,3 @@ def probe_codex_models() -> list[CodexModelOption]:
         if options:
             return options
     return []
-
-
-def populate_codex_model_catalog(transcript_display: SessionStatusSink) -> None:
-    """Populate TUI selectors without delaying audio or interface startup."""
-    options = probe_codex_models()
-    if not options:
-        transcript_display.note(
-            "Codex model catalog unavailable; using the configured model"
-        )
-        return
-    transcript_display.set_codex_catalog(
-        [(option.label, option.slug) for option in options],
-        {option.slug: list(option.efforts) for option in options},
-        {option.slug: option.default_effort for option in options},
-    )

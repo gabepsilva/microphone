@@ -66,6 +66,7 @@ from .domain import (
     UserTextMessage,
     parse_turn_silence,
 )
+from .presentation import Entry
 from .speech import (
     DEFAULT_PROVIDER,
     NO_VOICE,
@@ -114,25 +115,6 @@ POLICIES = {name: policy.sidebar_label for name, policy in RESPONSE_POLICIES.ite
 # --------------------------------------------------------------------------
 # State
 # --------------------------------------------------------------------------
-
-
-@dataclass
-class Entry:
-    """One rendered row in the transcript."""
-
-    kind: str  # "speech" | "note" | "command" | "reasoning"
-    source: str = ""
-    text: str = ""
-    stamp: str = ""
-    reply_to: str = ""  # not rendered; carried for the on_save export
-    interrupted: bool = False
-    output: list[str] = field(default_factory=list)
-    exit_code: int | None = None
-    streaming: bool = False
-    # How long a reasoning entry spent thinking, known only once it has.
-    seconds: float | None = None
-    # Bookkeeping for the session transcript file; not rendered.
-    recorded: bool = False
 
 
 @dataclass
@@ -2585,8 +2567,8 @@ class VoiceCodexTUI:
     def _clear_partial(self) -> None:
         self._show_partial("", "")
 
-    # The following methods implement the runtime's TranscriptPresentation
-    # boundary. Keeping them here means the runtime never imports Textual
+    # The following methods implement the runtime's narrow presentation
+    # boundaries. Keeping them here means the runtime never imports Textual
     # widgets directly.
 
     def update(self, speaker: str, text: str) -> None:

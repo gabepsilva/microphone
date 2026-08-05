@@ -21,7 +21,6 @@ enforces both.
 from __future__ import annotations
 
 import os
-import queue
 import shutil
 import sys
 import threading
@@ -29,8 +28,8 @@ from pathlib import Path
 
 import numpy
 
-from .domain import EchoMemory, SpeechActivity, TurnGate
 from .playback import AudioPlayer, raw_pcm_args
+from .queued_tts import QueuedSentenceTTS
 
 DEFAULT_MODEL_HOME = (
     Path(
@@ -98,11 +97,9 @@ def trim_silence(pcm, sample_rate, keep_lead=0.02, keep_tail=0.08):
     return samples[start:end].tobytes()
 
 
-class PiperSentenceTTS:
+class PiperSentenceTTS(QueuedSentenceTTS):
     """Synthesize each sentence locally and play it in the order it arrived."""
 
-    QUEUED_RETENTION_SECONDS = 120
-    SPOKEN_RETENTION_SECONDS = 12
     LOAD_TIMEOUT_SECONDS = 120
 
     def __init__(self, voice, output_sink=None, home=DEFAULT_MODEL_HOME):
@@ -122,13 +119,7 @@ class PiperSentenceTTS:
         self.piper = piper
         self.voice = voice
         self.home = home
-        self.playback = AudioPlayer(player, output_sink=output_sink)
-        self.sentences = queue.Queue()
-        self.stop_item = object()
-        self.shutdown_requested = threading.Event()
-        self.turns = TurnGate()
-        self.echo = EchoMemory()
-        self.activity = SpeechActivity()
+        super().__init__(AudioPlayer(player, output_sink=output_sink))
         self.model = None
         self.model_error = None
         self.model_ready = threading.Event()
@@ -158,60 +149,6 @@ class PiperSentenceTTS:
             self.model_error = error
         finally:
             self.model_ready.set()
-
-    def begin_turn(self):
-        self.turns.begin_turn()
-
-    def set_enabled(self, enabled):
-        """Enable or silence future speech without rebuilding the pipeline."""
-        if self.turns.set_enabled(enabled):
-            self.interrupt()
-
-    def _abandoned(self, turn):
-        """Report whether a turn's speech is no longer wanted."""
-        return self.shutdown_requested.is_set() or not self.turns.is_active(turn)
-
-    def speak(self, text):
-        turn, accepting = self.turns.accepting_turn()
-        if text and accepting and not self.shutdown_requested.is_set():
-            self.echo.remember(text, retention=self.QUEUED_RETENTION_SECONDS)
-            self.activity.queued()
-            self.sentences.put_nowait((turn, text))
-
-    def interrupt(self):
-        """Stop the current response and discard all of its queued speech."""
-        if self.shutdown_requested.is_set():
-            return
-        self.turns.cancel()
-        self._discard_queued()
-        self.activity.silenced()
-        self.playback.stop()
-
-    def _discard_queued(self):
-        """Drop every sentence still waiting, and stop calling it recent speech.
-
-        ``speak`` gives a queued sentence a long retention because it may sit
-        in the queue for a while before it is heard; the worker shortens that
-        once the sentence has actually played. A sentence dropped here never
-        reaches the worker, so without this it stays echo-matchable for two
-        minutes despite never being said — and the microphones would filter
-        the speaker's own words as echo of a sentence nobody ever heard.
-        """
-        while True:
-            try:
-                queued = self.sentences.get_nowait()
-            except queue.Empty:
-                return
-            if queued is self.stop_item:
-                self.sentences.put_nowait(queued)
-                return
-            self.echo.remember(
-                queued[1], retention=self.SPOKEN_RETENTION_SECONDS, replace=True
-            )
-
-    def is_likely_echo(self, text):
-        """Return True when a transcript resembles recently queued TTS."""
-        return self.echo.matches(text)
 
     def _await_model(self):
         """Return the loaded voice, or None once the failure has been reported.
@@ -257,14 +194,3 @@ class PiperSentenceTTS:
                     text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True
                 )
                 self.activity.finished()
-
-    def is_speaking(self):
-        """Report whether this engine still has speech to deliver."""
-        return self.activity.speaking
-
-    def close(self):
-        self.shutdown_requested.set()
-        self.activity.silenced()
-        self.playback.stop()
-        self.sentences.put_nowait(self.stop_item)
-        self.worker.join(timeout=3)

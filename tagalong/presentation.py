@@ -9,14 +9,27 @@ to satisfy only what its collaborator actually calls.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Protocol
 
-# What a capture channel shows in place of a device name when it has none. A
-# far end can be chosen and dropped while the session runs, so this is a state
-# the interface returns to rather than only a value it starts in. It lives here
-# because the runtime sets it and the interface draws it, and the runtime must
-# not import the interface to name it.
-NO_DEVICE = "none"
+
+@dataclass
+class Entry:
+    """One finished or streaming row in the session transcript."""
+
+    kind: str  # "speech" | "note" | "command" | "reasoning"
+    source: str = ""
+    text: str = ""
+    stamp: str = ""
+    reply_to: str = ""  # not rendered; carried for the on_save export
+    interrupted: bool = False
+    output: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+    streaming: bool = False
+    # How long a reasoning entry spent thinking, known only once it has.
+    seconds: float | None = None
+    # Bookkeeping for the session transcript file; not rendered.
+    recorded: bool = False
 
 
 class TranscriptSink(Protocol):
@@ -103,9 +116,3 @@ class CodexStreamSink(Protocol):
 
 class CodexPresentation(CodexStreamSink, SessionStatusSink, Protocol):
     """What a Codex conversation needs: the stream plus its settings display."""
-
-
-class TranscriptPresentation(
-    TranscriptSink, CodexPresentation, ApplicationListSink, NewSessionSink, Protocol
-):
-    """The whole display surface, as the Textual interface provides it."""

@@ -8,13 +8,11 @@ player sets rather than on a delay, so they finish as fast as the pipeline.
 from __future__ import annotations
 
 import asyncio
-import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -243,68 +241,6 @@ def test_the_player_is_invoked_with_a_pipe_and_no_display(tts, playback) -> None
     ]
 
 
-def test_speech_is_dropped_while_tts_is_disabled(tts, playback) -> None:
-    tts.begin_turn()
-    tts.set_enabled(False)
-    tts.speak("This must stay silent.")
-    tts.set_enabled(True)
-    tts.begin_turn()
-    tts.speak("This one plays.")
-
-    assert playback.wait_for(1)
-    assert playback.audio == [b"audio:This one plays.:trimmed"]
-
-
-def test_empty_text_is_never_queued(tts, playback) -> None:
-    tts.begin_turn()
-    tts.speak("")
-    tts.speak("Real speech.")
-
-    assert playback.wait_for(1)
-    assert playback.audio == [b"audio:Real speech.:trimmed"]
-
-
-def test_an_interrupted_turn_is_no_longer_active(tts) -> None:
-    tts.begin_turn()
-    turn = tts.turns.current_turn
-    tts.interrupt()
-
-    assert not tts._turn_is_active(turn)
-
-
-def test_speech_queued_after_an_interrupt_is_refused_until_a_new_turn(
-    tts, playback
-) -> None:
-    tts.begin_turn()
-    tts.interrupt()
-    tts.speak("Ignored.")
-    tts.begin_turn()
-    tts.speak("Accepted.")
-
-    assert playback.wait_for(1)
-    assert playback.audio == [b"audio:Accepted.:trimmed"]
-
-
-def test_queued_speech_is_remembered_as_a_likely_echo(tts) -> None:
-    tts.begin_turn()
-    tts.speak("Opening the settings panel.")
-
-    assert tts.is_likely_echo("opening the settings panel")
-    assert not tts.is_likely_echo("what time is the meeting")
-
-
-def test_a_closed_engine_refuses_new_speech(tts, playback) -> None:
-    tts.begin_turn()
-    tts.speak("Before closing.")
-
-    assert playback.wait_for(1)
-
-    tts.close()
-    tts.speak("After closing.")
-
-    assert playback.audio == [b"audio:Before closing.:trimmed"]
-
-
 @pytest.mark.parametrize(
     ("stderr", "expected"),
     [
@@ -481,91 +417,6 @@ def test_an_interrupt_stops_the_sentence_that_is_playing(monkeypatch, playback) 
         engine.interrupt()
 
         assert playback.players[0].terminated
-    finally:
-        release.set()
-        engine.close()
-
-
-def test_an_interrupt_after_close_leaves_the_shutdown_request_alone(
-    monkeypatch, playback
-) -> None:
-    engine = start_engine(monkeypatch, playback)
-    engine.begin_turn()
-    engine.close()
-    cancelled_before = engine.turns.cancelled
-
-    engine.interrupt()
-
-    # A closed engine is already torn down. interrupt() must return without
-    # touching the turn state or re-entering the queue drain.
-    assert engine.turns.cancelled == cancelled_before
-    assert not engine.worker.is_alive()
-
-
-def test_draining_an_interrupt_puts_the_shutdown_item_back(
-    monkeypatch, playback
-) -> None:
-    monkeypatch.setattr(EdgeSentenceTTS, "PREFETCH_COUNT", 1)
-    release = threading.Event()
-    playback.factory = lambda record: GatedPlayer(record, release, running=False)
-    engine = start_engine(monkeypatch, playback)
-    try:
-        engine.begin_turn()
-        engine.speak("Holds the only slot.")
-        engine.speak("Blocks the producer.")
-        assert playback.wait_for(1)
-        # With the producer parked on a prefetch slot nothing drains the queue,
-        # so the test controls exactly what the interrupt walks over.
-        assert wait_until(engine.sentences.empty)
-        engine.sentences.put_nowait(engine.stop_item)
-        engine.sentences.put_nowait((engine.turns.current_turn, "after the stop."))
-
-        engine.interrupt()
-
-        # The drain stops at the stop item and puts it back, so a shutdown
-        # already in flight is never swallowed by an interrupt.
-        remaining = []
-        with suppress(queue.Empty):
-            while True:
-                remaining.append(engine.sentences.get_nowait())
-        assert engine.stop_item in remaining
-    finally:
-        release.set()
-        engine.close()
-
-
-def test_an_interrupt_stops_treating_dropped_speech_as_an_echo(
-    monkeypatch, playback
-) -> None:
-    """A sentence the interrupt threw away must not filter the microphones.
-
-    Queued speech is remembered for two minutes because it may not be said
-    for a while. One that is dropped is never said at all, so its retention
-    has to fall back to a spoken sentence's — otherwise the speaker's own
-    words are filtered as echo of a reply they cut off and never heard.
-    """
-    monkeypatch.setattr(EdgeSentenceTTS, "PREFETCH_COUNT", 1)
-    release = threading.Event()
-    playback.factory = lambda record: GatedPlayer(record, release, running=False)
-    engine = start_engine(monkeypatch, playback)
-    try:
-        engine.begin_turn()
-        engine.speak("Holds the only slot.")
-        engine.speak("Parks the producer.")
-        assert playback.wait_for(1)
-        assert wait_until(engine.sentences.empty)
-        engine.speak("I can roll it back if you would rather not ship today.")
-
-        engine.interrupt()
-
-        elapsed = EdgeSentenceTTS.SPOKEN_RETENTION_SECONDS + 1
-        engine.echo._clock = lambda: time.monotonic() + elapsed
-        assert (
-            engine.is_likely_echo(
-                "i can roll it back if you would rather not ship today"
-            )
-            is False
-        )
     finally:
         release.set()
         engine.close()
@@ -779,6 +630,65 @@ def test_closing_while_speech_waits_for_a_slot_shuts_the_pipeline_down(
         engine.close()
 
 
+def test_a_sentence_waiting_out_the_stagger_is_dropped_by_a_close(
+    monkeypatch, playback
+) -> None:
+    """The abandon check after the stagger is the one shutdown lands in.
+
+    Edge spaces its requests apart, so a sentence that was wanted when it took
+    a prefetch slot can be unwanted by the time the delay expires. The stagger
+    is widened here rather than raced: the close lands well inside the delay,
+    and without the second check the pipeline would wait it out and
+    synthesize a sentence the session had already closed on.
+    """
+    monkeypatch.setattr(EdgeSentenceTTS, "REQUEST_STAGGER_SECONDS", 0.5)
+    engine = start_engine(monkeypatch, playback)
+    try:
+        engine.begin_turn()
+        engine.speak("Sets the pace.")
+        engine.speak("Still waiting out the stagger.")
+        assert playback.wait_for(1)
+
+        engine.close()
+
+        assert wait_until(lambda: not engine.worker.is_alive())
+        assert playback.audio == [b"audio:Sets the pace."]
+    finally:
+        engine.close()
+
+
+def test_shutting_down_a_producer_parked_on_a_slot_cancels_it(
+    monkeypatch, playback
+) -> None:
+    """Edge alone can be closed with its producer waiting on a prefetch slot.
+
+    The queue lifecycle stops accepting speech immediately, but this pipeline
+    has a sentence already past the queue and blocked on the semaphore. It has
+    to notice the shutdown where it stands rather than after the slot frees,
+    and the consumer has to cancel it rather than await a task that never
+    returns.
+    """
+    monkeypatch.setattr(EdgeSentenceTTS, "PREFETCH_COUNT", 1)
+    release = threading.Event()
+    playback.factory = lambda record: GatedPlayer(record, release, running=False)
+    engine = start_engine(monkeypatch, playback)
+    try:
+        engine.begin_turn()
+        engine.speak("Holds the only slot.")
+        engine.speak("Parks the producer.")
+        assert playback.wait_for(1)
+        assert wait_until(engine.sentences.empty)
+
+        engine.close()
+        release.set()
+
+        assert wait_until(lambda: not engine.worker.is_alive())
+        assert playback.audio == [b"audio:Holds the only slot."]
+    finally:
+        release.set()
+        engine.close()
+
+
 def test_closing_terminates_a_player_that_is_still_speaking(
     monkeypatch, playback
 ) -> None:
@@ -821,33 +731,3 @@ def test_a_turn_cancelled_during_the_request_stagger_is_dropped(
         assert playback.audio == [b"audio:Sent immediately.", b"audio:A fresh turn."]
     finally:
         engine.close()
-
-
-def test_an_engine_with_nothing_to_say_is_not_speaking(tts) -> None:
-    assert tts.is_speaking() is False
-
-
-def test_an_engine_is_speaking_from_the_moment_a_sentence_is_accepted(tts) -> None:
-    tts.begin_turn()
-    tts.speak("Hello there.")
-
-    assert tts.is_speaking() is True
-
-
-def test_an_engine_falls_quiet_once_the_last_sentence_has_played(tts, playback) -> None:
-    tts.begin_turn()
-    tts.speak("Hello there.")
-    assert playback.wait_for(1)
-
-    assert wait_until(lambda: tts.is_speaking() is False)
-
-
-def test_an_interrupted_engine_stops_reporting_speech(tts, playback) -> None:
-    tts.begin_turn()
-    tts.speak("First.")
-    tts.speak("Second.")
-    assert playback.wait_for(1)
-
-    tts.interrupt()
-
-    assert tts.is_speaking() is False

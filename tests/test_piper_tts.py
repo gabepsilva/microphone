@@ -435,15 +435,6 @@ def test_an_interrupted_turn_stops_the_player_and_drops_its_queue(
     piper.close()
 
 
-def test_speech_after_an_interrupt_needs_a_new_turn(piper, playback, voice) -> None:
-    piper.begin_turn()
-    piper.interrupt()
-    piper.speak("Dropped.")
-
-    assert playback.stayed_silent()
-    assert voice.spoken == []
-
-
 def test_disabling_speech_silences_the_current_response(piper, playback, voice) -> None:
     piper.begin_turn()
     piper.set_enabled(False)
@@ -460,58 +451,6 @@ def test_re_enabling_speech_lets_the_next_turn_speak(piper, playback) -> None:
     piper.speak("Audible again.")
 
     assert playback.wait_for(1)
-
-
-def test_an_interrupt_stops_treating_dropped_speech_as_an_echo(
-    monkeypatch, playback, voice
-) -> None:
-    """A sentence the interrupt threw away must not filter the microphones.
-
-    Queued speech is remembered for two minutes because it may not be said
-    for a while. One that is dropped is never said at all, so its retention
-    has to fall back to a spoken sentence's — otherwise the speaker's own
-    words are filtered as echo of a reply they cut off and never heard.
-    """
-    playback.gate = threading.Event()
-    piper = start_engine(monkeypatch, playback, voice)
-    try:
-        piper.begin_turn()
-        piper.speak("The deploy finished.")
-        assert playback.wait_for(1)
-
-        piper.speak("I can roll it back if you would rather not ship today.")
-        piper.interrupt()
-
-        # Never synthesized: the interrupt drained it out of the queue.
-        assert voice.spoken == ["The deploy finished."]
-
-        elapsed = piper.SPOKEN_RETENTION_SECONDS + 1
-        piper.echo._clock = lambda: time.monotonic() + elapsed
-        assert (
-            piper.is_likely_echo(
-                "i can roll it back if you would rather not ship today"
-            )
-            is False
-        )
-    finally:
-        playback.gate.set()
-        piper.close()
-
-
-def test_queued_speech_is_recognized_as_its_own_echo(piper) -> None:
-    piper.begin_turn()
-    piper.speak("The build finished.")
-
-    assert piper.is_likely_echo("the build finished") is True
-    assert piper.is_likely_echo("something else entirely") is False
-
-
-def test_empty_text_is_never_queued(piper, playback, voice) -> None:
-    piper.begin_turn()
-    piper.speak("")
-
-    assert playback.stayed_silent()
-    assert voice.spoken == []
 
 
 def test_a_model_that_fails_to_load_is_reported_once(
@@ -563,57 +502,41 @@ def test_a_synthesis_failure_is_reported_without_stopping_the_worker(
         engine.close()
 
 
-def test_closing_stops_the_player_and_ends_the_worker(
+def test_a_session_closed_while_the_model_loads_never_speaks(
     monkeypatch, playback, voice
 ) -> None:
-    playback.gate = threading.Event()
-    piper = start_engine(monkeypatch, playback, voice)
-    piper.begin_turn()
-    piper.speak("Hello there.")
-    assert playback.wait_for(1)
+    """Shutdown has to reach a worker parked on the load, not just on the queue.
 
-    piper.close()
+    Piper alone can be asked to stop in this state: the worker waits on the
+    model for up to two minutes, so a sentence accepted before the close is
+    inside ``_await_model`` rather than inside ``sentences.get`` when the stop
+    item arrives. Nothing may be synthesized or played once it comes back.
+    """
+    loaded = threading.Event()
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
+    monkeypatch.setitem(
+        sys.modules,
+        "piper",
+        SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: voice)),
+    )
+    monkeypatch.setattr(
+        "tagalong.piper_tts.ensure_model",
+        lambda _voice, _home: (loaded.wait(WAIT_SECONDS), Path("model.onnx"))[1],
+    )
+    engine = PiperSentenceTTS("en_US-lessac-medium")
+    engine.begin_turn()
+    engine.speak("Queued while the model was still loading.")
+    assert wait_until(lambda: not engine.model_ready.is_set())
+    # Released from the side so the close below joins its worker rather than
+    # waiting out the timeout; the sentence is already past the gate by then.
+    threading.Timer(0.05, loaded.set).start()
 
-    assert piper.worker.is_alive() is False
-    assert playback.players[0].terminated is True
+    engine.close()
 
-
-def test_speech_after_closing_is_discarded(piper, playback) -> None:
-    piper.close()
-    piper.begin_turn()
-    piper.speak("Too late.")
-
+    assert engine.worker.is_alive() is False
     assert playback.stayed_silent()
-
-
-def test_interrupting_after_closing_does_nothing(piper) -> None:
-    piper.close()
-
-    piper.interrupt()
-
-    assert piper.worker.is_alive() is False
-
-
-def test_an_engine_with_nothing_to_say_is_not_speaking(piper) -> None:
-    assert piper.is_speaking() is False
-
-
-def test_an_engine_is_speaking_from_the_moment_a_sentence_is_accepted(piper) -> None:
-    """Not from the moment audio starts: synthesis is part of the answer."""
-    piper.begin_turn()
-    piper.speak("Hello there.")
-
-    assert piper.is_speaking() is True
-
-
-def test_an_engine_falls_quiet_once_the_last_sentence_has_played(
-    piper, playback
-) -> None:
-    piper.begin_turn()
-    piper.speak("Hello there.")
-    assert playback.wait_for(1)
-
-    assert wait_until(lambda: piper.is_speaking() is False)
+    assert voice.spoken == []
 
 
 def test_speech_spans_the_gap_between_two_sentences(monkeypatch, playback) -> None:
@@ -629,31 +552,3 @@ def test_speech_spans_the_gap_between_two_sentences(monkeypatch, playback) -> No
         assert piper.is_speaking() is True
     finally:
         piper.close()
-
-
-def test_an_interrupted_engine_stops_reporting_speech(monkeypatch, playback) -> None:
-    playback.gate = threading.Event()
-    piper = start_engine(monkeypatch, playback, FakeVoice())
-    try:
-        piper.begin_turn()
-        piper.speak("First.")
-        piper.speak("Second.")
-        assert playback.wait_for(1)
-
-        piper.interrupt()
-
-        assert piper.is_speaking() is False
-    finally:
-        piper.close()
-
-
-def test_a_closed_engine_stops_reporting_speech(monkeypatch, playback) -> None:
-    playback.gate = threading.Event()
-    piper = start_engine(monkeypatch, playback, FakeVoice())
-    piper.begin_turn()
-    piper.speak("First.")
-    assert playback.wait_for(1)
-
-    piper.close()
-
-    assert piper.is_speaking() is False

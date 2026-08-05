@@ -9,15 +9,14 @@ enforces both.
 from __future__ import annotations
 
 import asyncio
-import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
 
-from .domain import EchoMemory, SpeechActivity, TurnGate
 from .playback import AudioPlayer, describe_tool_failure
+from .queued_tts import QueuedSentenceTTS
 
 
 def trim_command(trimmer, silence_filter):
@@ -37,7 +36,7 @@ def trim_command(trimmer, silence_filter):
     ]
 
 
-class EdgeSentenceTTS:
+class EdgeSentenceTTS(QueuedSentenceTTS):
     """Prefetch two Edge sentences and play them in their original order."""
 
     PREFETCH_COUNT = 2
@@ -45,9 +44,7 @@ class EdgeSentenceTTS:
     # A sentence stays recognizable as an echo for as long as it could still
     # be heard: longest while it waits in the queue, shortest once it has been
     # played and only room reverberation can still bring it back.
-    QUEUED_RETENTION_SECONDS = 120
     SYNTHESIZING_RETENTION_SECONDS = 30
-    SPOKEN_RETENTION_SECONDS = 12
     SILENCE_TRIM_FILTER = (
         "silenceremove="
         "start_periods=1:start_duration=0.02:start_threshold=-45dB:"
@@ -81,84 +78,13 @@ class EdgeSentenceTTS:
         self.edge_tts = edge_tts
         self.voice = voice
         self.trimmer = trimmer
-        self.playback = AudioPlayer(player, output_sink=output_sink)
-        self.sentences = queue.Queue()
-        self.stop_item = object()
-        self.shutdown_requested = threading.Event()
-        self.turns = TurnGate()
-        self.echo = EchoMemory()
-        self.activity = SpeechActivity()
+        super().__init__(AudioPlayer(player, output_sink=output_sink))
         self.worker = threading.Thread(
             target=self._worker,
             name="EdgeTTSWorker",
             daemon=True,
         )
         self.worker.start()
-
-    def begin_turn(self):
-        self.turns.begin_turn()
-
-    def set_enabled(self, enabled):
-        """Enable or silence future speech without rebuilding the pipeline."""
-        if self.turns.set_enabled(enabled):
-            self.interrupt()
-
-    def _turn_is_active(self, turn):
-        return self.turns.is_active(turn)
-
-    def _abandoned(self, turn):
-        """Report whether a turn's speech is no longer wanted.
-
-        Synthesis, trimming, and playback each hand off to a thread or an
-        event loop, so a turn can be interrupted or the engine closed between
-        any two of them. Every stage re-asks rather than trusting the answer
-        the stage before it got.
-        """
-        return self.shutdown_requested.is_set() or not self._turn_is_active(turn)
-
-    def speak(self, text):
-        turn, accepting = self.turns.accepting_turn()
-        if text and accepting and not self.shutdown_requested.is_set():
-            self.echo.remember(text, retention=self.QUEUED_RETENTION_SECONDS)
-            self.activity.queued()
-            self.sentences.put_nowait((turn, text))
-
-    def interrupt(self):
-        """Stop the current response and discard all of its queued speech."""
-        if self.shutdown_requested.is_set():
-            return
-        self.turns.cancel()
-        self._discard_queued()
-        self.activity.silenced()
-        self.playback.stop()
-
-    def _discard_queued(self):
-        """Drop every sentence still waiting, and stop calling it recent speech.
-
-        ``speak`` gives a queued sentence a long retention because it may sit
-        in the queue for a while before it is heard; the consumer shortens
-        that once the sentence has actually played. A sentence dropped here
-        never reaches the consumer, so without this it stays echo-matchable
-        for two minutes despite never being said — and the microphones would
-        filter the speaker's own words as echo of a sentence nobody heard.
-        """
-        while True:
-            try:
-                queued = self.sentences.get_nowait()
-            except queue.Empty:
-                return
-            if queued is self.stop_item:
-                self.sentences.put_nowait(queued)
-                return
-            self._forget_unspoken(queued[1])
-
-    def _forget_unspoken(self, text):
-        """Cut a never-played sentence's retention back to a spoken one's."""
-        self.echo.remember(text, retention=self.SPOKEN_RETENTION_SECONDS, replace=True)
-
-    def is_likely_echo(self, text):
-        """Return True when a transcript resembles recently queued TTS."""
-        return self.echo.matches(text)
 
     async def _synthesize(self, turn, text):
         self.echo.remember(
@@ -287,14 +213,3 @@ class EdgeSentenceTTS:
 
     def _worker(self):
         asyncio.run(self._run_pipeline())
-
-    def is_speaking(self):
-        """Report whether this engine still has speech to deliver."""
-        return self.activity.speaking
-
-    def close(self):
-        self.shutdown_requested.set()
-        self.activity.silenced()
-        self.playback.stop()
-        self.sentences.put_nowait(self.stop_item)
-        self.worker.join(timeout=3)

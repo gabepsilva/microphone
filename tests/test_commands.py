@@ -59,13 +59,6 @@ def test_an_alias_dispatches_to_the_canonical_handler() -> None:
     assert routed == [Command("new", ())]
 
 
-def test_handlers_property_exposes_registered_callables() -> None:
-    commands = CommandRouter(Display())
-    commands.register("help", lambda _command: None)
-
-    assert set(commands.handlers) == {"help"}
-
-
 # --------------------------------------------------------------------------
 # Registration guardrails
 # --------------------------------------------------------------------------

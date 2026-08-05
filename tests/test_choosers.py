@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tagalong.catalog import CodexModelOption, populate_codex_model_catalog
 from tagalong.choosers import (
     audio_outputs,
     choose_audio_stream,
@@ -63,32 +62,6 @@ def fake_sounddevice(monkeypatch, devices=None, error=None, query_error=None):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-
-
-class RecordingStatus:
-    """A session-status display that keeps what the catalog probe reported."""
-
-    def __init__(self):
-        self.notes: list[str] = []
-        self.errors: list[str] = []
-        self.fields: dict[str, object] = {}
-        self.catalog: dict[str, object] = {}
-
-    def note(self, text):
-        self.notes.append(text)
-
-    def error(self, message):
-        self.errors.append(message)
-
-    def set_codex(self, **fields):
-        self.fields.update(fields)
-
-    def set_codex_catalog(self, models, efforts_by_model, default_effort_by_model):
-        self.catalog = {
-            "models": models,
-            "efforts": efforts_by_model,
-            "defaults": default_effort_by_model,
-        }
 
 
 def fake_pactl(monkeypatch, stdout="[]", found=True, error=None):
@@ -416,33 +389,6 @@ def test_choosing_a_response_policy_accepts_its_menu_number(
         frozenset({"Voice", "Audio"}),
     )
     assert "Please enter a number from 1 to 4." in capsys.readouterr().out
-
-
-def test_the_model_catalog_populates_the_sidebar_selectors(monkeypatch) -> None:
-    option = CodexModelOption("slug-a", "Model A", ("low", "high"), "high")
-    monkeypatch.setattr("tagalong.catalog.probe_codex_models", lambda: [option])
-    recorded = {}
-
-    display = RecordingStatus()
-    populate_codex_model_catalog(display)
-    recorded = display.catalog
-
-    assert recorded["models"] == [("Model A", "slug-a")]
-    assert recorded["efforts"] == {"slug-a": ["low", "high"]}
-    assert recorded["defaults"] == {"slug-a": "high"}
-    assert display.notes == []
-
-
-def test_an_unavailable_model_catalog_notes_it_instead_of_failing(monkeypatch) -> None:
-    monkeypatch.setattr("tagalong.catalog.probe_codex_models", list)
-    display = RecordingStatus()
-
-    populate_codex_model_catalog(display)
-
-    assert display.notes == [
-        "Codex model catalog unavailable; using the configured model"
-    ]
-    assert display.catalog == {}
 
 
 # --------------------------------------------------------------------------
