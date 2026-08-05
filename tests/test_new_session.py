@@ -8,9 +8,9 @@ import threading
 from types import SimpleNamespace
 
 from tagalong import codex as codex_module
+from tagalong.application import bind_first_slice
 from tagalong.cli import (
     build_command_router,
-    reset_codex_session,
     show_command_help,
 )
 from tagalong.codex import (
@@ -20,6 +20,7 @@ from tagalong.codex import (
     load_codex_sdk,
 )
 from tagalong.commands import Command, CommandRouter
+from tagalong.control import Controller, local_user
 from tagalong.domain import TEXT
 from tagalong.tui import PromptInput, VoiceCodexTUI
 
@@ -127,6 +128,36 @@ class FakeCodex:
         self.closed = True
 
 
+class FakeSpeech:
+    def __init__(self) -> None:
+        self.interrupts = 0
+
+    def interrupt(self) -> None:
+        self.interrupts += 1
+
+    def close(self) -> None:
+        pass
+
+
+def _stubbed_conversation(monkeypatch, speech=None, **settings):
+    fake_codex = FakeCodex()
+    display = FakeDisplay()
+    load_codex_sdk()
+    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
+    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox=settings.get("sandbox", "read-only"),
+            model=settings.get("model", "gpt-5.6-luna"),
+            reasoning_effort=settings.get("reasoning_effort", "low"),
+            service_tier=settings.get("service_tier"),
+        ),
+        display,
+        speech,
+    )
+    return fake_codex, display, conversation
+
+
 def test_new_session_discards_queued_context_and_keeps_its_settings(
     monkeypatch,
 ) -> None:
@@ -183,6 +214,152 @@ def test_new_session_discards_queued_context_and_keeps_its_settings(
         assert fake_codex.threads[0].turns == []
         assert conversation.new_session() is True
         assert conversation.generation == 2
+    finally:
+        conversation.close()
+
+
+def test_a_fresh_thread_is_not_live_until_adopted(monkeypatch) -> None:
+    from openai_codex import ApprovalMode, Sandbox
+
+    fake_codex, _display, conversation = _stubbed_conversation(
+        monkeypatch, service_tier="fast"
+    )
+    try:
+        original = conversation.thread
+        conversation.request_model("gpt-5.6-sol")
+        conversation.request_reasoning_effort("high")
+
+        started = conversation.start_fresh_thread()
+
+        assert started is not None
+        thread, model, effort = started
+        assert thread is fake_codex.threads[-1]
+        assert model == "gpt-5.6-sol"
+        assert effort == "high"
+        assert conversation.thread is original
+        assert conversation.generation == 0
+        assert conversation.requested_model == "gpt-5.6-sol"
+        assert conversation.requested_reasoning_effort == "high"
+        assert fake_codex.start_kwargs == {
+            "model": "gpt-5.6-sol",
+            "service_tier": "fast",
+            "sandbox": Sandbox("read-only"),
+            "approval_mode": ApprovalMode.deny_all,
+            "cwd": os.getcwd(),
+            "developer_instructions": CODEX_DEVELOPER_INSTRUCTIONS,
+        }
+    finally:
+        conversation.close()
+
+
+def test_adopting_a_fresh_thread_installs_it_and_stops_in_flight_work(
+    monkeypatch,
+) -> None:
+    speech = FakeSpeech()
+    _fake_codex, display, conversation = _stubbed_conversation(
+        monkeypatch, speech=speech, service_tier="fast"
+    )
+    try:
+        conversation.request_model("gpt-5.6-sol")
+        conversation.request_reasoning_effort("high")
+        assert conversation.prefire(TEXT, "unfinished", timestamp="T1")
+        guess = conversation.speculation
+        assert guess is not None
+        guess.turn = FakeTurn()
+        active = FakeTurn()
+        conversation.active_turn = active
+        started = conversation.start_fresh_thread()
+        assert started is not None
+
+        conversation.adopt_fresh_thread(started)
+
+        assert conversation.thread is started[0]
+        assert conversation.generation == 1
+        assert conversation.model == "gpt-5.6-sol"
+        assert conversation.reasoning_effort == "high"
+        assert conversation.requested_model is None
+        assert conversation.requested_reasoning_effort is None
+        assert conversation.warmup_pending is True
+        assert conversation.speculation is None
+        assert conversation.router is not None
+        assert conversation.router.pending_context == []
+        assert guess.turn.interrupts == 1
+        assert active.interrupts == 1
+        assert speech.interrupts == 1
+        assert display.calls[-1] == (
+            "set_codex",
+            {
+                "model": "gpt-5.6-sol",
+                "effort": "high",
+                "thread": "thread-2",
+                "state": "idle",
+            },
+        )
+    finally:
+        conversation.close()
+
+
+def test_adopting_clears_pending_settings_only_when_they_still_match(
+    monkeypatch,
+) -> None:
+    _fake_codex, _display, conversation = _stubbed_conversation(monkeypatch)
+    try:
+        first = conversation.start_fresh_thread()
+        assert first is not None
+        conversation.adopt_fresh_thread(first)
+        conversation.request_reasoning_effort("medium")
+        later = conversation.start_fresh_thread()
+        assert later is not None
+        conversation.request_reasoning_effort("xhigh")
+
+        conversation.adopt_fresh_thread(later)
+
+        assert conversation.generation == 2
+        assert conversation.reasoning_effort == "medium"
+        assert conversation.requested_reasoning_effort == "xhigh"
+    finally:
+        conversation.close()
+
+
+def test_a_failed_fresh_thread_leaves_the_live_session_alone(monkeypatch) -> None:
+    fake_codex, display, conversation = _stubbed_conversation(monkeypatch)
+    try:
+        original = conversation.thread
+        conversation.request_model("gpt-5.6-sol")
+        fake_codex.start_error = RuntimeError("offline")
+
+        assert conversation.start_fresh_thread() is None
+
+        assert conversation.thread is original
+        assert conversation.generation == 0
+        assert conversation.requested_model == "gpt-5.6-sol"
+        assert display.calls[-1] == (
+            "error",
+            "Could not start a new Codex session: offline",
+        )
+    finally:
+        conversation.close()
+
+
+def test_adopting_survives_turns_that_refuse_to_stop(monkeypatch) -> None:
+    class RefusingTurn:
+        def interrupt(self) -> None:
+            raise RuntimeError("still running")
+
+    _fake_codex, _display, conversation = _stubbed_conversation(monkeypatch)
+    try:
+        assert conversation.prefire(TEXT, "unfinished", timestamp="T1")
+        guess = conversation.speculation
+        assert guess is not None
+        guess.turn = RefusingTurn()
+        conversation.active_turn = RefusingTurn()
+        started = conversation.start_fresh_thread()
+        assert started is not None
+
+        conversation.adopt_fresh_thread(started)
+
+        assert conversation.speculation is None
+        assert conversation.thread is started[0]
     finally:
         conversation.close()
 
@@ -252,28 +429,9 @@ def test_a_failed_reset_keeps_the_current_session_and_pending_settings(
 
 
 def test_a_reset_interrupts_the_pending_guess_and_speech(monkeypatch) -> None:
-    class FakeSpeech:
-        def __init__(self) -> None:
-            self.interrupts = 0
-
-        def interrupt(self) -> None:
-            self.interrupts += 1
-
-        def close(self) -> None:
-            pass
-
-    load_codex_sdk()
-    fake_codex = FakeCodex()
-    display = FakeDisplay()
     speech = FakeSpeech()
-    monkeypatch.setattr("tagalong.codex.Codex", lambda: fake_codex)
-    monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
-    conversation = CodexConversation(
-        CodexSettings(
-            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
-        ),
-        display,
-        speech,
+    _fake_codex, _display, conversation = _stubbed_conversation(
+        monkeypatch, speech=speech
     )
     try:
         assert conversation.prefire(TEXT, "unfinished", timestamp="T1")
@@ -319,38 +477,69 @@ def test_stale_work_cannot_start_a_turn_or_warm_the_new_session(monkeypatch) -> 
         conversation.close()
 
 
+class RouterConversation:
+    """Minimal conversation for exercising `/new` through the live router."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+        self.generation = 0
+        self.sessions = 0
+
+    def start_fresh_thread(self):
+        if not self.ok:
+            return None
+        return "thread"
+
+    def adopt_fresh_thread(self, _started) -> None:
+        self.generation += 1
+        self.sessions += 1
+
+    def ingest(self, *_args, **_kwargs) -> None:
+        return None
+
+    def interrupt(self) -> None:
+        return None
+
+
+class RouterSpeech:
+    def set_enabled(self, enabled: bool) -> bool:
+        del enabled
+        return True
+
+
+class RouterTui:
+    def __init__(self) -> None:
+        self.resets = 0
+        self.notes: list[str] = []
+
+    def reset_transcript(self) -> None:
+        self.resets += 1
+
+    def note(self, text: str) -> None:
+        self.notes.append(text)
+
+
+class RouterRecorder:
+    def __init__(self) -> None:
+        self.rolls = 0
+
+    def roll(self) -> None:
+        self.rolls += 1
+
+
+def _router(conversation, tui, recorder):
+    controller = Controller()
+    actor = local_user("tui")
+    bind_first_slice(controller, conversation=conversation, tts=RouterSpeech())
+    return build_command_router(tui, conversation, recorder, controller, actor)
+
+
 def test_reset_hook_clears_only_after_a_new_session_starts() -> None:
-    class Conversation:
-        def __init__(self, started) -> None:
-            self.started = started
-
-        def new_session(self) -> bool:
-            return self.started
-
-    class Tui:
-        def __init__(self) -> None:
-            self.resets = 0
-            self.notes: list[str] = []
-
-        def reset_transcript(self) -> None:
-            self.resets += 1
-
-        def note(self, text: str) -> None:
-            self.notes.append(text)
-
-    tui = Tui()
-
-    class Recorder:
-        def __init__(self) -> None:
-            self.rolls = 0
-
-        def roll(self) -> None:
-            self.rolls += 1
-
-    recorder = Recorder()
-    reset_codex_session(Command("new", ()), Conversation(False), tui, recorder)
-    reset_codex_session(Command("new", ()), Conversation(True), tui, recorder)
-    reset_codex_session(Command("new", ("again",)), Conversation(True), tui, recorder)
+    tui = RouterTui()
+    recorder = RouterRecorder()
+    _router(RouterConversation(False), tui, recorder).handle("/new")
+    _router(RouterConversation(True), tui, recorder).handle("/new")
+    _router(RouterConversation(True), tui, recorder).handle("/new again")
 
     assert tui.resets == 1
     assert recorder.rolls == 1
@@ -389,32 +578,10 @@ def test_new_command_clears_the_transcript_without_changing_controls() -> None:
 
 
 def test_build_command_router_registers_new_and_help() -> None:
-    class Conversation:
-        def new_session(self) -> bool:
-            return True
-
-    class Tui:
-        def __init__(self) -> None:
-            self.notes: list[str] = []
-            self.resets = 0
-
-        def note(self, text: str) -> None:
-            self.notes.append(text)
-
-        def reset_transcript(self) -> None:
-            self.resets += 1
-
-    tui = Tui()
-
-    class Recorder:
-        def __init__(self) -> None:
-            self.rolls = 0
-
-        def roll(self) -> None:
-            self.rolls += 1
-
-    recorder = Recorder()
-    commands = build_command_router(tui, Conversation(), recorder)
+    tui = RouterTui()
+    recorder = RouterRecorder()
+    conversation = RouterConversation()
+    commands = _router(conversation, tui, recorder)
 
     assert [spec.name for spec in commands.specs()] == ["new", "help"]
     commands.handle("/help")

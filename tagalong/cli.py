@@ -37,6 +37,12 @@ from pathlib import Path
 from moonshine_voice import get_model_for_language
 from moonshine_voice.moonshine_api import ModelArch
 
+from .application import (
+    app_state_from_session,
+    bind_first_slice,
+    install_first_slice_hooks,
+    run_new_session,
+)
 from .capture import (
     ApplicationStreamTranscriber,
     CaptureSettings,
@@ -49,6 +55,7 @@ from .choosers import NO_AUDIO_STREAM, input_devices
 from .codex import CodexConversation, CodexSettings
 from .commands import CommandRouter
 from .config import StartupConfigFile, save_startup_config
+from .control import Controller, local_user
 from .domain import (
     PrefirePlan,
     SpeakerGate,
@@ -719,13 +726,10 @@ def remembering_applied(hook, config, key, encode=lambda value: value):
 
 def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     """Point the interface's controls at the conversation, its speech, and disk."""
-    tui.hooks.on_user_text = lambda message: conversation.ingest(
-        "Text",
-        message.text,
-        respond=True,
-        images=message.images,
-    )
-    tui.hooks.on_interrupt = conversation.interrupt
+    actor = local_user("tui")
+    controller = Controller(app_state_from_session(tui.state))
+    bind_first_slice(controller, conversation=conversation, tts=tts)
+    install_first_slice_hooks(tui, controller, actor)
     tui.hooks.on_codex_model = remembering(
         conversation.request_model, config, "codex_model"
     )
@@ -735,25 +739,35 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     # Muting is not remembered: it is a thing done to one reply, or a few, and
     # a session that starts silent every time because of a moment's quiet is
     # not what "No voice reply" was asked to mean.
-    tui.hooks.on_tts = tts.set_enabled
     tui.hooks.on_tts_provider = remembering(tts.set_provider, config, "tts_provider")
     tui.hooks.on_turn_silence = remembering_turn_silence(turn_silence, config)
+    return controller, actor
 
 
-def wire_transcript_recording(tui, conversation, recorder):
+def wire_transcript_recording(tui, conversation, recorder, controller, actor):
     """Attach continuous transcript recording and the slash commands that roll it."""
     tui.hooks.on_entry = recorder.record
-    commands = build_command_router(tui, conversation, recorder)
+    commands = build_command_router(tui, conversation, recorder, controller, actor)
     tui.hooks.on_command = commands.handle
     tui.hooks.list_commands = commands.specs
 
 
-def build_command_router(tui, conversation, recorder) -> CommandRouter:
+def build_command_router(
+    tui, conversation, recorder, controller, actor
+) -> CommandRouter:
     """Register the session's typed slash commands and their palette copy."""
+
+    def start_new(command):
+        reset_codex_session(
+            command,
+            tui,
+            lambda: run_new_session(controller, actor, conversation, tui, recorder),
+        )
+
     commands = CommandRouter(tui)
     commands.register(
         "new",
-        lambda command: reset_codex_session(command, conversation, tui, recorder),
+        start_new,
         description="Start a fresh session and clear the transcript",
         aliases=("clear",),
     )
@@ -780,15 +794,12 @@ def show_command_help(command, commands: CommandRouter, tui) -> None:
     tui.note("\n".join(lines))
 
 
-def reset_codex_session(command, conversation, tui, recorder):
+def reset_codex_session(command, tui, run):
     """Start a fresh Taga conversation and clear its visible transcript."""
     if command.arguments:
         tui.note("usage: /new")
         return
-    if conversation.new_session():
-        # Sweep open entries into the current file before rolling to a new one.
-        tui.reset_transcript()
-        recorder.roll()
+    run()
 
 
 def finish_recorded_session(tui, recorder, applications) -> None:
@@ -873,8 +884,10 @@ def main():
         tts,
     )
 
-    attach_conversation_hooks(tui, conversation, tts, config, turn_silence)
-    wire_transcript_recording(tui, conversation, recorder)
+    controller, actor = attach_conversation_hooks(
+        tui, conversation, tts, config, turn_silence
+    )
+    wire_transcript_recording(tui, conversation, recorder, controller, actor)
     # The plan reads the conversation's own measured time-to-first-word, so
     # the moment a turn is guessed at tracks what Taga is actually doing.
     submitter = TranscriptSubmitter(

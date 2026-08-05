@@ -128,6 +128,10 @@ class FakeConversation:
         self.ingested = []
         self.latency = TurnLatencyEstimator()
         self.prefired = []
+        self.generation = 0
+        self.interrupts = 0
+        self.sessions = 0
+        self.new_session_ok = True
 
     def ingest(self, speaker, text, respond, images=()):
         self.ingested.append((speaker, text, respond, images))
@@ -143,7 +147,24 @@ class FakeConversation:
         return True
 
     def interrupt(self):
-        pass
+        self.interrupts += 1
+
+    def start_fresh_thread(self):
+        if not self.new_session_ok:
+            return None
+        return SimpleNamespace(id=f"thread-{self.generation + 1}")
+
+    def adopt_fresh_thread(self, started):
+        self.generation += 1
+        self.sessions += 1
+        self.thread = started
+
+    def new_session(self):
+        started = self.start_fresh_thread()
+        if started is None:
+            return False
+        self.adopt_fresh_thread(started)
+        return True
 
     def request_model(self, _model):
         return True
@@ -270,6 +291,16 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "resolve_startup_selection", resolve)
     monkeypatch.setattr(cli, "run_session", run_session)
     monkeypatch.setattr(cli, "print_startup_summary", lambda *a, **k: None)
+
+    original_attach = cli.attach_conversation_hooks
+
+    def tracking_attach(*args, **kwargs):
+        controller, actor = original_attach(*args, **kwargs)
+        built["controller"] = controller
+        built["actor"] = actor
+        return controller, actor
+
+    monkeypatch.setattr(cli, "attach_conversation_hooks", tracking_attach)
 
     monkeypatch.setattr(
         cli,
@@ -898,6 +929,25 @@ def test_typed_text_always_requests_a_reply(wiring) -> None:
     assert conversation.ingested == [("Text", "what time is it?", True, ())]
 
 
+def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
+    cli.main()
+    tui, _, conversation = wiring["session"]
+    controller = wiring["controller"]
+
+    assert controller.state.tts_enabled is True
+    assert wiring["actor"].id == "tui"
+
+    tui.hooks.on_user_text(UserTextMessage("hello", images=("/tmp/shot.png",)))
+    tui.hooks.on_interrupt()
+    tui.hooks.on_command("/new")
+
+    assert conversation.ingested == [("Text", "hello", True, ("/tmp/shot.png",))]
+    assert conversation.interrupts == 1
+    assert conversation.sessions == 1
+    assert getattr(tui, "resets", 0) == 1
+    assert controller.state.tts_enabled is True
+
+
 def test_the_voice_toggle_mutes_the_session_engine(wiring) -> None:
     """Off is the engine told to stop generating, not the engine taken away."""
     cli.main()
@@ -905,9 +955,11 @@ def test_the_voice_toggle_mutes_the_session_engine(wiring) -> None:
 
     tui.hooks.on_tts(False)
     assert conversation.tts.enabled is False
+    assert wiring["controller"].state.tts_enabled is False
 
     tui.hooks.on_tts(True)
     assert conversation.tts.enabled is True
+    assert wiring["controller"].state.tts_enabled is True
 
 
 def test_speech_is_routed_to_the_chosen_playback_sink(wiring) -> None:

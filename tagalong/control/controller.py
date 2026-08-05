@@ -73,6 +73,9 @@ IDEMPOTENCY_MEMORY = 256
 # straight answer instead of "unknown". A few are always in flight; thousands
 # never are.
 SUPERSEDED_MEMORY = 64
+# Claimed requests waiting to be announced. One per adapter that has not yet
+# called announce; a crash mid-window must not grow this without bound.
+UNPUBLISHED_MEMORY = 64
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,16 @@ class _Pending:
     action_id: str
     actor_id: str
     settle: Callable[[AppState, object], AppState]
+
+
+@dataclass(frozen=True)
+class _Unpublished:
+    """A claimed request whose events are still waiting to be published."""
+
+    action_id: str
+    actor_id: str
+    effective: object
+    changed: Mapping[str, object]
 
 
 @dataclass
@@ -192,6 +205,8 @@ class Controller:
         self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
         # Which key, if any, is waiting on a request that has not ended yet.
         self._keyed: dict[str, tuple[str, str]] = {}
+        self._unpublished: OrderedDict[str, _Unpublished] = OrderedDict()
+        self._announced: OrderedDict[str, Applied] = OrderedDict()
         self._counter = 0
 
     # -- wiring ---------------------------------------------------------
@@ -425,16 +440,93 @@ class Controller:
         that keeps a device which finally opened from overwriting the choice
         made while it was opening, and the reason a superseded selection is
         never written to the configuration file.
+
+        Use this when the external effect is already live. When the adapter
+        still has work after learning it won — installing a Codex thread,
+        for example — call :meth:`claim` and then :meth:`announce` so
+        ``action.applied`` is not published one step too early.
         """
         with self._lock:
-            pending = self._requests.finish(request_id)
-            if pending is None:
-                return self._unknown_request(request_id)
-            self._commit(pending.settle(self._state, effective))
+            return self._complete(request_id, effective, publish=True)
+
+    def claim(self, request_id: str, effective: object = None) -> Outcome:
+        """Retire a pending request as applied without publishing yet.
+
+        The settle closure runs and the next dispatch sees the new state, but
+        nothing observable is published — not ``state.changed``, not
+        ``action.applied``, and not the idempotency record — until
+        :meth:`announce`. A keyed retry therefore still sees ``Accepted``
+        while the adapter finishes installing the live effect.
+        """
+        with self._lock:
+            return self._complete(request_id, effective, publish=False)
+
+    def announce(self, request_id: str) -> Outcome:
+        """Publish the deferred events for a request :meth:`claim` already won.
+
+        Returns the applied outcome, including when called again for the same
+        request. A request that was never claimed is rejected, same as a late
+        ``settle`` on something this controller does not hold.
+        """
+        with self._lock:
+            unpublished = self._unpublished.pop(request_id, None)
+            if unpublished is not None:
+                return self._release(request_id, unpublished)
+            announced = self._announced.get(request_id)
+            if announced is not None:
+                return announced
+            return self._unknown_request(request_id)
+
+    def _complete(
+        self, request_id: str, effective: object, *, publish: bool
+    ) -> Outcome:
+        pending = self._requests.finish(request_id)
+        if pending is None:
+            return self._unknown_request(request_id)
+        changed = self._apply_state(pending.settle(self._state, effective))
+        outcome = Applied(request_id, effective)
+        if publish:
+            if changed:
+                self._events.publish("state.changed", changed)
             self._publish_applied(
                 request_id, pending.action_id, pending.actor_id, effective
             )
-            return self._conclude(request_id, Applied(request_id, effective))
+            self._mark_announced(request_id, outcome)
+            return self._conclude(request_id, outcome)
+        self._unpublished[request_id] = _Unpublished(
+            pending.action_id, pending.actor_id, effective, changed
+        )
+        self._trim_unpublished()
+        return outcome
+
+    def _release(self, request_id: str, unpublished: _Unpublished) -> Applied:
+        still = {
+            name: value
+            for name, value in unpublished.changed.items()
+            if getattr(self._state, name) == value
+        }
+        if still:
+            self._events.publish("state.changed", still)
+        self._publish_applied(
+            request_id,
+            unpublished.action_id,
+            unpublished.actor_id,
+            unpublished.effective,
+        )
+        outcome = Applied(request_id, unpublished.effective)
+        self._mark_announced(request_id, outcome)
+        self._conclude(request_id, outcome)
+        return outcome
+
+    def _trim_unpublished(self) -> None:
+        while len(self._unpublished) > UNPUBLISHED_MEMORY:
+            request_id, unpublished = self._unpublished.popitem(last=False)
+            self._release(request_id, unpublished)
+
+    def _mark_announced(self, request_id: str, outcome: Applied) -> None:
+        self._announced[request_id] = outcome
+        while len(self._announced) > UNPUBLISHED_MEMORY:
+            self._announced.popitem(last=False)
 
     def fail(self, request_id: str, detail: str) -> Outcome:
         """Report that an accepted request was attempted and did not succeed.
@@ -469,10 +561,15 @@ class Controller:
 
     # -- publication ----------------------------------------------------
 
-    def _commit(self, state: AppState) -> None:
-        """Adopt new state and publish what changed, if anything did."""
+    def _apply_state(self, state: AppState) -> dict[str, object]:
+        """Adopt new state and return what changed, without publishing."""
         changed = state.changed_from(self._state)
         self._state = state
+        return changed
+
+    def _commit(self, state: AppState) -> None:
+        """Adopt new state and publish what changed, if anything did."""
+        changed = self._apply_state(state)
         if changed:
             self._events.publish("state.changed", changed)
 

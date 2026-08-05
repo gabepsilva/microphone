@@ -9,7 +9,11 @@ actions and renders the same events.
 Nothing in here opens a device, calls a model, or writes a file. Those live
 behind reconcilers that answer :meth:`~.controller.Controller.settle` or
 :meth:`~.controller.Controller.fail` when the slow work is over, which is what
-keeps the ordered core responsive while a capture device is loading.
+keeps the ordered core responsive while a capture device is loading. An
+adapter that still has to install the effect after learning it won uses
+:meth:`~.controller.Controller.claim` and then
+:meth:`~.controller.Controller.announce`, so ``action.applied`` is not
+published before the change is live.
 """
 
 from .actions import (
@@ -22,7 +26,7 @@ from .actions import (
     Parameter,
     Scope,
 )
-from .actors import Actor, agent, local_user
+from .actors import Actor, ActorKind, agent, local_user
 from .controller import Controller, Handler, Request, Snapshot
 from .events import Event, EventLog, Subscription
 from .outcomes import (
@@ -44,6 +48,7 @@ __all__ = [
     "Accepted",
     "ActionSpec",
     "Actor",
+    "ActorKind",
     "AppState",
     "Applied",
     "Capability",
