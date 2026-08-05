@@ -55,23 +55,25 @@ def tool_schema(spec: ActionSpec) -> dict[str, Any]:
     }
 
 
+# Explicit full-surface set for tests and docs. Callers that want every
+# catalog tool must pass this (or an equivalent) — there is no silent default
+# that advertises tools a live actor cannot invoke.
+ALL_TOOL_IDS: frozenset[str] = frozenset(spec.id for spec in CATALOG)
+
+
 def mcp_tools(
     catalog: tuple[ActionSpec, ...] = CATALOG,
     *,
-    allowed_ids: frozenset[str] | set[str] | None = None,
+    allowed_ids: frozenset[str] | set[str],
 ) -> list[dict[str, Any]]:
-    """Tool schemas for *catalog*, optionally limited to *allowed_ids*.
+    """Tool schemas for *catalog*, limited to *allowed_ids*.
 
-    Omit *allowed_ids* for the full static protocol surface (tests, docs).
-    A live session passes the ids capability policy marks allowed for its
-    actor so an agent is never offered a tool it cannot invoke.
+    *allowed_ids* is required on purpose: a default of "everything" would make
+    the unconsidered call the permissive one, and that is how an agent gets
+    offered ``session.quit``. Tests and docs pass :data:`ALL_TOOL_IDS`. A live
+    session passes the ids capability policy marks allowed for its actor.
     """
-    specs = (
-        catalog
-        if allowed_ids is None
-        else tuple(spec for spec in catalog if spec.id in allowed_ids)
-    )
-    return [tool_schema(spec) for spec in specs]
+    return [tool_schema(spec) for spec in catalog if spec.id in allowed_ids]
 
 
 class McpBridge:

@@ -784,6 +784,16 @@ def test_catalog_gate_rejects_a_missing_handler() -> None:
     )
 
 
+def test_catalog_gate_rejects_a_skipped_composition_binder() -> None:
+    gate = _load_gate("catalog_gate")
+    called = gate.composition_binder_ids() - {"bind_audio_slice"}
+    problems = gate.check(binders=called)
+    assert any(
+        "bind_audio_slice" in problem and "composition root" in problem
+        for problem in problems
+    )
+
+
 def test_catalog_gate_rejects_a_stale_deferral() -> None:
     gate = _load_gate("catalog_gate")
     problems = gate.check(
@@ -810,6 +820,18 @@ def test_catalog_gate_reads_multiline_register_calls() -> None:
     )
     assert gate.registered_action_ids(source) == frozenset(
         {"message.send", "tts.set_enabled"}
+    )
+
+
+def test_catalog_gate_reads_binder_calls_by_name() -> None:
+    gate = _load_gate("catalog_gate")
+    source = (
+        "bind_first_slice(controller, conversation=c)\n"
+        "mod.bind_audio_slice(controller)\n"
+        "other(bind_settings_slice)\n"
+    )
+    assert gate.called_names(source) == frozenset(
+        {"bind_first_slice", "bind_audio_slice", "other"}
     )
 
 

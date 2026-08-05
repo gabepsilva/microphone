@@ -199,9 +199,20 @@ missing device) remains a per-call answer. Pinned by
 **Catalog handler gate.** ``make catalog`` / ``tools/catalog_gate.py`` fails
 when a catalog action has no ``controller.register`` in
 ``tagalong/application.py`` and is not on ``DEFERRED_ACTIONS``. Stale or
-unknown deferrals also fail. The gate reads the source (AST), so it does not
-stand up stub collaborators. Wired into ``VERIFY_QUICK``. Pinned by
-``test_catalog_gate_rejects_a_missing_handler``.
+unknown deferrals also fail. The gate also requires ``tagalong/cli.py`` to
+call every name in ``REQUIRED_BINDERS``, so a composition root that skips a
+binder fails even when the binder itself is complete. Both checks read
+source (AST). Wired into ``VERIFY_QUICK``. Pinned by
+``test_catalog_gate_rejects_a_missing_handler`` and
+``test_catalog_gate_rejects_a_skipped_composition_binder``.
+
+**Authorization seam.** ``authorizes`` is the only production check (scope
+plus ``AGENT_DENIED_ACTIONS``). ``Actor.may`` was removed so a future adapter
+cannot reach for a scope-only method and silently skip denials.
+
+**MCP tool listing.** ``mcp_tools(allowed_ids=…)`` requires the filter set —
+there is no default that advertises the full catalog. Tests and docs pass
+``ALL_TOOL_IDS``; live sessions pass capability-allowed ids.
 
 **Attachment registry.** Remains session-scoped. Same-uid clients share one
 workspace; opaque ids are not a cross-user boundary. Actor-scoped ownership

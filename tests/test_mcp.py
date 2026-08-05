@@ -10,13 +10,13 @@ from tagalong.application import bind_first_slice
 from tagalong.control import Controller
 from tagalong.control.actions import CATALOG
 from tagalong.control.policy import SOCKET_AGENT_SCOPES
-from tagalong.mcp import McpBridge, mcp_tools, tool_name
+from tagalong.mcp import ALL_TOOL_IDS, McpBridge, mcp_tools, tool_name
 from tagalong.transport import LocalServer, socket_path
 from tests.test_transport import Conversation, Speech
 
 
 def test_every_catalog_action_has_one_static_tool() -> None:
-    tools = mcp_tools()
+    tools = mcp_tools(allowed_ids=ALL_TOOL_IDS)
     by_name = {tool["name"]: tool for tool in tools}
 
     assert [tool["name"] for tool in tools] == [tool_name(spec.id) for spec in CATALOG]
