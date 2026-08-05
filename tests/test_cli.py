@@ -425,6 +425,25 @@ def test_a_microphone_open_failure_leaves_the_session_running() -> None:
     assert tui.notes == ["could not listen to Yeti: device busy"]
 
 
+def test_a_failed_microphone_selection_is_not_remembered(wiring, tmp_path) -> None:
+    """Acceptance is not evidence that an asynchronous switch took effect."""
+    wiring["input_device"] = None
+    cli.main()
+    tui, _, _ = wiring["session"]
+    microphone = wiring["microphone"]
+    microphone.devices = microphone._by_name(INPUTS)
+    before = (tmp_path / "tagalong.yaml").read_bytes()
+
+    microphone.open_channel = lambda _index: (_ for _ in ()).throw(
+        RuntimeError("device busy")
+    )
+    tui.hooks.on_microphone("Yeti")
+    microphone.reconcile()
+
+    assert microphone.current is None
+    assert (tmp_path / "tagalong.yaml").read_bytes() == before
+
+
 def test_a_microphone_start_failure_is_cleaned_up_and_reported_once() -> None:
     tui = FakeTUI(SessionState())
 
@@ -652,6 +671,27 @@ def test_a_chosen_application_opens_the_far_end_channel(wiring) -> None:
     assert them.listener.speaker == "Audio"
     assert them.transcriber.kwargs["tap"].application == THEM_APPLICATION
     assert them.transcriber.listeners == [them.listener]
+
+
+def test_failed_application_selection_is_not_remembered(
+    wiring, tmp_path, monkeypatch
+) -> None:
+    """A failed slow effect must not become the next session's startup state."""
+    cli.main()
+    tui, _, _ = wiring["session"]
+    them = wiring["audio"]
+    before = (tmp_path / "tagalong.yaml").read_bytes()
+    monkeypatch.setattr(
+        cli,
+        "ApplicationStreamTranscriber",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("no pw-record")),
+    )
+
+    tui.hooks.on_audio_stream(THEM_APPLICATION)
+    them.reconcile()
+
+    assert them.current is None
+    assert (tmp_path / "tagalong.yaml").read_bytes() == before
 
 
 def test_a_session_with_no_application_opens_nothing(wiring) -> None:
@@ -943,6 +983,17 @@ def test_a_sidebar_change_is_written_to_the_file_the_session_started_from(
     assert saved_config(tmp_path)["taga_after"] == "voice"
 
 
+def test_startup_selections_do_not_rewrite_the_config(wiring, tmp_path) -> None:
+    """Only client actions persist; bootstrap merely applies resolved inputs."""
+    path = tmp_path / "tagalong.yaml"
+    before = path.read_bytes()
+
+    cli.main()
+
+    assert wiring["session"]
+    assert path.read_bytes() == before
+
+
 def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     cli.main()
     tui, _, _ = wiring["session"]
@@ -959,6 +1010,25 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     assert saved["codex_reasoning"] == "high"
     assert saved["turn_silence"] == 1.25
     assert saved["tts_provider"] == "edge"
+
+
+def test_applied_microphone_and_application_selections_are_remembered(
+    wiring, tmp_path
+) -> None:
+    cli.main()
+    tui, _, _ = wiring["session"]
+    microphone = wiring["microphone"]
+    microphone.devices = microphone._by_name(INPUTS)
+    them = wiring["audio"]
+
+    tui.hooks.on_microphone("Webcam")
+    microphone.reconcile()
+    tui.hooks.on_audio_stream(THEM_APPLICATION)
+    them.reconcile()
+
+    saved = saved_config(tmp_path)
+    assert saved["microphone"] == "Webcam"
+    assert saved["audio_stream"] == THEM_APPLICATION
 
 
 def test_muting_the_voice_is_not_remembered(wiring, tmp_path) -> None:
@@ -1246,6 +1316,40 @@ def test_the_newest_choice_wins_rather_than_each_one_building() -> None:
 
     assert len(opened) == 1
     assert channel.tap.application == "ZOOM VoiceEngine"
+
+
+def test_an_aba_selection_only_completes_the_newest_request() -> None:
+    applied: list[str] = []
+    channel: cli.AudioChannel
+
+    def open_first(tap):
+        channel.select("Chromium", on_applied=lambda _value: applied.append("middle"))
+        channel.select("Brave", on_applied=lambda _value: applied.append("newest"))
+        return FakeTranscriber(tap=tap), SwitchListener()
+
+    channel, _, _, _ = audio_channel(open_channel=open_first)
+    channel.select("Brave", on_applied=lambda _value: applied.append("oldest"))
+
+    channel.reconcile()
+    assert applied == []
+    channel.reconcile()
+
+    assert applied == ["newest"]
+
+
+def test_a_failed_open_does_not_discard_a_newer_request() -> None:
+    channel: cli.AudioChannel
+
+    def refuse(_tap):
+        channel.select("Chromium")
+        raise RuntimeError("no pw-record")
+
+    channel, _, _, _ = audio_channel(open_channel=refuse)
+    channel.select("Brave")
+
+    channel.reconcile()
+
+    assert channel.desired == "Chromium"
 
 
 def test_asking_again_for_what_is_already_open_changes_nothing() -> None:

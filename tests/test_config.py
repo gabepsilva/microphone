@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from tagalong.config import (
@@ -232,6 +234,49 @@ def test_every_recorded_change_accumulates_in_the_file() -> None:
 
     assert save.writes[-1][1]["tts_provider"] == "edge"
     assert save.writes[-1][1]["turn_silence"] == 1.25
+
+
+def test_concurrent_records_serialize_the_update_and_whole_file_write() -> None:
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_entered = threading.Event()
+    snapshots: list[dict] = []
+
+    def save(_path, settings):
+        snapshots.append(dict(settings))
+        if len(snapshots) == 1:
+            first_entered.set()
+            release_first.wait(10)
+        else:
+            second_entered.set()
+
+    config = StartupConfigFile("tagalong.yaml", stored(), save=save)
+    first = threading.Thread(
+        target=lambda: config.record("tts_provider", "edge"), daemon=True
+    )
+
+    def record_second():
+        second_started.set()
+        config.record("turn_silence", 1.25)
+
+    second = threading.Thread(target=record_second, daemon=True)
+    first.start()
+    assert first_entered.wait(10)
+    second.start()
+    assert second_started.wait(10)
+
+    try:
+        assert second_entered.wait(0.1) is False
+    finally:
+        release_first.set()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert snapshots[-1]["tts_provider"] == "edge"
+    assert snapshots[-1]["turn_silence"] == 1.25
 
 
 def test_the_store_does_not_share_the_mapping_it_was_given() -> None:
