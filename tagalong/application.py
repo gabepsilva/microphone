@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from functools import partial
 from typing import Any, Protocol, cast
 
 from .control import (
@@ -227,48 +228,94 @@ def bind_first_slice(
     controller.register("session.new", start_session)
 
 
+type Persist = Callable[[str, object], object] | None
+
+
+def _record(persist: Persist, key: str, value: object) -> None:
+    if persist is not None:
+        persist(key, value)
+
+
+def _set_response_policy(
+    gate: PolicyPort, persist: Persist, request: Request, state: AppState
+) -> Effect:
+    policy = str(request.payload["policy"])
+    gate.set_policy(policy)
+    _record(persist, "taga_after", policy)
+    return Effect.applied(replace(state, response_policy=policy), policy)
+
+
+def _set_tts_provider(
+    tts: SettingsSpeechPort, persist: Persist, request: Request, state: AppState
+) -> Effect:
+    provider = str(request.payload["provider"])
+    if tts.set_provider(provider) is False:
+        raise EffectFailed("tts provider could not be changed")
+    _record(persist, "tts_provider", provider)
+    return Effect.applied(replace(state, tts_provider=provider), provider)
+
+
+def _set_codex_model(
+    conversation: SettingsConversationPort,
+    persist: Persist,
+    request: Request,
+    state: AppState,
+) -> Effect:
+    model = str(request.payload["model"])
+    if conversation.request_model(model) is False:
+        raise EffectFailed("codex model could not be changed")
+    _record(persist, "codex_model", model)
+    return Effect.applied(replace(state, codex_model=model), model)
+
+
+def _set_codex_reasoning(
+    conversation: SettingsConversationPort,
+    persist: Persist,
+    request: Request,
+    state: AppState,
+) -> Effect:
+    effort = str(request.payload["effort"])
+    if conversation.request_reasoning_effort(effort) is False:
+        raise EffectFailed("codex reasoning could not be changed")
+    _record(persist, "codex_reasoning", effort)
+    return Effect.applied(replace(state, codex_reasoning=effort), effort)
+
+
+def _set_turn_silence(
+    turn_silence: SilencePort, persist: Persist, request: Request, state: AppState
+) -> Effect:
+    applied = turn_silence.set(cast(float, request.payload["seconds"]))
+    _record(persist, "turn_silence", applied)
+    return Effect.applied(replace(state, turn_silence=applied), applied)
+
+
 def bind_settings_slice(
     controller: Controller,
-    *,
-    conversation: SettingsConversationPort,
-    tts: SettingsSpeechPort,
-    gate: PolicyPort,
-    turn_silence: SilencePort,
+    collaborators: tuple[
+        SettingsConversationPort, SettingsSpeechPort, PolicyPort, SilencePort
+    ],
+    persist: Persist = None,
 ) -> None:
-    """Register the synchronous settings handlers on *controller*."""
+    """Register the synchronous settings handlers on *controller*.
 
-    def set_response_policy(request: Request, state: AppState) -> Effect:
-        policy = str(request.payload["policy"])
-        gate.set_policy(policy)
-        return Effect.applied(replace(state, response_policy=policy), policy)
-
-    def set_tts_provider(request: Request, state: AppState) -> Effect:
-        provider = str(request.payload["provider"])
-        if tts.set_provider(provider) is False:
-            raise EffectFailed("tts provider could not be changed")
-        return Effect.applied(replace(state, tts_provider=provider), provider)
-
-    def set_codex_model(request: Request, state: AppState) -> Effect:
-        model = str(request.payload["model"])
-        if conversation.request_model(model) is False:
-            raise EffectFailed("codex model could not be changed")
-        return Effect.applied(replace(state, codex_model=model), model)
-
-    def set_codex_reasoning(request: Request, state: AppState) -> Effect:
-        effort = str(request.payload["effort"])
-        if conversation.request_reasoning_effort(effort) is False:
-            raise EffectFailed("codex reasoning could not be changed")
-        return Effect.applied(replace(state, codex_reasoning=effort), effort)
-
-    def set_turn_silence(request: Request, state: AppState) -> Effect:
-        applied = turn_silence.set(cast(float, request.payload["seconds"]))
-        return Effect.applied(replace(state, turn_silence=applied), applied)
-
-    controller.register("response_policy.set", set_response_policy)
-    controller.register("tts.set_provider", set_tts_provider)
-    controller.register("codex.set_model", set_codex_model)
-    controller.register("codex.set_reasoning", set_codex_reasoning)
-    controller.register("turn_silence.set", set_turn_silence)
+    Persistence belongs to the action, not to a TUI hook wrapper. A socket
+    caller that sets the model must leave the same startup file a sidebar
+    pick would, or the next session starts somewhere only one client went.
+    """
+    conversation, tts, gate, turn_silence = collaborators
+    controller.register(
+        "response_policy.set", partial(_set_response_policy, gate, persist)
+    )
+    controller.register("tts.set_provider", partial(_set_tts_provider, tts, persist))
+    controller.register(
+        "codex.set_model", partial(_set_codex_model, conversation, persist)
+    )
+    controller.register(
+        "codex.set_reasoning", partial(_set_codex_reasoning, conversation, persist)
+    )
+    controller.register(
+        "turn_silence.set", partial(_set_turn_silence, turn_silence, persist)
+    )
 
 
 def bind_audio_slice(

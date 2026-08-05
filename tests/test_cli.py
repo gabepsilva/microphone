@@ -1323,6 +1323,26 @@ def test_startup_selections_do_not_rewrite_the_config(wiring, tmp_path) -> None:
     assert path.read_bytes() == before
 
 
+def test_a_controller_settings_change_is_remembered(wiring, tmp_path) -> None:
+    """Socket and sidebar share one persistence path: the action handler."""
+    cli.main()
+    controller = wiring["controller"]
+    actor = wiring["actor"]
+
+    controller.dispatch("codex.set_model", {"model": "gpt-5.6-sol"}, actor=actor)
+    controller.dispatch("response_policy.set", {"policy": "voice"}, actor=actor)
+    controller.dispatch("turn_silence.set", {"seconds": 0.01}, actor=actor)
+    controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=actor)
+    controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=actor)
+
+    saved = saved_config(tmp_path)
+    assert saved["codex_model"] == "gpt-5.6-sol"
+    assert saved["taga_after"] == "voice"
+    assert saved["turn_silence"] == 0.25
+    assert saved["tts_provider"] == "edge"
+    assert saved["codex_reasoning"] == "high"
+
+
 def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     cli.main()
     tui, _, _ = wiring["session"]

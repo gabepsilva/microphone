@@ -82,7 +82,7 @@ from .startup import (
     validate_codex_reasoning,
 )
 from .streams import ApplicationRefresher, StreamTap
-from .transport import EventPump, LocalServer, TransportError, apply_state_fragment
+from .transport import EventPump, LocalServer, TransportError
 
 # The name carries the user ID because the fallback is a shared directory: on a
 # multi-user box a fixed name in /tmp is one user's lock file blocking every
@@ -714,24 +714,6 @@ def microphone_presence(mic_activity, audio_activity, tts):
     return SpeakerPresence(mic_activity, suppressors)
 
 
-def remembering(hook, config, key, encode=lambda value: value):
-    """Wrap a sidebar hook so an accepted change is written to the config file.
-
-    Only an accepted change is recorded. A hook that refuses — a model the
-    session cannot switch to, a speech engine still busy becoming the last one
-    it was asked for — has changed nothing, and saving it would make the next
-    session start somewhere this one never went.
-    """
-
-    def apply(value):
-        accepted = hook(value)
-        if accepted is not False:
-            config.record(key, encode(value))
-        return accepted
-
-    return apply
-
-
 def attach_conversation_hooks(tui, conversation, tts):
     """Point the interface's first-slice controls at the controller."""
     actor = local_user("tui")
@@ -765,26 +747,6 @@ def start_capture_channels(controller, tui, actor, microphone, audio_setup):
     return applications
 
 
-def remember_sidebar_settings(tui, config):
-    """Persist accepted sidebar settings to the startup config file."""
-    tui.hooks.on_policy = remembering(tui.hooks.on_policy, config, "taga_after")
-    tui.hooks.on_codex_model = remembering(
-        tui.hooks.on_codex_model, config, "codex_model"
-    )
-    tui.hooks.on_codex_effort = remembering(
-        tui.hooks.on_codex_effort, config, "codex_reasoning"
-    )
-    # Muting is not remembered: it is a thing done to one reply, or a few, and
-    # a session that starts silent every time because of a moment's quiet is
-    # not what "No voice reply" was asked to mean.
-    tui.hooks.on_tts_provider = remembering(
-        tui.hooks.on_tts_provider, config, "tts_provider"
-    )
-    tui.hooks.on_turn_silence = remembering_effective(
-        tui.hooks.on_turn_silence, config, "turn_silence"
-    )
-
-
 def attach_remote_access(controller, tui):
     """Subscribe the TUI to controller events and open the local socket.
 
@@ -793,6 +755,8 @@ def attach_remote_access(controller, tui):
     A missing ``XDG_RUNTIME_DIR`` leaves the TUI session running without a
     socket rather than falling back to ``/tmp``.
     """
+    from .tui import apply_state_fragment
+
     _snapshot, subscription = controller.subscribe()
 
     def apply(changed):
@@ -878,22 +842,6 @@ def finish_recorded_session(tui, recorder, applications) -> None:
     applications.stop()
 
 
-def remembering_effective(hook, config, key):
-    """Record the value a hook actually applied, not the value it was asked for.
-
-    Turn silence clamps; the file has to describe the session that ran rather
-    than the request that produced it.
-    """
-
-    def apply(value):
-        applied = hook(value)
-        if applied is not None:
-            config.record(key, applied)
-        return applied
-
-    return apply
-
-
 def main():
     parser, args = parse_startup_args()
     # Parsing comes first so `--help` and a rejected argument still answer while
@@ -955,13 +903,10 @@ def main():
     controller, actor = attach_conversation_hooks(tui, conversation, tts)
     bind_settings_slice(
         controller,
-        conversation=conversation,
-        tts=tts,
-        gate=gate,
-        turn_silence=turn_silence,
+        (conversation, tts, gate, turn_silence),
+        persist=config.record,
     )
     install_settings_hooks(tui, controller, actor)
-    remember_sidebar_settings(tui, config)
     wire_transcript_recording(tui, conversation, recorder, controller, actor)
     # The plan reads the conversation's own measured time-to-first-word, so
     # the moment a turn is guessed at tracks what Taga is actually doing.

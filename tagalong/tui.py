@@ -16,12 +16,12 @@ import os
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from itertools import zip_longest
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 # These must precede Textual imports. Textual needs Ctrl-C as an application
 # key so it can clear typed text before closing the app. The Kitty keyboard
@@ -176,6 +176,113 @@ class SessionState:
 
     partial_source: str = ""
     partial_text: str = ""
+
+    def adopt_efforts_for(self, model: str) -> None:
+        """Offer the efforts the newly selected model supports."""
+        adopt_efforts_for(self, model)
+
+
+def adopt_efforts_for(state: Any, model: str) -> None:
+    """Point *state* at the effort list that *model* actually offers."""
+    by_model = getattr(state, "codex_efforts_by_model", None)
+    if not isinstance(by_model, Mapping):
+        return
+    available = list(by_model.get(model, ()))
+    if not available:
+        return
+    state.codex_efforts = available
+    if getattr(state, "codex_effort", None) in available:
+        return
+    defaults = getattr(state, "codex_default_effort_by_model", {})
+    state.codex_effort = (
+        defaults.get(model) if isinstance(defaults, Mapping) else None
+    ) or available[0]
+
+
+def _selection_desired(value: object) -> str | None:
+    if value is None:
+        return None
+    if is_dataclass(value) and not isinstance(value, type):
+        desired = getattr(value, "desired", None)
+        return None if desired is None else str(desired)
+    if isinstance(value, Mapping):
+        desired = value.get("desired")
+        return None if desired is None else str(desired)
+    return str(value)
+
+
+def _set_tts_enabled(state: Any, value: object) -> None:
+    state.tts_enabled = bool(value)
+
+
+def _set_tts_provider(state: Any, value: object) -> None:
+    """Copy the provider. Unmute is a picker composition, not this action.
+
+    The sidebar's speech control is one widget for engine and silence. Picking
+    an engine while ``No voice reply`` is on also calls ``tts.set_enabled``.
+    A remote ``tts.set_provider`` is only the engine change; an agent that
+    wants voice back sends the second action itself.
+    """
+    state.tts_provider = str(value)
+    if hasattr(state, "tts_voice"):
+        state.tts_voice = default_voice(state.tts_provider)
+
+
+def _set_response_policy(state: Any, value: object) -> None:
+    state.policy = str(value)
+
+
+def _set_microphone_muted(state: Any, value: object) -> None:
+    if hasattr(state, "mic"):
+        state.mic.muted = bool(value)
+
+
+def _set_audio_stream_muted(state: Any, value: object) -> None:
+    if hasattr(state, "audio"):
+        state.audio.muted = bool(value)
+
+
+def _set_microphone(state: Any, value: object) -> None:
+    state.microphone = _selection_desired(value)
+
+
+def _set_audio_stream(state: Any, value: object) -> None:
+    state.audio_stream = _selection_desired(value)
+
+
+def _set_codex_model(state: Any, value: object) -> None:
+    state.codex_model = str(value)
+    adopt_efforts_for(state, state.codex_model)
+
+
+def _set_codex_reasoning(state: Any, value: object) -> None:
+    state.codex_effort = str(value)
+
+
+def _set_turn_silence(state: Any, value: object) -> None:
+    state.turn_silence = float(cast(float, value))
+
+
+_STATE_SETTERS = {
+    "tts_enabled": _set_tts_enabled,
+    "tts_provider": _set_tts_provider,
+    "response_policy": _set_response_policy,
+    "microphone_muted": _set_microphone_muted,
+    "audio_stream_muted": _set_audio_stream_muted,
+    "microphone": _set_microphone,
+    "audio_stream": _set_audio_stream,
+    "codex_model": _set_codex_model,
+    "codex_reasoning": _set_codex_reasoning,
+    "turn_silence": _set_turn_silence,
+}
+
+
+def apply_state_fragment(state: Any, changed: Mapping[str, object]) -> None:
+    """Copy controller-owned fields from a ``state.changed`` payload onto *state*."""
+    for name, value in changed.items():
+        setter = _STATE_SETTERS.get(name)
+        if setter is not None:
+            setter(state, value)
 
 
 @dataclass
@@ -1292,15 +1399,7 @@ class Sidebar(VerticalScroll):
 
     def _adopt_efforts_for(self, model: str) -> None:
         """Offer the efforts the newly selected model supports."""
-        available_efforts = self.state.codex_efforts_by_model.get(model, [])
-        if not available_efforts:
-            return
-        self.state.codex_efforts = available_efforts
-        if self.state.codex_effort not in available_efforts:
-            self.state.codex_effort = (
-                self.state.codex_default_effort_by_model.get(model)
-                or available_efforts[0]
-            )
+        self.state.adopt_efforts_for(model)
 
     def _model_selected(self, value: str) -> None:
         if value == self.state.codex_model:

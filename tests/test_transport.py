@@ -32,7 +32,6 @@ from tagalong.transport import (
     Peer,
     TransportError,
     actor_for_client,
-    apply_state_fragment,
     decode_frame,
     encode_frame,
     json_ready,
@@ -43,7 +42,7 @@ from tagalong.transport import (
     snapshot_payload,
     socket_path,
 )
-from tagalong.tui import SessionState
+from tagalong.tui import SessionState, apply_state_fragment
 
 
 class Speech:
@@ -588,6 +587,17 @@ def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
     assert state.codex_effort == "high"
     assert state.turn_silence == 1.25
     assert state.codex_efforts == ["low", "high"]
+
+
+def test_applying_a_provider_change_does_not_unmute() -> None:
+    """A remote provider event is not the sidebar's unmute composition."""
+    state = SessionState(tts_provider="piper", tts_enabled=False)
+
+    apply_state_fragment(state, {"tts_provider": "edge"})
+
+    assert state.tts_enabled is False
+    assert state.tts_provider == "edge"
+    assert state.tts_voice == "en-US-AndrewNeural"
 
 
 def test_json_ready_turns_selection_values_into_dicts() -> None:

@@ -121,3 +121,12 @@ dispatch; the channel exposes ``set_muted`` and replays ``tui.state`` mute on
 open. A session with no far end still accepts ``audio_stream.set_muted`` as
 desired state. That is not a user-visible change: the checkbox still works
 when a channel exists, and still records mute when it does not.
+
+Settings persistence is on the handler, matching audio selections. A socket
+``codex.set_model`` writes the startup file the same way a sidebar pick does.
+Pinned by ``test_a_controller_settings_change_is_remembered`` and
+``test_settings_persistence_runs_from_the_handler_not_the_hook``.
+
+Re-enabling TTS when the sidebar speech picker leaves ``No voice reply`` is
+still a TUI composition: the picker then dispatches ``tts.set_enabled``.
+``tts.set_provider`` itself does not unmute, for any client.

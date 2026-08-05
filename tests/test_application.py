@@ -488,6 +488,7 @@ def settings_bound(
     tts: FakeSpeech | None = None,
     gate: FakeGate | None = None,
     silence: FakeSilence | None = None,
+    recorded: list[tuple[str, object]] | None = None,
 ) -> tuple[Controller, FakeConversation, FakeSpeech, FakeGate, FakeSilence]:
     conversation = FakeConversation() if conversation is None else conversation
     tts = FakeSpeech() if tts is None else tts
@@ -496,7 +497,13 @@ def settings_bound(
     controller = Controller(app_state_from_session(SessionState()))
     bind_first_slice(controller, conversation=conversation, tts=tts)
     bind_settings_slice(
-        controller, conversation=conversation, tts=tts, gate=gate, turn_silence=silence
+        controller,
+        (conversation, tts, gate, silence),
+        persist=(
+            (lambda key, value: recorded.append((key, value)))
+            if recorded is not None
+            else None
+        ),
     )
     return controller, conversation, tts, gate, silence
 
@@ -539,6 +546,50 @@ def test_settings_actions_update_canonical_state() -> None:
     assert controller.state.codex_model == "gpt-5.6-sol"
     assert controller.state.codex_reasoning == "high"
     assert controller.state.turn_silence == 0.25
+
+
+def test_setting_the_provider_does_not_unmute_speech() -> None:
+    """Unmute is a TUI picker composition, not part of ``tts.set_provider``."""
+    controller, *_rest = settings_bound()
+    controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
+
+    assert controller.dispatch(
+        "tts.set_provider", {"provider": "edge"}, actor=OWNER
+    ) == Applied("req-2", "edge")
+    assert controller.state.tts_enabled is False
+    assert controller.state.tts_provider == "edge"
+
+
+def test_settings_persistence_runs_from_the_handler_not_the_hook() -> None:
+    recorded: list[tuple[str, object]] = []
+    controller, *_rest = settings_bound(recorded=recorded)
+
+    controller.dispatch("response_policy.set", {"policy": "voice"}, actor=OWNER)
+    controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER)
+    controller.dispatch("codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER)
+    controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=OWNER)
+    controller.dispatch("turn_silence.set", {"seconds": 0.01}, actor=OWNER)
+
+    assert recorded == [
+        ("taga_after", "voice"),
+        ("tts_provider", "edge"),
+        ("codex_model", "gpt-5.6-sol"),
+        ("codex_reasoning", "high"),
+        ("turn_silence", 0.25),
+    ]
+
+
+def test_a_refused_settings_change_is_not_persisted() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    tts.provider_ok = False
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Failed,
+    )
+    assert recorded == []
 
 
 def test_a_refused_settings_change_fails_and_leaves_state() -> None:
