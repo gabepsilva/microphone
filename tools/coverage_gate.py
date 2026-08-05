@@ -54,6 +54,13 @@ FLOORS = {
     "tagalong/commands.py": 100.0,
     "tagalong/codex.py": 99.0,
     "tagalong/config.py": 100.0,
+    # Recorded 2026-08-05 with the UI-neutral application core. It has no
+    # audio, process, or network boundary — every branch is reachable from a
+    # test — so it is recorded at what it measured and nothing less.
+    "tagalong/control/actions.py": 100.0,
+    "tagalong/control/actors.py": 100.0,
+    "tagalong/control/outcomes.py": 100.0,
+    "tagalong/control/state.py": 100.0,
     "tagalong/domain.py": 98.0,
     "tagalong/listener.py": 100.0,
     # Recorded 2026-07-27 with the speech-provider split. Each measured the
