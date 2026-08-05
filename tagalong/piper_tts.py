@@ -119,8 +119,7 @@ class PiperSentenceTTS(QueuedSentenceTTS):
         self.piper = piper
         self.voice = voice
         self.home = home
-        self.playback = AudioPlayer(player, output_sink=output_sink)
-        self._initialize_queue()
+        super().__init__(AudioPlayer(player, output_sink=output_sink))
         self.model = None
         self.model_error = None
         self.model_ready = threading.Event()
@@ -150,10 +149,6 @@ class PiperSentenceTTS(QueuedSentenceTTS):
             self.model_error = error
         finally:
             self.model_ready.set()
-
-    def _abandoned(self, turn):
-        """Report whether a turn's speech is no longer wanted."""
-        return self.shutdown_requested.is_set() or not self.turns.is_active(turn)
 
     def _await_model(self):
         """Return the loaded voice, or None once the failure has been reported.

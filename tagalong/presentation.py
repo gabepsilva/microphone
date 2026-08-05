@@ -17,16 +17,18 @@ from typing import Protocol
 class Entry:
     """One finished or streaming row in the session transcript."""
 
-    kind: str
+    kind: str  # "speech" | "note" | "command" | "reasoning"
     source: str = ""
     text: str = ""
     stamp: str = ""
-    reply_to: str = ""
+    reply_to: str = ""  # not rendered; carried for the on_save export
     interrupted: bool = False
     output: list[str] = field(default_factory=list)
     exit_code: int | None = None
     streaming: bool = False
+    # How long a reasoning entry spent thinking, known only once it has.
     seconds: float | None = None
+    # Bookkeeping for the session transcript file; not rendered.
     recorded: bool = False
 
 

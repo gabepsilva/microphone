@@ -78,27 +78,13 @@ class EdgeSentenceTTS(QueuedSentenceTTS):
         self.edge_tts = edge_tts
         self.voice = voice
         self.trimmer = trimmer
-        self.playback = AudioPlayer(player, output_sink=output_sink)
-        self._initialize_queue()
+        super().__init__(AudioPlayer(player, output_sink=output_sink))
         self.worker = threading.Thread(
             target=self._worker,
             name="EdgeTTSWorker",
             daemon=True,
         )
         self.worker.start()
-
-    def _turn_is_active(self, turn):
-        return self.turns.is_active(turn)
-
-    def _abandoned(self, turn):
-        """Report whether a turn's speech is no longer wanted.
-
-        Synthesis, trimming, and playback each hand off to a thread or an
-        event loop, so a turn can be interrupted or the engine closed between
-        any two of them. Every stage re-asks rather than trusting the answer
-        the stage before it got.
-        """
-        return self.shutdown_requested.is_set() or not self._turn_is_active(turn)
 
     async def _synthesize(self, turn, text):
         self.echo.remember(

@@ -269,7 +269,7 @@ def test_an_interrupted_turn_is_no_longer_active(tts) -> None:
     turn = tts.turns.current_turn
     tts.interrupt()
 
-    assert not tts._turn_is_active(turn)
+    assert not tts.turns.is_active(turn)
 
 
 def test_speech_queued_after_an_interrupt_is_refused_until_a_new_turn(

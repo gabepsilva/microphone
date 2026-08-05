@@ -15,16 +15,35 @@ class QueuedSentenceTTS:
     QUEUED_RETENTION_SECONDS = 120
     SPOKEN_RETENTION_SECONDS = 12
 
-    playback: AudioPlayer
+    # Set by the subclass once it has built the thread that drains the queue.
+    # ``close`` joins it, so an engine that never assigns one cannot be shut
+    # down; every provider starts its worker as the last step of ``__init__``.
     worker: threading.Thread
 
-    def _initialize_queue(self) -> None:
+    def __init__(self, playback: AudioPlayer) -> None:
+        """Take the player this engine speaks through and open its queue.
+
+        A provider builds the player itself, because only it knows what the
+        stream it synthesizes needs. Everything after that is the same
+        whichever provider produced the audio.
+        """
+        self.playback = playback
         self.sentences = queue.Queue()
         self.stop_item = object()
         self.shutdown_requested = threading.Event()
         self.turns = TurnGate()
         self.echo = EchoMemory()
         self.activity = SpeechActivity()
+
+    def _abandoned(self, turn) -> bool:
+        """Report whether a turn's speech is no longer wanted.
+
+        Synthesis, trimming, and playback each hand off to a thread or an
+        event loop, so a turn can be interrupted or the engine closed between
+        any two of them. Every stage re-asks rather than trusting the answer
+        the stage before it got.
+        """
+        return self.shutdown_requested.is_set() or not self.turns.is_active(turn)
 
     def begin_turn(self) -> None:
         self.turns.begin_turn()
