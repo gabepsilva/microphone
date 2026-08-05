@@ -430,8 +430,8 @@ def test_retargeting_without_a_live_channel_is_a_no_op() -> None:
     assert tui.notes == []
 
 
-def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
-    microphone, tui, opened = managed_microphone(INPUTS)
+def test_selecting_no_microphone_closes_capture() -> None:
+    microphone, _tui, opened = managed_microphone(INPUTS)
     microphone.select("Yeti")
     microphone.reconcile()
     _, transcriber, listener = opened[0]
@@ -445,7 +445,8 @@ def test_selecting_no_microphone_closes_capture_and_unbinds_mute() -> None:
         True,
     )
     assert microphone.current is None
-    assert tui.hooks.on_mute is None
+    assert microphone.transcriber is None
+    microphone.set_muted(True)
 
 
 def test_a_microphone_open_failure_leaves_the_session_running() -> None:
@@ -806,7 +807,7 @@ def test_dropping_the_application_closes_the_channel_it_had(wiring) -> None:
 
     assert (opened.stopped, opened.closed) == (True, True)
     assert them.transcriber is None
-    assert wiring["session"][0].hooks.on_audio_mute is None
+    them.set_muted(True)
 
 
 def test_the_speaker_mute_box_stops_the_audio_listener(wiring) -> None:
@@ -876,11 +877,17 @@ def test_unmuting_reaches_the_capture_layer_too(wiring) -> None:
     assert channels[0][1].muted is False
 
 
-def test_a_session_without_a_speaker_channel_binds_no_speaker_mute(wiring) -> None:
+def test_a_session_without_a_speaker_channel_still_records_desired_mute(
+    wiring,
+) -> None:
     cli.main()
     tui, _, _ = wiring["session"]
+    controller = wiring["controller"]
 
-    assert getattr(tui.hooks, "on_audio_mute", None) is None
+    assert tui.hooks.on_audio_mute is not None
+    assert tui.hooks.on_audio_mute(True) is True
+    assert controller.state.audio_stream_muted is True
+    assert wiring["audio"].transcriber is None
 
 
 def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
@@ -892,12 +899,19 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_interrupt",
         "on_command",
         "on_entry",
+        "on_policy",
         "on_codex_model",
         "on_codex_effort",
         "on_tts",
+        "on_tts_provider",
+        "on_turn_silence",
         "on_mute",
+        "on_audio_mute",
+        "on_microphone",
+        "on_audio_stream",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
+    assert tui.hooks.on_audio_mute is not None
     assert tui.hooks.on_entry is not None
     assert tui.hooks.on_command is not None
 
@@ -923,6 +937,26 @@ def test_main_finishes_transcript_recording_after_the_session(
 
     assert closed
     assert getattr(tui, "finished_recording", False) is True
+
+
+def test_snapshot_describes_the_live_session_after_startup(wiring) -> None:
+    cli.main()
+    tui, _, _ = wiring["session"]
+    controller = wiring["controller"]
+    snapshot = controller.snapshot().state
+    microphone = wiring["microphone"]
+
+    assert snapshot.tts_enabled is tui.state.tts_enabled
+    assert snapshot.tts_provider == tui.state.tts_provider
+    assert snapshot.response_policy == tui.state.policy
+    assert snapshot.codex_model == tui.state.codex_model
+    assert snapshot.codex_reasoning == tui.state.codex_effort
+    assert snapshot.turn_silence == tui.state.turn_silence
+    assert snapshot.microphone.desired == tui.state.microphone
+    assert snapshot.microphone.effective == microphone.current
+    assert snapshot.audio_stream.desired == tui.state.audio_stream
+    assert snapshot.microphone_muted is tui.state.mic.muted
+    assert snapshot.audio_stream_muted is tui.state.audio.muted
 
 
 def test_typed_text_always_requests_a_reply(wiring) -> None:

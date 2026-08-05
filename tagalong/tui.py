@@ -1225,9 +1225,10 @@ class Sidebar(VerticalScroll):
     def _policy_selected(self, value: str) -> None:
         if value == self.state.policy:
             return
+        if self.hooks.on_policy and self.hooks.on_policy(value) is False:
+            self.sync()
+            return
         self.state.policy = value
-        if self.hooks.on_policy:
-            self.hooks.on_policy(value)
 
     def _microphone_selected(self, value: str) -> None:
         """Ask the host to open another microphone, or to close the current one."""
@@ -2292,13 +2293,14 @@ class VoiceCodexApp(App):
 
     def action_cycle_policy(self) -> None:
         order = list(POLICIES)
-        self.state.policy = order[(order.index(self.state.policy) + 1) % len(order)]
+        policy = order[(order.index(self.state.policy) + 1) % len(order)]
+        if self.hooks.on_policy and self.hooks.on_policy(policy) is False:
+            return
+        self.state.policy = policy
         self.refresh_sidebar()
         self.add_entry(
             Entry(kind="note", text=f"response policy → {POLICIES[self.state.policy]}")
         )
-        if self.hooks.on_policy:
-            self.hooks.on_policy(self.state.policy)
 
     def action_toggle_mute(self) -> None:
         self.set_channel_muted(self.state.mic, not self.state.mic.muted)
@@ -2310,12 +2312,14 @@ class VoiceCodexApp(App):
         the microphone hears, the speaker hook drops what the sink monitor
         hears. Everything else here is the interface agreeing with it.
         """
-        channel.muted = muted
         hook = (
             self.hooks.on_mute
             if channel is self.state.mic
             else self.hooks.on_audio_mute
         )
+        if hook and hook(muted) is False:
+            return
+        channel.muted = muted
         self.refresh_sidebar()
         self._sync_partial()
         self.add_entry(
@@ -2324,8 +2328,6 @@ class VoiceCodexApp(App):
                 text=f"{channel.label} {'muted' if muted else 'live'}",
             )
         )
-        if hook:
-            hook(muted)
 
     def action_toggle_tts(self) -> None:
         self.set_tts_enabled(not self.state.tts_enabled)

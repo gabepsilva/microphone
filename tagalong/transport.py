@@ -18,9 +18,9 @@ import socket
 import struct
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .control import (
     Accepted,
@@ -36,6 +36,7 @@ from .control import (
 )
 from .control.actions import PROTOCOL_VERSION, Scope
 from .discovery import list_commands
+from .speech import default_voice
 
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 _CRED_FORMAT = "3i"
@@ -407,7 +408,7 @@ class LocalServer:
             {
                 "sequence": event.sequence,
                 "name": event.name,
-                "payload": dict(event.payload),
+                "payload": json_ready(dict(event.payload)),
             }
             for event in session.subscribed.drain()
         ]
@@ -497,10 +498,110 @@ class LocalClient:
         return line
 
 
+def json_ready(value: object) -> object:
+    """Turn in-process event values into JSON-encodable ones."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return {str(key): json_ready(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [json_ready(item) for item in value]
+    return value
+
+
+def _selection_desired(value: object) -> str | None:
+    if value is None:
+        return None
+    if is_dataclass(value) and not isinstance(value, type):
+        desired = getattr(value, "desired", None)
+        return None if desired is None else str(desired)
+    if isinstance(value, Mapping):
+        desired = value.get("desired")
+        return None if desired is None else str(desired)
+    return str(value)
+
+
+def _adopt_efforts(state: Any) -> None:
+    by_model = getattr(state, "codex_efforts_by_model", None)
+    if not isinstance(by_model, Mapping):
+        return
+    available = list(by_model.get(state.codex_model, ()))
+    if not available:
+        return
+    state.codex_efforts = available
+    if state.codex_effort in available:
+        return
+    defaults = getattr(state, "codex_default_effort_by_model", {})
+    state.codex_effort = (
+        defaults.get(state.codex_model) if isinstance(defaults, Mapping) else None
+    ) or available[0]
+
+
+def _set_tts_enabled(state: Any, value: object) -> None:
+    state.tts_enabled = bool(value)
+
+
+def _set_tts_provider(state: Any, value: object) -> None:
+    state.tts_provider = str(value)
+    if hasattr(state, "tts_voice"):
+        state.tts_voice = default_voice(state.tts_provider)
+
+
+def _set_response_policy(state: Any, value: object) -> None:
+    state.policy = str(value)
+
+
+def _set_microphone_muted(state: Any, value: object) -> None:
+    if hasattr(state, "mic"):
+        state.mic.muted = bool(value)
+
+
+def _set_audio_stream_muted(state: Any, value: object) -> None:
+    if hasattr(state, "audio"):
+        state.audio.muted = bool(value)
+
+
+def _set_microphone(state: Any, value: object) -> None:
+    state.microphone = _selection_desired(value)
+
+
+def _set_audio_stream(state: Any, value: object) -> None:
+    state.audio_stream = _selection_desired(value)
+
+
+def _set_codex_model(state: Any, value: object) -> None:
+    state.codex_model = str(value)
+    _adopt_efforts(state)
+
+
+def _set_codex_reasoning(state: Any, value: object) -> None:
+    state.codex_effort = str(value)
+
+
+def _set_turn_silence(state: Any, value: object) -> None:
+    state.turn_silence = float(cast(float, value))
+
+
+_STATE_SETTERS = {
+    "tts_enabled": _set_tts_enabled,
+    "tts_provider": _set_tts_provider,
+    "response_policy": _set_response_policy,
+    "microphone_muted": _set_microphone_muted,
+    "audio_stream_muted": _set_audio_stream_muted,
+    "microphone": _set_microphone,
+    "audio_stream": _set_audio_stream,
+    "codex_model": _set_codex_model,
+    "codex_reasoning": _set_codex_reasoning,
+    "turn_silence": _set_turn_silence,
+}
+
+
 def apply_state_fragment(state: Any, changed: Mapping[str, object]) -> None:
     """Copy controller-owned fields from a ``state.changed`` payload onto *state*."""
-    if "tts_enabled" in changed:
-        state.tts_enabled = bool(changed["tts_enabled"])
+    for name, value in changed.items():
+        setter = _STATE_SETTERS.get(name)
+        if setter is not None:
+            setter(state, value)
 
 
 class EventPump:

@@ -62,11 +62,9 @@ toggle still leaves the sidebar as it was, interrupt still flushes pending
 stream text before cutting the turn, and `/new` still clears the transcript
 only after a new Codex thread starts.
 
-Canonical `AppState` in this slice carries only `tts_enabled`. The agreed
-milestone is those four actions, not every sidebar transition; seeding
-microphone, mute, model, or silence from startup would make `snapshot()`
-report values no registered handler can update. Those fields arrive with
-their actions in later slices.
+Canonical `AppState` in this slice carried only `tts_enabled`. Seeding the
+rest waited for milestone 6, which registers the handlers that keep those
+fields true.
 
 Agent `message.send` is refused as inapplicable until the `Agent` transcript
 source lands as its own evaluated change. That path has no live client yet, so
@@ -103,3 +101,23 @@ Socket callers are agents. The ``client`` string on ``initialize`` is a label
 for the actor id, not a way to mint ``ActorKind.HUMAN``. The person at the
 TUI is still ``local_user`` in-process; a same-uid socket process that claims
 to be Electron cannot ingest ``Text``.
+
+## Milestone 6
+
+Milestone 6 wires the settings and audio catalog actions and seeds every
+``AppState`` field from the live session. Observable TUI journeys are
+unchanged: sidebar picks still accept or refuse through the same hooks, a
+clamped silence window is still what is saved, mute still reaches capture,
+and a failed or superseded device selection still writes nothing.
+
+``snapshot()`` now describes the session rather than dataclass defaults.
+Desired microphone and far-end names are seeded at start; effective names
+arrive when the reconcilers settle, the same accepted-then-settle shape
+``session.new`` already uses. Mute, policy, provider, model, reasoning, and
+silence stay synchronous.
+
+Capture channels no longer rebind ``on_mute`` / ``on_audio_mute``. Those hooks
+dispatch; the channel exposes ``set_muted`` and replays ``tui.state`` mute on
+open. A session with no far end still accepts ``audio_stream.set_muted`` as
+desired state. That is not a user-visible change: the checkbox still works
+when a channel exists, and still records mute when it does not.
