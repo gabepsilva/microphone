@@ -143,14 +143,30 @@ skip_empty = true
 # Widening also needs `also_copy = ["tagalong/"]`: mutmut runs the suite
 # against a copy of source_paths alone, and a selected test that imports an
 # unlisted sibling makes collection fail rather than the gate.
+#
+# tagalong/control/ joined on 2026-08-05 as a package rather than one module
+# at a time: it has no audio, process, or network boundary anywhere in it, so
+# the usual reason for staging a join — an adapter whose survivors cannot be
+# killed — does not apply. It took the run from 861 mutants to 1,459 and left
+# two survivors, both recorded in tools/mutation_gate.py.
 source_paths = [
     "tagalong/domain.py",
     "tagalong/config.py",
     "tagalong/codex.py",
     "tagalong/catalog.py",
+    "tagalong/control/actions.py",
+    "tagalong/control/actors.py",
+    "tagalong/control/controller.py",
+    "tagalong/control/events.py",
+    "tagalong/control/outcomes.py",
+    "tagalong/control/state.py",
 ]
 also_copy = ["tagalong/", "tagalong.py", "tagalong.example.yaml"]
 pytest_add_cli_args_test_selection = [
+    "tests/test_control_actions.py",
+    "tests/test_control_controller.py",
+    "tests/test_control_events.py",
+    "tests/test_control_state.py",
     "tests/test_domain.py",
     "tests/test_config.py",
     "tests/test_conversation.py",
