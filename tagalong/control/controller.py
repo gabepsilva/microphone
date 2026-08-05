@@ -64,6 +64,7 @@ from .outcomes import (
     Rejection,
     Superseded,
 )
+from .policy import AGENT_DENIED_ACTIONS, authorizes
 from .state import AppState, Effect
 
 # Enough for a client to retry the handful of requests a disconnect can leave
@@ -245,15 +246,8 @@ class Controller:
         with self._lock:
             return self._snapshot(), self._events.subscribe()
 
-    def registered(self) -> frozenset[str]:
-        """Action ids that have a handler in this session."""
-        with self._lock:
-            return frozenset(self._handlers)
-
     def capabilities(self, actor: Actor) -> tuple[Capability, ...]:
         """The whole catalog, each entry marked with whether *actor* may use it."""
-        from .policy import authorizes
-
         return tuple(
             Capability(action, authorizes(actor, action)) for action in self._catalog
         )
@@ -364,8 +358,6 @@ class Controller:
                 Rejection.UNKNOWN_ACTION,
                 f"no such action: {action_id}",
             )
-        from .policy import AGENT_DENIED_ACTIONS, authorizes
-
         if not authorizes(actor, action):
             if action.id in AGENT_DENIED_ACTIONS and action.scope in actor.scopes:
                 detail = f"{actor.id} is denied {action_id} by capability policy"

@@ -800,6 +800,39 @@ def test_catalog_gate_rejects_an_unknown_deferral() -> None:
     assert any("not in the catalog" in problem for problem in problems)
 
 
+def test_catalog_gate_reads_multiline_register_calls() -> None:
+    gate = _load_gate("catalog_gate")
+    source = (
+        "controller.register(\n"
+        '    "message.send", handler\n'
+        ")\n"
+        'controller.register("tts.set_enabled", other)\n'
+    )
+    assert gate.registered_action_ids(source) == frozenset(
+        {"message.send", "tts.set_enabled"}
+    )
+
+
+def test_catalog_gate_ignores_non_literal_register_calls() -> None:
+    gate = _load_gate("catalog_gate")
+    source = (
+        "register('bare')\n"
+        "controller.register()\n"
+        "controller.register(action_id, handler)\n"
+        "controller.register(12, handler)\n"
+        'other.call("message.send")\n'
+    )
+    assert gate.registered_action_ids(source) == frozenset()
+
+
+def test_catalog_gate_main_reports_planted_failures(monkeypatch, capsys) -> None:
+    gate = _load_gate("catalog_gate")
+    monkeypatch.setattr(gate, "check", lambda: ["session.quit: planted"])
+    assert gate.main() == 1
+    captured = capsys.readouterr()
+    assert "session.quit: planted" in captured.err
+
+
 # --------------------------------------------------------------------------
 # tools/ratchet_gate.py
 # --------------------------------------------------------------------------

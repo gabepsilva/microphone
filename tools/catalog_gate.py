@@ -5,25 +5,26 @@ The same advertised-versus-runnable drift has appeared twice: ``/help`` listing
 commands the router could not run, and MCP advertising tools that answered
 INAPPLICABLE. A list nobody can forget to update is the structural fix.
 
-Every :data:`~tagalong.control.actions.CATALOG` id must either be registered by
-a fully-wired production session or appear in :data:`DEFERRED_ACTIONS` with a
-reason. Wiring an action still listed as deferred also fails — the deferred
-set is not a place to hide finished work.
+Every :data:`~tagalong.control.actions.CATALOG` id must either appear as a
+``controller.register("…")`` string in the application adapter or sit in
+:data:`DEFERRED_ACTIONS` with a reason. Wiring an action still listed as
+deferred also fails — the deferred set is not a place to hide finished work.
+
+Registration is collected by reading the source, the same way
+``worker_gate`` reads thread construction: importing the adapter and standing
+up stub collaborators would measure coverage of fakes rather than of the
+wiring the gate exists to check.
 """
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
-from tagalong.application import (
-    bind_audio_slice,
-    bind_first_slice,
-    bind_session_transcript_slice,
-    bind_settings_slice,
-)
-from tagalong.control import Controller
 from tagalong.control.actions import CATALOG
+
+APPLICATION = Path("tagalong/application.py")
 
 # Actions intentionally without a handler. Empty after milestone 7 wired the
 # last catalog entries; a future deferral needs a one-line reason here and a
@@ -31,95 +32,26 @@ from tagalong.control.actions import CATALOG
 DEFERRED_ACTIONS: frozenset[str] = frozenset()
 
 
-class _Talk:
-    generation = 0
-
-    def ingest(self, *args: object, **kwargs: object) -> None:
-        del args, kwargs
-
-    def interrupt(self) -> None:
-        return None
-
-    def start_fresh_thread(self) -> object | None:
-        return None
-
-    def adopt_fresh_thread(self, started: object) -> None:
-        del started
-
-    def request_model(self, model: str) -> bool:
-        del model
-        return True
-
-    def request_reasoning_effort(self, effort: str) -> bool:
-        del effort
-        return True
+def registered_action_ids(source: str) -> frozenset[str]:
+    """Return action ids passed as the first argument of ``*.register(...)``."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "register":
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            found.add(first.value)
+    return frozenset(found)
 
 
-class _Speech:
-    def set_enabled(self, enabled: bool) -> bool:
-        del enabled
-        return True
-
-    def set_provider(self, provider: str) -> bool:
-        del provider
-        return True
-
-
-class _Policy:
-    def set_policy(self, policy: str) -> None:
-        del policy
-
-
-class _Silence:
-    def set(self, seconds: float) -> float:
-        return seconds
-
-
-class _Capture:
-    def select(self, name, *, on_applied=None, on_failed=None) -> bool:
-        del name, on_applied, on_failed
-        return True
-
-    def set_muted(self, muted: bool) -> None:
-        del muted
-
-
-class _Attachments:
-    def upload(self, data: bytes) -> str:
-        del data
-        return "id"
-
-    def resolve(self, ids) -> tuple:
-        del ids
-        return ()
-
-
-class _Turns:
-    def end_turn(self) -> None:
-        return None
-
-
-class _Rows:
-    def transcript_entries(self) -> list:
-        return []
-
-
-def production_handler_ids() -> frozenset[str]:
-    """Action ids a fully-wired production session registers."""
-    controller = Controller()
-    talk = _Talk()
-    speech = _Speech()
-    bind_first_slice(
-        controller, conversation=talk, tts=speech, attachments=_Attachments()
-    )
-    bind_settings_slice(controller, (talk, speech, _Policy(), _Silence()))
-    bind_audio_slice(controller, microphone=_Capture(), audio=_Capture())
-    bind_session_transcript_slice(
-        controller,
-        (talk, _Turns(), _Attachments(), _Rows()),
-        directory=Path("."),
-    )
-    return controller.registered()
+def production_handler_ids(path: Path = APPLICATION) -> frozenset[str]:
+    """Action ids the production application adapter registers."""
+    return registered_action_ids(path.read_text(encoding="utf-8"))
 
 
 def missing_handlers(

@@ -197,9 +197,11 @@ missing device) remains a per-call answer. Pinned by
 ``test_mcp_bridge_omits_tools_capability_policy_denies``.
 
 **Catalog handler gate.** ``make catalog`` / ``tools/catalog_gate.py`` fails
-when a catalog action has no production handler and is not on
-``DEFERRED_ACTIONS``. Stale or unknown deferrals also fail. Wired into
-``VERIFY_QUICK``. Pinned by ``test_catalog_gate_rejects_a_missing_handler``.
+when a catalog action has no ``controller.register`` in
+``tagalong/application.py`` and is not on ``DEFERRED_ACTIONS``. Stale or
+unknown deferrals also fail. The gate reads the source (AST), so it does not
+stand up stub collaborators. Wired into ``VERIFY_QUICK``. Pinned by
+``test_catalog_gate_rejects_a_missing_handler``.
 
 **Attachment registry.** Remains session-scoped. Same-uid clients share one
 workspace; opaque ids are not a cross-user boundary. Actor-scoped ownership

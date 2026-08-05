@@ -40,7 +40,7 @@ FLOORS = {
     "tools/test_integrity.py": 93.0,
     "tools/worker_gate.py": 97.0,
     # Recorded 2026-08-05 with the catalog handler gate for issue #81 milestone 8.
-    "tools/catalog_gate.py": 70.0,
+    "tools/catalog_gate.py": 97.0,
     "tagalong.py": 83.0,
     "tagalong/__init__.py": 100.0,
     # Recorded 2026-08-05 with the first TUI slice adapter for issue #81.
