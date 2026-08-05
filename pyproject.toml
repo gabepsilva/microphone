@@ -155,6 +155,13 @@ skip_empty = true
 # out would hide assertion gaps behind a silent non-widening that ratchet
 # cannot see. tests/test_discovery.py is in the selection so those mutants
 # are scored against the tests that name them.
+#
+# tagalong/transport.py stays out: it is the Unix-socket / SO_PEERCRED
+# boundary. Mutating accept, framing, or peer checks produces survivors that
+# can only be "killed" by faking the unit under test. Coverage at 100% locks
+# the branches; the controller behind the socket remains in scope.
+# tagalong/mcp.py stays out with it — tool schemas are a thin projection of
+# the already-mutated catalog, and McpBridge is another socket adapter.
 source_paths = [
     "tagalong/domain.py",
     "tagalong/config.py",

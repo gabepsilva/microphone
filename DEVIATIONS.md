@@ -84,3 +84,17 @@ summary, target action). It is not a catalog action and not
 `command.invoke`. `/new`'s summary is `session.new`'s summary, so the palette
 and an agent tool schema cannot drift. `/help` itself has no typed equivalent;
 it only renders that listing.
+
+## Milestone 5
+
+Milestone 5 adds the local transport and the first second-writer path. The TUI
+subscribes to controller events so a remote `tts.set_enabled` updates the
+sidebar. Local toggles still note "tts on/off" themselves; a remote change
+updates the sidebar without a duplicate note. Journey tests that never attach
+a controller are unchanged.
+
+The Unix socket lives under ``$XDG_RUNTIME_DIR/tagalong`` (mode ``0700``,
+socket ``0600``, ``SO_PEERCRED`` same-uid only). There is no ``/tmp``
+fallback: if the runtime dir is unset the TUI still runs and remote clients
+cannot attach. MCP tools are generated from the static catalog; Electron is a
+preload-isolated client of the same socket, not a second Python runtime.

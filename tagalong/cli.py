@@ -78,6 +78,7 @@ from .startup import (
     validate_codex_reasoning,
 )
 from .streams import ApplicationRefresher, StreamTap
+from .transport import EventPump, LocalServer, TransportError, apply_state_fragment
 
 # The name carries the user ID because the fallback is a shared directory: on a
 # multi-user box a fixed name in /tmp is one user's lock file blocking every
@@ -745,6 +746,33 @@ def attach_conversation_hooks(tui, conversation, tts, config, turn_silence):
     return controller, actor
 
 
+def attach_remote_access(controller, tui):
+    """Subscribe the TUI to controller events and open the local socket.
+
+    The pump is what keeps the sidebar honest when a second writer changes
+    canonical state. The socket is how Electron and MCP become that writer.
+    A missing ``XDG_RUNTIME_DIR`` leaves the TUI session running without a
+    socket rather than falling back to ``/tmp``.
+    """
+    _snapshot, subscription = controller.subscribe()
+
+    def apply(changed):
+        apply_state_fragment(tui.state, changed)
+        refresh = getattr(getattr(tui, "app", None), "refresh_sidebar", None)
+        call = getattr(tui, "_call", None)
+        if refresh is not None and call is not None:
+            call(refresh)
+
+    pump = EventPump(subscription.drain, apply)
+    pump.start()
+    try:
+        server = LocalServer(controller)
+        server.start()
+    except (TransportError, OSError):
+        server = None
+    return pump, server
+
+
 def wire_transcript_recording(tui, conversation, recorder, controller, actor):
     """Attach continuous transcript recording and the slash commands that roll it."""
     tui.hooks.on_entry = recorder.record
@@ -958,14 +986,25 @@ def main():
         them.select, config, "audio_stream", encode=audio_stream_setting
     )
     them.select(audio_stream)
-    run_session(
-        tui,
-        [],
-        conversation,
-        microphone=microphone,
-        audio=them,
-    )
+    run_attached_session(controller, tui, conversation, microphone, them)
     finish_recorded_session(tui, recorder, applications)
+
+
+def run_attached_session(controller, tui, conversation, microphone, audio) -> None:
+    """Run the TUI with event subscription and the local socket attached."""
+    pump, server = attach_remote_access(controller, tui)
+    try:
+        run_session(
+            tui,
+            [],
+            conversation,
+            microphone=microphone,
+            audio=audio,
+        )
+    finally:
+        pump.stop()
+        if server is not None:
+            server.stop()
 
 
 def run_entrypoint():
