@@ -62,6 +62,11 @@ Review still has to catch what tools cannot:
 - Do not satisfy a gate by deleting a test, weakening an assertion, faking the
   unit under test, or relaxing a threshold. `make ratchet` blocks some of
   those moves; intent still matters for the ones it cannot see.
+- A change of runtime behavior during the issue #81 refactor belongs in
+  [DEVIATIONS.md](DEVIATIONS.md) with the commit and the test that pins it.
+  The high-level TUI journeys are the parity oracle, and an oracle cannot tell
+  a preserved behavior from a preserved bug — so anything behaving differently
+  and not on that list is a regression.
 
 If CI is green and the change is wrong, the missing piece is a better test, not
 a merge bypass.

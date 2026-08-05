@@ -426,6 +426,42 @@ def test_a_microphone_open_failure_leaves_the_session_running() -> None:
     assert tui.notes == ["could not listen to Yeti: device busy"]
 
 
+def test_a_microphone_that_failed_to_open_is_retried_by_the_next_pass() -> None:
+    """The failed request is kept on purpose, because holding it is the retry.
+
+    ``MicrophoneChannel`` polls, so a device that is busy now is opened when
+    it frees up and the desired selection has to survive to be tried again.
+    ``AudioChannel`` abandons instead — nothing there wakes up to revisit a
+    request it kept — which is why the two answer ``desired`` differently
+    after a failure rather than one of them being wrong.
+    """
+    attempts: list[int] = []
+    applied: list[str | None] = []
+
+    def open_channel(index):
+        attempts.append(index)
+        if len(attempts) == 1:
+            raise RuntimeError("device busy")
+        return FakeTranscriber(device=index), SwitchListener()
+
+    microphone = cli.MicrophoneChannel(
+        FakeTUI(SessionState()),
+        open_channel,
+        lambda transcriber, listener: None,
+        devices=INPUTS,
+        discover=lambda: list(INPUTS),
+    )
+    microphone.select("Yeti", on_applied=applied.append)
+
+    microphone.reconcile()
+
+    assert (microphone.current, microphone.desired, applied) == (None, "Yeti", [])
+
+    microphone.reconcile()
+
+    assert (microphone.current, applied) == ("Yeti", ["Yeti"])
+
+
 def test_a_failed_microphone_selection_is_not_remembered(wiring, tmp_path) -> None:
     """Acceptance is not evidence that an asynchronous switch took effect."""
     wiring["input_device"] = None
