@@ -63,6 +63,8 @@ FLOORS = {
     "tagalong/piper_tts.py": 95.0,
     "tagalong/playback.py": 98.0,
     "tagalong/presentation.py": 100.0,
+    # Recorded 2026-08-05 with the shared queued-speech lifecycle.
+    "tagalong/queued_tts.py": 100.0,
     # Recorded 2026-07-29 with the session tagging that lets an orphaned
     # helper be recognized and swept.
     "tagalong/session.py": 100.0,
