@@ -245,9 +245,18 @@ class Controller:
         with self._lock:
             return self._snapshot(), self._events.subscribe()
 
+    def registered(self) -> frozenset[str]:
+        """Action ids that have a handler in this session."""
+        with self._lock:
+            return frozenset(self._handlers)
+
     def capabilities(self, actor: Actor) -> tuple[Capability, ...]:
         """The whole catalog, each entry marked with whether *actor* may use it."""
-        return tuple(Capability(action, actor.may(action)) for action in self._catalog)
+        from .policy import authorizes
+
+        return tuple(
+            Capability(action, authorizes(actor, action)) for action in self._catalog
+        )
 
     def _snapshot(self) -> Snapshot:
         return Snapshot(self._events.instance, self._events.sequence, self._state)
@@ -355,13 +364,19 @@ class Controller:
                 Rejection.UNKNOWN_ACTION,
                 f"no such action: {action_id}",
             )
-        if not actor.may(action):
+        from .policy import AGENT_DENIED_ACTIONS, authorizes
+
+        if not authorizes(actor, action):
+            if action.id in AGENT_DENIED_ACTIONS and action.scope in actor.scopes:
+                detail = f"{actor.id} is denied {action_id} by capability policy"
+            else:
+                detail = f"{actor.id} does not hold the {action.scope} scope"
             return self._reject(
                 request_id,
                 action_id,
                 actor,
                 Rejection.FORBIDDEN,
-                f"{actor.id} does not hold the {action.scope} scope",
+                detail,
             )
         try:
             checked = action.validate(payload)

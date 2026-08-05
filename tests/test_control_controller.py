@@ -152,6 +152,19 @@ def test_capabilities_answer_for_the_actor_that_asked() -> None:
     assert all(entry.allowed for entry in controller.capabilities(OWNER))
 
 
+def test_capabilities_deny_agent_quit_even_with_the_session_scope() -> None:
+    controller = wired()
+    caller = agent("bot", {Scope.SESSION})
+
+    allowed = {
+        entry.action.id: entry.allowed for entry in controller.capabilities(caller)
+    }
+
+    assert allowed["session.interrupt"] is True
+    assert allowed["session.new"] is True
+    assert allowed["session.quit"] is False
+
+
 def test_an_unhandled_action_stays_in_the_catalog() -> None:
     """It is inapplicable in this session, not unknown to the protocol."""
     controller = wired()

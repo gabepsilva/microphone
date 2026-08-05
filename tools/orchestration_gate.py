@@ -44,6 +44,7 @@ REQUIRED_TARGETS = {
         "shellcheck",
         "workflows",
         "orchestration",
+        "catalog",
     },
     "VERIFY_COVERAGE": {"test-coverage"},
     "VERIFY_MUTATION": {"mutation"},

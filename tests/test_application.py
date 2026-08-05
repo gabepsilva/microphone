@@ -920,7 +920,8 @@ def test_an_agent_cannot_quit_the_session(tmp_path) -> None:
 
     outcome = controller.dispatch("session.quit", actor=agent("bot", {Scope.SESSION}))
     assert isinstance(outcome, Rejected)
-    assert outcome.reason is Rejection.INAPPLICABLE
+    assert outcome.reason is Rejection.FORBIDDEN
+    assert "capability policy" in outcome.detail
 
 
 def test_message_send_rejects_unknown_and_missing_attachments(tmp_path) -> None:

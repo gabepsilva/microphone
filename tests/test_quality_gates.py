@@ -766,6 +766,41 @@ def test_worker_gate_passes_on_this_repository() -> None:
 
 
 # --------------------------------------------------------------------------
+# tools/catalog_gate.py
+# --------------------------------------------------------------------------
+
+
+def test_catalog_gate_passes_on_this_repository() -> None:
+    gate = _load_gate("catalog_gate")
+    assert gate.main() == 0
+
+
+def test_catalog_gate_rejects_a_missing_handler() -> None:
+    gate = _load_gate("catalog_gate")
+    registered = gate.production_handler_ids() - {"session.quit"}
+    problems = gate.check(registered)
+    assert any(
+        "session.quit" in problem and "no handler" in problem for problem in problems
+    )
+
+
+def test_catalog_gate_rejects_a_stale_deferral() -> None:
+    gate = _load_gate("catalog_gate")
+    problems = gate.check(
+        gate.production_handler_ids(), deferred=frozenset({"session.quit"})
+    )
+    assert any("deferred but a handler" in problem for problem in problems)
+
+
+def test_catalog_gate_rejects_an_unknown_deferral() -> None:
+    gate = _load_gate("catalog_gate")
+    problems = gate.check(
+        gate.production_handler_ids(), deferred=frozenset({"session.explode"})
+    )
+    assert any("not in the catalog" in problem for problem in problems)
+
+
+# --------------------------------------------------------------------------
 # tools/ratchet_gate.py
 # --------------------------------------------------------------------------
 

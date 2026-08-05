@@ -436,7 +436,7 @@ def bind_session_transcript_slice(
 
     ``attachment.upload`` validates bytes and returns opaque ids.
     ``message.send`` resolves those ids; callers never pass filesystem paths.
-    ``session.quit`` is refused for agents — the human owns the runtime.
+    ``session.quit`` is refused for agents — capability policy owns that denial.
     """
     conversation, turn, attachments, transcript = collaborators
     export_dir = directory if directory is not None else default_transcript_dir()
@@ -468,9 +468,8 @@ def bind_session_transcript_slice(
         turn.end_turn()
         return Effect.applied(state, None)
 
-    def quit_session(request: Request, state: AppState) -> Effect:
-        if request.actor.kind is ActorKind.AGENT:
-            raise Inapplicable("agents may not shut down the session")
+    def quit_session(_request: Request, state: AppState) -> Effect:
+        # Agents are refused by capability policy before this handler runs.
         return Effect.applied(state, None)
 
     controller.register("attachment.upload", upload_attachment)

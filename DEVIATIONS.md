@@ -154,8 +154,8 @@ same opaque-id discipline as attachments. The file still lands under the
 configured transcript directory.
 
 The attachment registry is session-scoped, not actor-scoped: an id uploaded by
-one actor resolves for another. Milestone 8’s capability policy is the place to
-decide whether that boundary should tighten.
+one actor resolves for another. Milestone 8 records that as the intentional
+shared-workspace model under same-uid (see below).
 
 ### Edge cases
 
@@ -166,6 +166,41 @@ query (or the socket event stream), not the operator’s pasteboard. Electron
 will have its own seat-local copy path. Not a catalog action.
 
 **Quitting is a session action, refused for agents.** ``session.quit`` is
-registered and the TUI dispatches it before exiting. Agents receive
-``INAPPLICABLE`` — the human owns the runtime lifecycle. That is an explicit
-denial, not a silent absence. Pinned by ``test_an_agent_cannot_quit_the_session``.
+registered and the TUI dispatches it before exiting. Milestone 8 moves the
+refusal into capability policy (``FORBIDDEN``) so MCP never advertises it.
+Pinned by ``test_an_agent_cannot_quit_the_session``.
+
+## Milestone 8
+
+Milestone 8 makes capability policy load-bearing and closes the
+advertised-versus-runnable drift.
+
+**Grant source.** Socket peers receive scopes from
+``scopes_for_socket_client`` in ``tagalong/control/policy.py``, keyed by
+connection class. The ``client`` string on ``initialize`` labels the actor id;
+it cannot mint scopes. Today every socket class gets
+``SOCKET_AGENT_SCOPES`` (the full set) — an explicit decision, not a silent
+default. The TUI remains ``local_user`` with every scope. ``initialize``
+returns the granted ``scopes`` list. Pinned by ``test_socket_scopes_are_an_explicit_runtime_grant``
+and the transport initialize assertion.
+
+**Explicit denials.** Agents may hold ``session`` for interrupt and
+``session.new``, but ``session.quit`` is in ``AGENT_DENIED_ACTIONS``. Dispatch
+answers ``FORBIDDEN``; ``capabilities`` marks it disallowed. Pinned by
+``test_capabilities_deny_agent_quit_even_with_the_session_scope`` and
+``test_an_agent_cannot_quit_the_session``.
+
+**MCP listing.** Schemas stay catalog-derived. ``McpBridge.list_tools`` asks
+``capabilities`` and omits anything the policy marks disallowed, so an agent
+is never offered ``session.quit``. Transient applicability (stale generation,
+missing device) remains a per-call answer. Pinned by
+``test_mcp_bridge_omits_tools_capability_policy_denies``.
+
+**Catalog handler gate.** ``make catalog`` / ``tools/catalog_gate.py`` fails
+when a catalog action has no production handler and is not on
+``DEFERRED_ACTIONS``. Stale or unknown deferrals also fail. Wired into
+``VERIFY_QUICK``. Pinned by ``test_catalog_gate_rejects_a_missing_handler``.
+
+**Attachment registry.** Remains session-scoped. Same-uid clients share one
+workspace; opaque ids are not a cross-user boundary. Actor-scoped ownership
+waits for a threat model that needs it.
