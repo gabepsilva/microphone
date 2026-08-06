@@ -9,7 +9,8 @@ module.exports = tseslint.config(
     files: ["src/**/*.ts", "tests/**/*.ts"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        // Emit tsconfig is src-only; this project includes tests for typed lint.
+        project: "./tsconfig.eslint.json",
         tsconfigRootDir: __dirname,
       },
     },
