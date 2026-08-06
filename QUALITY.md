@@ -142,7 +142,8 @@ The hosted workflow splits `make ci-hosted` across quick, coverage, mutation,
 and static-security lanes, then folds their results into the protected
 `Quality and security` check. A separate Gitleaks job supplies the secret scan,
 because that action installs the scanner itself. Together the two protected
-checks are equivalent to `make ci`.
+checks are equivalent to `make ci`. Locally, `make ci` enables the same
+cross-lane parallelism by default (`make -j1 ci` restores serial logs).
 
 Branch protection is GitHub UI state and exists nowhere in this repository, so
 it is recorded here. Protect `master` with pull requests required, force pushes

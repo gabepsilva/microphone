@@ -163,7 +163,8 @@ Run the complete local gate before committing:
 make ci
 ```
 
-This requires Gitleaks 8.30.0 or a compatible version on `PATH`. The gate
+Independent checks run in parallel by default; use `make -j1 ci` for serial
+logs. This requires Gitleaks 8.30.0 or a compatible version on `PATH`. The gate
 checks formatting, linting, types, tests and branch coverage, shell syntax,
 static Python security findings, dependency vulnerabilities, and secrets in the
 working tree and Git history. See [QUALITY.md](QUALITY.md) for the precise

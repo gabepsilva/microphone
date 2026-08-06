@@ -3,9 +3,10 @@
 
 Splitting one ``make ci-hosted`` invocation across several Actions jobs makes
 the workflow faster, but it also creates a silent failure mode: removing a
-target from a Make group, omitting a group from the workflow, or forgetting a
-lane in the protected aggregator all make CI greener. This gate treats those
-three lists as one contract and rejects drift in the permissive direction.
+target from a Make group, omitting a group from the workflow, forgetting a
+lane in the protected aggregator, or dropping the local parallel Make default
+all make CI greener (or slower without anyone noticing). This gate treats those
+lists as one contract and rejects drift in the permissive direction.
 It also forbids ``continue-on-error`` at job or step scope anywhere in the
 designated CI workflow, regardless of the key's value.
 
@@ -141,6 +142,20 @@ def _check_makefile(source: str, failures: list[str]) -> None:
             failures.append(
                 f"Makefile: {target} must depend, in order, on {' '.join(expected)}."
             )
+
+    # Local `make ci` must keep the same cross-lane parallelism hosted CI gets
+    # from separate jobs. The spelling is pinned so a silent slide back to
+    # serial `make` cannot pass as an unrelated Makefile edit.
+    if "MAKEFLAGS += -j$(CI_JOBS)" not in source:
+        failures.append(
+            "Makefile: local gates must default to parallel jobs via "
+            "`MAKEFLAGS += -j$(CI_JOBS)` (override with make -j1)."
+        )
+    if "$(shell nproc " not in source:
+        failures.append(
+            "Makefile: parallel job default must use nproc on Linux "
+            "(unsupported platforms pass -jN explicitly)."
+        )
 
 
 def _check_aggregator(job: str, lane_jobs: set[str], failures: list[str]) -> None:
