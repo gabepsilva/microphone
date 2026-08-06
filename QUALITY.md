@@ -90,11 +90,16 @@ and prints what to do when it fails. This is the map, not the manual.
   `ipcMain.handle`. The registrar returns the channels it wired; a planted
   fixture adds `tagalong:neverWired` to the map and leaves it unwired.
 - **Electron BrowserWindow prefs** (Semgrep rules
-  `electron-no-node-integration`, `electron-require-context-isolation`): refuse
-  `nodeIntegration: true` / `contextIsolation: false` under `electron/src/`
-  with an explicit `paths.include` so a 185 MB `electron/node_modules` mount
-  cannot rely on default ignores. Planted proof runs the pinned Semgrep image
-  against a temp tree that sets both prefs wrong.
+  `electron-no-node-integration`, `electron-no-open-context-isolation`):
+  allowlist the safe literals (`nodeIntegration: false`,
+  `contextIsolation: true`) under `/electron/src/` so env flags, `Boolean(...)`,
+  and variable prefs cannot bypass a literal-only match. Explicit
+  `paths.include` so a 185 MB `electron/node_modules` mount cannot rely on
+  default ignores. Planted proof uses the non-literal forms.
+- **Electron IPC chokepoint** (Semgrep
+  `electron-ipc-handle-only-via-registrar`): forbid bare `ipcMain.handle(...)`
+  under `/electron/src/` except `ipc.ts`, so `registerIpcHandlers` is
+  load-bearing rather than a convention the orphan map check can walk around.
 - **Worker-thread contract** (`tools/worker_gate.py`) requires every
   background thread to be a daemon and every join on one to pass a timeout.
   Four classes follow this and nothing enforced it: it survived only because

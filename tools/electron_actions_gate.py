@@ -56,13 +56,15 @@ def drift_problems(
     committed: str,
     *,
     expected: str | None = None,
+    path: Path | None = None,
 ) -> list[str]:
     """Return human-readable problems when *committed* does not match *expected*."""
     want = render_actions_ts() if expected is None else expected
     if committed == want:
         return []
+    shown = ACTIONS_PATH if path is None else path
     return [
-        f"{ACTIONS_PATH}: out of sync with CATALOG — "
+        f"{shown}: out of sync with CATALOG — "
         "run `make electron-actions-write` and commit the result"
     ]
 
@@ -72,7 +74,7 @@ def check(*, path: Path | None = None) -> list[str]:
     target = ACTIONS_PATH if path is None else path
     if not target.is_file():
         return [f"{target}: missing; run `make electron-actions-write`"]
-    return drift_problems(target.read_text(encoding="utf-8"))
+    return drift_problems(target.read_text(encoding="utf-8"), path=target)
 
 
 def write(*, path: Path | None = None) -> None:

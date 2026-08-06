@@ -25,8 +25,9 @@ hard-refuses and turns `bun run lint` red. `make ratchet` does not watch
 
 Security posture: `contextIsolation: true`, `nodeIntegration: false`, and an
 allowlisted preload API (`snapshot`, `setTts`). Semgrep under `electron/src/`
-refuses flipping those prefs. The socket itself checks `SO_PEERCRED` and
-refuses a `/tmp` fallback.
+allowlists those literals (non-literal bypasses fail) and forbids bare
+`ipcMain.handle` outside `src/ipc.ts`. The socket itself checks `SO_PEERCRED`
+and refuses a `/tmp` fallback.
 
 IPC channel names live in `src/protocol/channels.ts` so main and preload share
 one spelling; `src/ipc.ts` registers every map entry so an orphan channel fails

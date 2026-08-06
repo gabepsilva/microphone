@@ -99,13 +99,14 @@ rules:
 
   # Electron security posture. Explicit paths.include — do not inherit Semgrep
   # defaults over a tree that may contain electron/node_modules (make semgrep
-  # mounts the whole repository).
+  # mounts the whole repository). Allowlist the safe literal so env flags,
+  # Boolean(...), and variable prefs cannot slip past a literal-only match.
   - id: electron-no-node-integration
     languages: [typescript, javascript]
     severity: ERROR
     message: >-
-      nodeIntegration must stay false; the renderer talks through the preload
-      bridge only.
+      nodeIntegration must stay the literal false; the renderer talks through
+      the preload bridge only.
     metadata:
       category: security
       technology: [electron]
@@ -114,18 +115,40 @@ rules:
         # Anchored at repo root (Semgrepignore v2); do not use a bare
         # electron/src/ that warns and will change meaning.
         - /electron/src/
-    pattern: "nodeIntegration: true"
+    patterns:
+      - pattern: "nodeIntegration: $X"
+      - pattern-not: "nodeIntegration: false"
 
-  - id: electron-require-context-isolation
+  - id: electron-no-open-context-isolation
     languages: [typescript, javascript]
     severity: ERROR
     message: >-
-      contextIsolation must stay enabled so the preload bridge remains the
-      only renderer surface.
+      contextIsolation must stay the literal true so the preload bridge remains
+      the only renderer surface.
     metadata:
       category: security
       technology: [electron]
     paths:
       include:
         - /electron/src/
-    pattern: "contextIsolation: false"
+    patterns:
+      - pattern: "contextIsolation: $X"
+      - pattern-not: "contextIsolation: true"
+
+  # Make registerIpcHandlers the sole door: bare ipcMain.handle outside ipc.ts
+  # is an orphan-handler hole the CHANNELS map check cannot see.
+  - id: electron-ipc-handle-only-via-registrar
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Register IPC handlers only through registerIpcHandlers in
+      electron/src/ipc.ts so orphan/map checks stay load-bearing.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+      exclude:
+        - /electron/src/ipc.ts
+    pattern: ipcMain.handle(...)

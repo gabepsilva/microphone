@@ -1151,25 +1151,75 @@ def test_semgrep_forbids_faking_the_unit_under_test() -> None:
     assert "domain" in rules
 
 
-def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
-    """Rule text alone is not proof — Semgrep must fire on planted Electron prefs."""
-    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
-    assert "electron-no-node-integration" in rules
-    assert "electron-require-context-isolation" in rules
-    assert "/electron/src/" in rules
-
+def _semgrep_image() -> str:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     match = re.search(r"^SEMGREP_IMAGE\s*:=\s*(\S+)\s*$", makefile, flags=re.M)
     assert match is not None, "Makefile must pin SEMGREP_IMAGE for this proof"
-    image = match.group(1)
+    return match.group(1)
 
+
+def _run_semgrep_on_tree(tree: Path, *, image: str) -> tuple[int, set[str]]:
+    reports = tree / "reports"
+    reports.mkdir(exist_ok=True)
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--env",
+            "SEMGREP_ENABLE_VERSION_CHECK=0",
+            "--env",
+            "SEMGREP_SEND_METRICS=off",
+            "--volume",
+            f"{tree}:/src:ro",
+            "--volume",
+            f"{reports}:/reports",
+            "--workdir",
+            "/src",
+            image,
+            "semgrep",
+            "scan",
+            "--config",
+            "semgrep.yml",
+            "--error",
+            "--metrics=off",
+            "--json-output",
+            "/reports/semgrep.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    findings = json.loads((reports / "semgrep.json").read_text(encoding="utf-8"))
+    rule_ids = {hit["check_id"] for hit in findings.get("results", [])}
+    return result.returncode, rule_ids
+
+
+def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
+    """Allowlist form must catch non-literal bypasses, not only `: true` / `: false`."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-no-node-integration" in rules
+    assert "electron-no-open-context-isolation" in rules
+    assert 'pattern-not: "nodeIntegration: false"' in rules
+    assert 'pattern-not: "contextIsolation: true"' in rules
+    assert "/electron/src/" in rules
+
+    image = _semgrep_image()
+    # Non-literal forms the previous literal-only rules missed (reviewer F1).
     planted = (
         'import { BrowserWindow } from "electron";\n'
-        "export function bad(): BrowserWindow {\n"
+        'const DEV = process.env.TAGALONG_DEV === "1";\n'
+        "const prefs = { nodeIntegration: DEV, contextIsolation: !DEV };\n"
+        "export function viaVariable(): BrowserWindow {\n"
+        "  return new BrowserWindow({ webPreferences: prefs });\n"
+        "}\n"
+        "export function viaCoercion(): BrowserWindow {\n"
         "  return new BrowserWindow({\n"
         "    webPreferences: {\n"
-        "      nodeIntegration: true,\n"
-        "      contextIsolation: false,\n"
+        "      nodeIntegration: Boolean(1),\n"
+        "      contextIsolation: 0 as unknown as boolean,\n"
         "    },\n"
         "  });\n"
         "}\n"
@@ -1181,47 +1231,53 @@ def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
         src.mkdir(parents=True)
         (src / "planted.ts").write_text(planted, encoding="utf-8")
         (root / "semgrep.yml").write_text(rules, encoding="utf-8")
-        reports = root / "reports"
-        reports.mkdir()
-        result = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--env",
-                "SEMGREP_ENABLE_VERSION_CHECK=0",
-                "--env",
-                "SEMGREP_SEND_METRICS=off",
-                "--volume",
-                f"{root}:/src:ro",
-                "--volume",
-                f"{reports}:/reports",
-                "--workdir",
-                "/src",
-                image,
-                "semgrep",
-                "scan",
-                "--config",
-                "semgrep.yml",
-                "--error",
-                "--metrics=off",
-                "--json-output",
-                "/reports/semgrep.json",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, (
+            f"Semgrep accepted non-literal BrowserWindow prefs: {rule_ids}"
         )
-        assert result.returncode != 0, (
-            "Semgrep accepted planted nodeIntegration/contextIsolation:\n"
-            f"stdout={result.stdout}\nstderr={result.stderr}"
-        )
-        findings = json.loads((reports / "semgrep.json").read_text(encoding="utf-8"))
-        rule_ids = {hit["check_id"] for hit in findings.get("results", [])}
         assert "electron-no-node-integration" in rule_ids
-        assert "electron-require-context-isolation" in rule_ids
+        assert "electron-no-open-context-isolation" in rule_ids
+
+
+def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
+    """Bare ipcMain.handle outside ipc.ts must fail — orphan-handler half of #97."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-ipc-handle-only-via-registrar" in rules
+    assert "/electron/src/ipc.ts" in rules
+
+    image = _semgrep_image()
+    backdoor = (
+        'import { ipcMain } from "electron";\n'
+        "export function plant(): void {\n"
+        '  ipcMain.handle("tagalong:backdoor", (_e, cmd: unknown) => cmd);\n'
+        "}\n"
+    )
+    allowed = (
+        'import { ipcMain } from "electron";\n'
+        "export function registerIpcHandlers(): void {\n"
+        '  ipcMain.handle("tagalong:snapshot", () => undefined);\n'
+        "}\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        src.mkdir(parents=True)
+        (src / "main.ts").write_text(backdoor, encoding="utf-8")
+        (src / "ipc.ts").write_text(allowed, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, "Semgrep accepted bare ipcMain.handle outside ipc.ts"
+        assert "electron-ipc-handle-only-via-registrar" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-ipc-handle-only-via-registrar"
+        }
+        assert any(path.endswith("main.ts") for path in paths)
+        assert not any(path.endswith("ipc.ts") for path in paths)
 
 
 # --------------------------------------------------------------------------
@@ -1229,8 +1285,10 @@ def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_electron_actions_gate_passes_on_this_repository() -> None:
+def test_electron_actions_gate_passes_on_this_repository(monkeypatch) -> None:
     gate = _load_gate("electron_actions_gate")
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(gate, "ACTIONS_PATH", ROOT / "electron/src/protocol/actions.ts")
     assert gate.check() == []
     assert gate.main([]) == 0
 
@@ -1247,6 +1305,7 @@ def test_electron_actions_gate_rejects_drifted_committed_file(
     monkeypatch.setattr(gate, "ACTIONS_PATH", planted)
     problems = gate.check(path=planted)
     assert problems, "gate accepted a drifted actions.ts"
+    assert str(planted) in problems[0]
     assert gate.main([]) == 1
 
 

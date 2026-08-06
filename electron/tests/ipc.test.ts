@@ -3,10 +3,7 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import { ipcChannelsMatch, registerIpcHandlers } from "../src/ipc";
 import { CHANNELS } from "../src/protocol/channels";
-import {
-  ORPHAN_CHANNELS,
-  registerOrphanIpcHandlers,
-} from "./fixtures/ipc_orphan_channel";
+import { ORPHAN_CHANNELS } from "./fixtures/ipc_orphan_channel";
 
 function fakeIpcMain(): {
   handle: (
@@ -39,7 +36,7 @@ describe("IPC channel registration", () => {
 
   it("rejects a planted CHANNELS entry with no ipcMain.handle", () => {
     const ipc = fakeIpcMain();
-    const registered = registerOrphanIpcHandlers(ipc, fakeClient);
+    const registered = registerIpcHandlers(ipc, fakeClient);
     expect(Object.values(ORPHAN_CHANNELS)).toContain("tagalong:neverWired");
     expect(registered).not.toContain("tagalong:neverWired");
     expect(ipcChannelsMatch(registered, ORPHAN_CHANNELS)).toBe(false);
