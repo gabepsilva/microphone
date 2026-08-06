@@ -14,6 +14,7 @@
     "start": "bun run build && electron ."
   },
   "devDependencies": {
+    "@types/bun": "1.2.20",
     "@types/node": "22.18.0",
     "electron": "37.2.6",
     "eslint": "9.33.0",
