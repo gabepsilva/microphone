@@ -13,12 +13,16 @@ effort, its service tier.
 
 ## Reproducible setup
 
-The project requires CPython 3.12 and [uv](https://docs.astral.sh/uv/). The
-exact Python dependencies live in `uv.lock`; do not use an unlocked install for
-development or CI.
+The project requires CPython 3.12 and [uv](https://docs.astral.sh/uv/), plus
+[Bun](https://bun.sh/) 1.3.9 for the Electron client gates (`make ci` is
+bun-or-fail once those targets are wired). The exact Python dependencies live
+in `uv.lock`; the Electron lockfile is `electron/bun.lock`. Do not use an
+unlocked install for development or CI.
 
 ```bash
 uv sync --locked --all-groups
+# Electron gates skip the ~176 MB binary; types still install.
+(cd electron && ELECTRON_SKIP_BINARY_DOWNLOAD=1 bun install --frozen-lockfile)
 make hooks
 ```
 

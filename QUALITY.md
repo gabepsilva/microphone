@@ -67,8 +67,18 @@ and prints what to do when it fails. This is the map, not the manual.
   regression test fails without its fix.
 - **Test integrity** (`tools/test_integrity.py`) rejects tests that cannot fail
   and skips that name no issue.
-- **Gate self-tests** (`tests/test_quality_gates.py`) plant a violation for
-  every gate, because a gate that matches nothing still reports green.
+- **Gate self-tests** plant a violation for every gate, because a gate that
+  matches nothing still reports green. Python and Make gates plant theirs in
+  `tests/test_quality_gates.py`. Behavioral Electron gates under
+  `VERIFY_ELECTRON` plant theirs in `electron/tests/` and prove rejection via
+  `bun test` (both directions). That path is not an exemption: the preload
+  allowlist must observe keys actually exposed through a fake
+  `contextBridge`, the same way `catalog_gate.py` runs the binders instead of
+  reading source. A Python parser over TypeScript was rejected for the same
+  reason a regex over action literals was — spreads, conditionals, and imports
+  go green while the bridge widens. Shelling `bun test` from
+  `tests/test_quality_gates.py` would also put Bun on the uv-only coverage
+  runner and undo the fifth-lane toolchain split.
 - **Worker-thread contract** (`tools/worker_gate.py`) requires every
   background thread to be a daemon and every join on one to pass a timeout.
   Four classes follow this and nothing enforced it: it survived only because
