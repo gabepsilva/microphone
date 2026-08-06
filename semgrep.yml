@@ -96,3 +96,36 @@ rules:
       - metavariable-regex:
           metavariable: $TARGET
           regex: ^(["\']tagalong\.domain[.\\'"]|tagalong\.domain\b|domain\.[A-Za-z_]+$)
+
+  # Electron security posture. Explicit paths.include — do not inherit Semgrep
+  # defaults over a tree that may contain electron/node_modules (make semgrep
+  # mounts the whole repository).
+  - id: electron-no-node-integration
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      nodeIntegration must stay false; the renderer talks through the preload
+      bridge only.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        # Anchored at repo root (Semgrepignore v2); do not use a bare
+        # electron/src/ that warns and will change meaning.
+        - /electron/src/
+    pattern: "nodeIntegration: true"
+
+  - id: electron-require-context-isolation
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      contextIsolation must stay enabled so the preload bridge remains the
+      only renderer surface.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+    pattern: "contextIsolation: false"

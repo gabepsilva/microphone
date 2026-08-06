@@ -3,7 +3,7 @@ import path from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 
 import { TagAlongClient } from "./client";
-import { CHANNELS } from "./protocol/channels";
+import { registerIpcHandlers } from "./ipc";
 
 const client = new TagAlongClient();
 
@@ -20,17 +20,7 @@ async function createWindow(): Promise<void> {
   await window.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
 }
 
-ipcMain.handle(CHANNELS.snapshot, () => client.call("snapshot"));
-
-ipcMain.handle(CHANNELS.setTts, (_event, enabled: unknown) => {
-  if (typeof enabled !== "boolean") {
-    return Promise.reject(new Error("enabled must be a boolean"));
-  }
-  return client.call("dispatch", {
-    action: "tts.set_enabled",
-    payload: { enabled },
-  });
-});
+registerIpcHandlers(ipcMain, client);
 
 void app.whenReady().then(createWindow);
 app.on("window-all-closed", () => {

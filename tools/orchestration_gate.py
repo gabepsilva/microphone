@@ -52,6 +52,7 @@ REQUIRED_TARGETS = {
         "workflows",
         "orchestration",
         "catalog",
+        "electron-actions",
     },
     "VERIFY_COVERAGE": {"test-coverage"},
     "VERIFY_MUTATION": {"mutation"},

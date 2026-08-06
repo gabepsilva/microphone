@@ -18,7 +18,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -1147,6 +1149,133 @@ def test_semgrep_forbids_faking_the_unit_under_test() -> None:
     assert "python-test-fakes-the-unit-under-test" in rules
     assert "tagalong" in rules
     assert "domain" in rules
+
+
+def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
+    """Rule text alone is not proof — Semgrep must fire on planted Electron prefs."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-no-node-integration" in rules
+    assert "electron-require-context-isolation" in rules
+    assert "/electron/src/" in rules
+
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(r"^SEMGREP_IMAGE\s*:=\s*(\S+)\s*$", makefile, flags=re.M)
+    assert match is not None, "Makefile must pin SEMGREP_IMAGE for this proof"
+    image = match.group(1)
+
+    planted = (
+        'import { BrowserWindow } from "electron";\n'
+        "export function bad(): BrowserWindow {\n"
+        "  return new BrowserWindow({\n"
+        "    webPreferences: {\n"
+        "      nodeIntegration: true,\n"
+        "      contextIsolation: false,\n"
+        "    },\n"
+        "  });\n"
+        "}\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        src.mkdir(parents=True)
+        (src / "planted.ts").write_text(planted, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        reports = root / "reports"
+        reports.mkdir()
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--env",
+                "SEMGREP_ENABLE_VERSION_CHECK=0",
+                "--env",
+                "SEMGREP_SEND_METRICS=off",
+                "--volume",
+                f"{root}:/src:ro",
+                "--volume",
+                f"{reports}:/reports",
+                "--workdir",
+                "/src",
+                image,
+                "semgrep",
+                "scan",
+                "--config",
+                "semgrep.yml",
+                "--error",
+                "--metrics=off",
+                "--json-output",
+                "/reports/semgrep.json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0, (
+            "Semgrep accepted planted nodeIntegration/contextIsolation:\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
+        )
+        findings = json.loads((reports / "semgrep.json").read_text(encoding="utf-8"))
+        rule_ids = {hit["check_id"] for hit in findings.get("results", [])}
+        assert "electron-no-node-integration" in rule_ids
+        assert "electron-require-context-isolation" in rule_ids
+
+
+# --------------------------------------------------------------------------
+# tools/electron_actions_gate.py
+# --------------------------------------------------------------------------
+
+
+def test_electron_actions_gate_passes_on_this_repository() -> None:
+    gate = _load_gate("electron_actions_gate")
+    assert gate.check() == []
+    assert gate.main([]) == 0
+
+
+def test_electron_actions_gate_rejects_drifted_committed_file(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("electron_actions_gate")
+    planted = tmp_path / "actions.ts"
+    planted.write_text(
+        gate.render_actions_ts().replace("tts.set_enabled", "tts.set_enabld"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "ACTIONS_PATH", planted)
+    problems = gate.check(path=planted)
+    assert problems, "gate accepted a drifted actions.ts"
+    assert gate.main([]) == 1
+
+
+def test_electron_actions_gate_rejects_a_missing_file(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("electron_actions_gate")
+    missing = tmp_path / "actions.ts"
+    monkeypatch.setattr(gate, "ACTIONS_PATH", missing)
+    problems = gate.check(path=missing)
+    assert any("missing" in problem for problem in problems)
+
+
+def test_electron_actions_gate_write_restores_sync(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("electron_actions_gate")
+    target = tmp_path / "protocol" / "actions.ts"
+    monkeypatch.setattr(gate, "ACTIONS_PATH", target)
+    assert gate.main(["--write"]) == 0
+    assert target.is_file()
+    assert gate.check(path=target) == []
+    assert target.read_text(encoding="utf-8") == gate.render_actions_ts()
+
+
+def test_electron_actions_gate_render_covers_every_catalog_id() -> None:
+    gate = _load_gate("electron_actions_gate")
+    from tagalong.control.actions import CATALOG
+
+    rendered = gate.render_actions_ts()
+    for spec in CATALOG:
+        assert f'"{spec.id}"' in rendered
+        assert f"{gate.ts_key(spec.id)}:" in rendered
 
 
 def test_mutmut_mutates_files_that_exist() -> None:
