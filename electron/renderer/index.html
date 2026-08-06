@@ -4,38 +4,139 @@
     <meta charset="utf-8" />
     <title>TagAlong</title>
     <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #111;
+        --panel: #1c1c1c;
+        --border: #333;
+        --text: #eee;
+        --muted: #999;
+      }
+      * {
+        box-sizing: border-box;
+      }
       body {
-        font-family: sans-serif;
-        margin: 2rem;
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+      }
+      main {
+        flex: 1;
+        padding: 1.5rem;
+      }
+      aside.sidebar {
+        width: 240px;
+        border-left: 1px solid var(--border);
+        background: var(--panel);
+        padding: 1.25rem 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      aside.sidebar h2 {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+      .control {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+      }
+      #status {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 0;
       }
       button {
-        margin-top: 1rem;
+        margin-top: 0.75rem;
       }
     </style>
   </head>
   <body>
-    <h1>TagAlong</h1>
-    <p id="status">connecting…</p>
-    <button id="toggle" type="button">Toggle voice reply</button>
+    <main>
+      <h1>TagAlong</h1>
+      <p id="status">connecting…</p>
+      <button id="toggle" type="button">Toggle voice reply</button>
+    </main>
+    <aside class="sidebar" aria-label="Session settings">
+      <h2>Sidebar</h2>
+      <label class="control">
+        <input id="mic-mute" type="checkbox" />
+        Mute microphone
+      </label>
+    </aside>
     <script>
       const status = document.getElementById("status");
       const toggle = document.getElementById("toggle");
+      const micMute = document.getElementById("mic-mute");
 
-      async function refresh() {
-        const snapshot = await window.tagalong.snapshot();
-        status.textContent = snapshot.state.tts_enabled
+      // Mirror of controller AppState fields this window cares about.
+      const state = {
+        tts_enabled: true,
+        microphone_muted: false,
+      };
+      let applying = false;
+
+      function render() {
+        status.textContent = state.tts_enabled
           ? "Voice reply is on"
           : "Voice reply is off";
+        applying = true;
+        micMute.checked = Boolean(state.microphone_muted);
+        applying = false;
       }
 
-      toggle.addEventListener("click", async () => {
-        const snapshot = await window.tagalong.snapshot();
-        await window.tagalong.setTts(!snapshot.state.tts_enabled);
-        await refresh();
+      function applyFragment(changed) {
+        if (
+          Object.prototype.hasOwnProperty.call(changed, "tts_enabled")
+        ) {
+          state.tts_enabled = Boolean(changed.tts_enabled);
+        }
+        if (
+          Object.prototype.hasOwnProperty.call(changed, "microphone_muted")
+        ) {
+          state.microphone_muted = Boolean(changed.microphone_muted);
+        }
+        render();
+      }
+
+      window.tagalong.onSnapshot((snapshot) => {
+        const next = snapshot.state || {};
+        state.tts_enabled = Boolean(next.tts_enabled);
+        state.microphone_muted = Boolean(next.microphone_muted);
+        render();
       });
 
-      refresh().catch((error) => {
-        status.textContent = error.message;
+      window.tagalong.onStateChanged((changed) => {
+        applyFragment(changed || {});
+      });
+
+      window.tagalong.onError((error) => {
+        status.textContent = error.message || "connection error";
+      });
+
+      toggle.addEventListener("click", async () => {
+        try {
+          await window.tagalong.setTts(!state.tts_enabled);
+        } catch (error) {
+          status.textContent = error.message;
+        }
+      });
+
+      micMute.addEventListener("change", async () => {
+        if (applying) {
+          return;
+        }
+        try {
+          await window.tagalong.setMicrophoneMuted(micMute.checked);
+        } catch (error) {
+          status.textContent = error.message;
+        }
       });
     </script>
   </body>

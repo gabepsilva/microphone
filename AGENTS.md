@@ -26,6 +26,11 @@ this file only carries what no tool can check.
   under test. A test that patches its own subject asserts on the patch.
 - Do not add `# noqa`, `# type: ignore`, or `# nosec` without a rule ID, a
   narrow justification, and evidence the finding is not exploitable.
+- Linux is the only platform TagAlong runs on today; macOS and Windows are a
+  standing goal. Put platform-specific behavior behind a seam with one
+  implementation per platform, and make the unsupported case fail by name. A
+  constant borrowed from the wrong operating system, or a silent fallback that
+  degrades, is worse than a refusal — `README.md` records what is Linux-bound.
 - Do not add docstring linting (ruff `D`). It checks that a docstring exists,
   never that it is true, and the cheapest way to satisfy it is to restate the
   function name. `QUALITY.md` records the full reasoning.

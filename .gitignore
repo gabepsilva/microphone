@@ -13,6 +13,9 @@ mutants/
 dist/
 *.egg-info/
 
+# Electron / npm (installed locally via `npm install electron --no-save`)
+node_modules/
+
 # Generated audio and transcription output
 virtual-mic-*.mp3
 virtual-mic-*.wav

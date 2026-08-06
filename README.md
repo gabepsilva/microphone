@@ -1,8 +1,10 @@
 # TagAlong
 
-TagAlong is a Linux desktop assistant that continuously transcribes a
-microphone and an optional PipeWire/PulseAudio output, then presents the
-conversation to Codex through its Textual interface.
+TagAlong is a desktop assistant that continuously transcribes a microphone and
+an optional PipeWire/PulseAudio output, then presents the conversation to Codex
+through its Textual interface. It runs on Linux today; macOS and Windows are
+where it is going, and [Platform support](#platform-support) records what stands
+in the way.
 
 The assistant you talk to is called **Taga**. Address it by name and it answers;
 it is the fourth participant in a transcript whose other three sources are
@@ -10,6 +12,33 @@ it is the fourth participant in a transcript whose other three sources are
 meeting). "Codex" appears throughout this document and the code only where it
 means the model and SDK underneath Taga — the model to use, its reasoning
 effort, its service tier.
+
+## Platform support
+
+Linux is the only platform TagAlong runs on today, and the only one CI
+exercises. Cross-platform support — Linux, macOS, and Windows — is a standing
+goal rather than a shipped feature, so this section says what is real and what
+is not.
+
+Three things are Linux-bound, in the order they would have to be solved:
+
+- **Capturing the far end** is built directly on PipeWire (`pw-record`,
+  `pw-link`, `pw-dump`). `require_pipewire()` fails by name when they are
+  missing, so the feature stops at the door on any other platform. This is the
+  large one: macOS needs a system-audio route, Windows needs WASAPI loopback.
+- **Naming output sinks** shells out to `pactl`.
+- **The control socket** listens on `$XDG_RUNTIME_DIR/tagalong/tagalong.sock`
+  and authenticates peers with `SO_PEERCRED`. macOS leaves `XDG_RUNTIME_DIR`
+  unset and spells peer credentials `LOCAL_PEERCRED`; CPython 3.12 does not
+  expose `AF_UNIX` on Windows at all, where the native equivalent is a named
+  pipe. A session that cannot open the socket still runs — it just has no
+  second writer.
+
+Some parts are already platform-aware ahead of the rest: the image clipboard in
+`attachments.py` picks a per-platform adapter, and the speech engines depend
+only on `ffmpeg`/`ffplay`, which exist everywhere. That is the shape to copy —
+one seam, one implementation per platform, and a fallback that fails loudly
+instead of quietly guessing a value from the wrong operating system.
 
 ## Reproducible setup
 
@@ -42,9 +71,12 @@ runtime integrations, not Python packages.
 
 Pasting an image into the prompt with `Ctrl-V` reads the OS clipboard: `wl-paste`
 or `xclip` on Linux, and on macOS the system pasteboard through AppleScript —
-nothing to install, though `pngpaste` is used instead when it is present. Use
-`Ctrl-V` rather than `Cmd-V` on macOS: `Cmd-V` is handled by the terminal, which
-can only forward text.
+nothing to install, though `pngpaste` is used instead when it is present. The
+macOS adapter is written and tested, but it is a piece of
+[cross-platform support](#platform-support) arriving early, not a sign that
+TagAlong runs on macOS; audio capture stops at `require_pipewire()` first. Once
+it does run there, use `Ctrl-V` rather than `Cmd-V`: `Cmd-V` is handled by the
+terminal, which can only forward text.
 
 ## Speech
 
