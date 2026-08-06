@@ -20,6 +20,7 @@ MAKEFLAGS += -j$(CI_JOBS)
 VERIFY_QUICK := format-check lint types test-integrity context-budget worker-threads ratchet shellcheck workflows orchestration catalog
 VERIFY_COVERAGE := test-coverage
 VERIFY_MUTATION := mutation
+VERIFY_ELECTRON := electron-typecheck electron-lint electron-format-check electron-test
 VERIFY_SECURITY := security-static
 
 # Lines this change touches must be tested even where the file's own floor is
@@ -36,7 +37,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog verify-quick verify-coverage verify-mutation verify-security verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-install electron-typecheck electron-lint electron-format-check electron-test verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -116,17 +117,36 @@ orchestration:
 catalog:
 	uv run python tools/catalog_gate.py
 
+# Bun toolchain for electron/. Skip the Electron binary download in CI and
+# local gates — types still install; unit tests never launch a window.
+electron-install:
+	cd electron && ELECTRON_SKIP_BINARY_DOWNLOAD=1 bun install --frozen-lockfile
+
+electron-typecheck: electron-install
+	cd electron && bun run typecheck
+
+electron-lint: electron-install
+	cd electron && bun run lint
+
+electron-format-check: electron-install
+	cd electron && bun run format-check
+
+electron-test: electron-install
+	cd electron && bun test
+
 verify-quick: $(VERIFY_QUICK)
 
 verify-coverage: $(VERIFY_COVERAGE)
 
 verify-mutation: $(VERIFY_MUTATION)
 
+verify-electron: $(VERIFY_ELECTRON)
+
 verify-security: $(VERIFY_SECURITY)
 
 security: security-static secrets
 
-verify: verify-quick verify-coverage verify-mutation
+verify: verify-quick verify-coverage verify-mutation verify-electron
 
 ci: verify security
 
