@@ -2,6 +2,23 @@
   "name": "tagalong-electron",
   "version": "0.1.0",
   "private": true,
-  "main": "main.js",
-  "description": "Electron client for the TagAlong local JSON-RPC socket."
+  "main": "dist/main.js",
+  "description": "Electron client for the TagAlong local JSON-RPC socket.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format-check": "prettier --check .",
+    "test": "bun test",
+    "start": "bun run build && electron ."
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "electron": "37.2.6",
+    "eslint": "9.33.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.39.1"
+  }
 }
