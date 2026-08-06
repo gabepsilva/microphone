@@ -101,10 +101,10 @@ export class TagAlongClient {
         this._failAll(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      if (payload.method !== "event") {
-        const pending = this._pending.get(payload.id as number);
+      if (payload.method !== "event" && payload.id !== undefined) {
+        const pending = this._pending.get(payload.id);
         if (pending) {
-          this._pending.delete(payload.id as number);
+          this._pending.delete(payload.id);
           if (payload.error) {
             pending.reject(new Error(payload.error.message));
           } else {

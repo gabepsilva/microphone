@@ -6,7 +6,7 @@
   "description": "Electron client for the TagAlong local JSON-RPC socket.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format-check": "prettier --check .",

@@ -50,7 +50,6 @@ describe("TagAlongClient", () => {
 
     queueMicrotask(() => {
       fake.emit("connect");
-      expect(fake.written[0]).toContain('"method":"initialize"');
       fake.respond({});
     });
 
@@ -60,6 +59,7 @@ describe("TagAlongClient", () => {
     fake.respond({ state: { tts_enabled: true } });
 
     await expect(callPromise).resolves.toEqual({ state: { tts_enabled: true } });
+    expect(fake.written[0]).toContain('"method":"initialize"');
     expect(fake.written[1]).toContain('"method":"snapshot"');
   });
 
