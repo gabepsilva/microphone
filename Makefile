@@ -3,6 +3,17 @@
 SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
 PYTHON_SOURCES := tagalong.py tagalong
 
+# Parallelize independent gate recipes by default. Hosted CI already splits the
+# same groups across jobs; this is the local equivalent. A command-line `-jN`
+# (including `-j1` for serial logs) overrides this default. Linux-only via
+# nproc — other platforms must pass -jN explicitly rather than get a silent
+# wrong guess.
+CI_JOBS := $(shell nproc 2>/dev/null)
+ifeq ($(CI_JOBS),)
+$(error nproc unavailable; TagAlong's parallel make defaults expect Linux. Pass -jN explicitly.)
+endif
+MAKEFLAGS += -j$(CI_JOBS)
+
 # Keep the local gate and its hosted lanes defined from the same lists. The
 # orchestration gate rejects a dropped target or a hosted lane that stops
 # invoking one of these groups.

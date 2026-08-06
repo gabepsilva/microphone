@@ -278,6 +278,22 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             ),
         ),
         (
+            "local make no longer defaults to parallel jobs",
+            (
+                "makefile",
+                "MAKEFLAGS += -j$(CI_JOBS)",
+                "# parallel Make default removed",
+            ),
+        ),
+        (
+            "local parallel default no longer pinned to Linux nproc",
+            (
+                "makefile",
+                "CI_JOBS := $(shell nproc 2>/dev/null)",
+                "CI_JOBS := 4",
+            ),
+        ),
+        (
             "required group no longer invoked by a hosted lane",
             ("workflow", "run: make verify-mutation", "run: make mutation"),
         ),
