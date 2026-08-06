@@ -79,6 +79,22 @@ and prints what to do when it fails. This is the map, not the manual.
   go green while the bridge widens. Shelling `bun test` from
   `tests/test_quality_gates.py` would also put Bun on the uv-only coverage
   runner and undo the fifth-lane toolchain split.
+- **Electron catalog lockfile** (`tools/electron_actions_gate.py`, in
+  `VERIFY_QUICK`) regenerates `electron/src/protocol/actions.ts` from
+  `CATALOG` and fails on drift. The generator needs `uv`, so this stays out of
+  the Bun lane; `tsc` then makes a typo against `ACTIONS.*` a compile error.
+  Hand-editing the committed file is the planted violation.
+- **Electron orphan IPC map entry** (`electron/src/ipc.ts` +
+  `electron/tests/ipc.test.ts`): `channels.ts` makes an invented channel name
+  a type error when indexed, but cannot see a map entry that never gets an
+  `ipcMain.handle`. The registrar returns the channels it wired; a planted
+  fixture adds `tagalong:neverWired` to the map and leaves it unwired.
+- **Electron BrowserWindow prefs** (Semgrep rules
+  `electron-no-node-integration`, `electron-require-context-isolation`): refuse
+  `nodeIntegration: true` / `contextIsolation: false` under `electron/src/`
+  with an explicit `paths.include` so a 185 MB `electron/node_modules` mount
+  cannot rely on default ignores. Planted proof runs the pinned Semgrep image
+  against a temp tree that sets both prefs wrong.
 - **Worker-thread contract** (`tools/worker_gate.py`) requires every
   background thread to be a daemon and every join on one to pass a timeout.
   Four classes follow this and nothing enforced it: it survived only because
