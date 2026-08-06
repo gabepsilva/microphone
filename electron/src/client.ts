@@ -1,39 +1,45 @@
-"use strict";
+import net from "node:net";
+import path from "node:path";
 
-const { app, BrowserWindow, ipcMain } = require("electron");
-const net = require("net");
-const path = require("path");
-
-function socketPath() {
-  const runtime = process.env.XDG_RUNTIME_DIR;
+export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
+  const runtime = env.XDG_RUNTIME_DIR;
   if (!runtime) {
     throw new Error("XDG_RUNTIME_DIR is unset; refusing a /tmp socket");
   }
   return path.join(runtime, "tagalong", "tagalong.sock");
 }
 
-class TagAlongClient {
-  constructor() {
-    this._socket = null;
-    this._connecting = null;
-    this._buffer = "";
-    this._pending = new Map();
-    this._nextId = 1;
-  }
+export type ConnectFn = (socketPath: string) => net.Socket;
 
-  async call(method, params = {}) {
+type Pending = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
+
+/** JSON-RPC client for the TagAlong Unix socket. Injectable connect for tests. */
+export class TagAlongClient {
+  private _socket: net.Socket | null = null;
+  private _connecting: Promise<net.Socket> | null = null;
+  private _buffer = "";
+  private readonly _pending = new Map<number, Pending>();
+  private _nextId = 1;
+
+  constructor(
+    private readonly connect: ConnectFn = (sockPath) => net.createConnection(sockPath),
+    private readonly resolvePath: () => string = () => socketPath(),
+  ) {}
+
+  async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     const socket = await this._ensure();
     const id = this._nextId;
     this._nextId += 1;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
-      socket.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
-      );
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   }
 
-  _ensure() {
+  private _ensure(): Promise<net.Socket> {
     if (this._socket && !this._socket.destroyed) {
       return Promise.resolve(this._socket);
     }
@@ -41,18 +47,18 @@ class TagAlongClient {
       return this._connecting;
     }
     this._connecting = new Promise((resolve, reject) => {
-      const socket = net.createConnection(socketPath());
-      const fail = (error) => {
+      const socket = this.connect(this.resolvePath());
+      const fail = (error: Error) => {
         this._failAll(error);
         this._reset();
         reject(error);
       };
-      socket.on("error", fail);
+      socket.on("error", (error: Error) => fail(error));
       socket.on("close", () => {
         this._failAll(new Error("connection closed"));
         this._reset();
       });
-      socket.on("data", (chunk) => this._onData(chunk));
+      socket.on("data", (chunk: Buffer | string) => this._onData(chunk));
       socket.on("connect", () => {
         this._socket = socket;
         const id = this._nextId;
@@ -77,23 +83,28 @@ class TagAlongClient {
     return this._connecting;
   }
 
-  _onData(chunk) {
+  private _onData(chunk: Buffer | string): void {
     this._buffer += chunk.toString("utf8");
     let newline = this._buffer.indexOf("\n");
     while (newline !== -1) {
       const line = this._buffer.slice(0, newline);
       this._buffer = this._buffer.slice(newline + 1);
-      let payload;
+      let payload: {
+        id?: number;
+        method?: string;
+        error?: { message: string };
+        result?: unknown;
+      };
       try {
-        payload = JSON.parse(line);
+        payload = JSON.parse(line) as typeof payload;
       } catch (error) {
-        this._failAll(error);
+        this._failAll(error instanceof Error ? error : new Error(String(error)));
         return;
       }
       if (payload.method !== "event") {
-        const pending = this._pending.get(payload.id);
+        const pending = this._pending.get(payload.id as number);
         if (pending) {
-          this._pending.delete(payload.id);
+          this._pending.delete(payload.id as number);
           if (payload.error) {
             pending.reject(new Error(payload.error.message));
           } else {
@@ -105,50 +116,16 @@ class TagAlongClient {
     }
   }
 
-  _failAll(error) {
+  private _failAll(error: Error): void {
     for (const pending of this._pending.values()) {
       pending.reject(error);
     }
     this._pending.clear();
   }
 
-  _reset() {
+  private _reset(): void {
     this._socket = null;
     this._connecting = null;
     this._buffer = "";
   }
 }
-
-const client = new TagAlongClient();
-
-async function createWindow() {
-  const window = new BrowserWindow({
-    width: 480,
-    height: 320,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  await window.loadFile(path.join(__dirname, "renderer", "index.html"));
-}
-
-ipcMain.handle("tagalong:snapshot", () => client.call("snapshot"));
-
-ipcMain.handle("tagalong:setTts", (_event, enabled) => {
-  if (typeof enabled !== "boolean") {
-    return Promise.reject(new Error("enabled must be a boolean"));
-  }
-  return client.call("dispatch", {
-    action: "tts.set_enabled",
-    payload: { enabled },
-  });
-});
-
-app.whenReady().then(createWindow);
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
