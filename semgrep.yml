@@ -135,14 +135,16 @@ rules:
       - pattern: "contextIsolation: $X"
       - pattern-not: "contextIsolation: true"
 
-  # Make registerIpcHandlers the sole door: bare ipcMain.handle outside ipc.ts
-  # is an orphan-handler hole the CHANNELS map check cannot see.
+  # Make registerIpcHandlers the sole door. Use $IPC.handle so a one-line
+  # rename (const m = ipcMain; m.handle(...)) cannot defeat the chokepoint —
+  # ipcMain.handle(...) alone misses that. Cost: any future .handle( under
+  # electron/src/ outside ipc.ts will fire; message names the registrar.
   - id: electron-ipc-handle-only-via-registrar
     languages: [typescript, javascript]
     severity: ERROR
     message: >-
-      Register IPC handlers only through registerIpcHandlers in
-      electron/src/ipc.ts so orphan/map checks stay load-bearing.
+      Register IPC channels through registerIpcHandlers in electron/src/ipc.ts.
+      A bare .handle(...) call bypasses the CHANNELS orphan gate.
     metadata:
       category: security
       technology: [electron]
@@ -151,4 +153,4 @@ rules:
         - /electron/src/
       exclude:
         - /electron/src/ipc.ts
-    pattern: ipcMain.handle(...)
+    pattern: $IPC.handle(...)

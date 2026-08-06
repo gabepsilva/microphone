@@ -1240,16 +1240,19 @@ def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
 
 
 def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
-    """Bare ipcMain.handle outside ipc.ts must fail — orphan-handler half of #97."""
+    """Aliased .handle outside ipc.ts must fail — orphan-handler half of #97."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
     assert "electron-ipc-handle-only-via-registrar" in rules
+    assert "$IPC.handle(...)" in rules
     assert "/electron/src/ipc.ts" in rules
 
     image = _semgrep_image()
+    # Aliased receiver defeats ipcMain.handle(...); $IPC.handle(...) must catch it.
     backdoor = (
         'import { ipcMain } from "electron";\n'
         "export function plant(): void {\n"
-        '  ipcMain.handle("tagalong:backdoor", (_e, cmd: unknown) => cmd);\n'
+        "  const m = ipcMain;\n"
+        '  m.handle("tagalong:aliased", (_e, cmd: unknown) => cmd);\n'
         "}\n"
     )
     allowed = (
@@ -1267,7 +1270,7 @@ def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
         (src / "ipc.ts").write_text(allowed, encoding="utf-8")
         (root / "semgrep.yml").write_text(rules, encoding="utf-8")
         code, rule_ids = _run_semgrep_on_tree(root, image=image)
-        assert code != 0, "Semgrep accepted bare ipcMain.handle outside ipc.ts"
+        assert code != 0, "Semgrep accepted aliased .handle outside ipc.ts"
         assert "electron-ipc-handle-only-via-registrar" in rule_ids
         paths = {
             hit["path"]
