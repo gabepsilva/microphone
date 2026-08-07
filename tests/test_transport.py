@@ -844,7 +844,7 @@ def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
         state,
         {
             "tts_enabled": False,
-            "tts_provider": "edge",
+            "tts_provider": Selection(desired="edge", effective="edge"),
             "tts_voice": Selection(
                 desired="en-US-AndrewNeural", effective="en-US-AndrewNeural"
             ),
@@ -887,7 +887,7 @@ def test_applying_a_provider_change_does_not_unmute() -> None:
     apply_state_fragment(
         state,
         {
-            "tts_provider": "edge",
+            "tts_provider": Selection(desired="edge", effective="edge"),
             "tts_voice": Selection(
                 desired="en-US-AndrewNeural", effective="en-US-AndrewNeural"
             ),

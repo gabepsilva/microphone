@@ -5,13 +5,13 @@ therefore a value it can hold for as long as it likes, and no client can
 mutate what another one is reading — which is the failure a shared mutable
 session object invites the moment a second frontend exists.
 
-Voice joins microphone and far-end as the third asynchronous Selection:
-choosing any of them starts work on another thread that can succeed, fail, or
-be overtaken. Nothing else here is split, because nothing else has an
-independent effective reading to report — a mute the session records before
-any channel is open is desired state that the channel replays when it opens,
-and inventing an "effective mute" to sit beside it would be a field with no
-source.
+Voice joins microphone and far-end as an asynchronous Selection, and so does
+the speech engine: choosing Piper or Edge starts work on another thread that
+can succeed, fail, or be overtaken. Nothing else here is split, because
+nothing else has an independent effective reading to report — a mute the
+session records before any channel is open is desired state that the channel
+replays when it opens, and inventing an "effective mute" to sit beside it
+would be a field with no source.
 """
 
 from __future__ import annotations
@@ -43,7 +43,11 @@ class AppState:
     # cannot leave this holding a policy that no longer exists.
     response_policy: str = "both"
     tts_enabled: bool = True
-    tts_provider: str = DEFAULT_PROVIDER
+    tts_provider: Selection = field(
+        default_factory=lambda: Selection(
+            desired=DEFAULT_PROVIDER, effective=DEFAULT_PROVIDER
+        )
+    )
     # Active voice as a Selection so a failed cold download cannot persist, and
     # the remembered pair so a provider round-trip restores each engine's voice
     # (#124 D4/D5/D13/D15).

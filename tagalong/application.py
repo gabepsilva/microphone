@@ -238,10 +238,11 @@ def app_state_from_session(state: SessionView) -> AppState:
     """Seed every field a registered handler will keep true.
 
     Desired selections come from the session; effective ones stay empty until
-    a reconciler reports what actually opened — except the active TTS voice,
-    which is already speaking when the session starts, so both sides of the
-    Selection carry the startup voice. Mute, policy, speech, model, and
-    silence are synchronous, so the session value is already effective.
+    a reconciler reports what actually opened — except the active TTS engine
+    and voice, which are already speaking when the session starts, so both
+    sides of those Selections carry the startup values. Mute, policy, speech
+    enable, model, and silence are synchronous, so the session value is
+    already effective.
     """
     return AppState(
         microphone=Selection(desired=state.microphone),
@@ -250,7 +251,9 @@ def app_state_from_session(state: SessionView) -> AppState:
         audio_stream_muted=state.audio.muted,
         response_policy=state.policy,
         tts_enabled=state.tts_enabled,
-        tts_provider=state.tts_provider,
+        tts_provider=Selection(
+            desired=state.tts_provider, effective=state.tts_provider
+        ),
         tts_voice=Selection(desired=state.tts_voice, effective=state.tts_voice),
         piper_voice=state.piper_voice,
         edge_voice=state.edge_voice,
@@ -367,7 +370,7 @@ def _set_tts_provider(
         applied_voice = str(effective)
         return replace(
             current,
-            tts_provider=provider,
+            tts_provider=Selection(desired=provider, effective=provider),
             tts_voice=Selection(desired=voice, effective=applied_voice),
         )
 
@@ -387,7 +390,8 @@ def _set_tts_provider(
         is False
     ):
         raise EffectFailed("tts provider could not be changed")
-    return Effect.pending(with_desired(state, "tts_voice", voice), settle=settle)
+    pending = with_desired(state, "tts_provider", provider)
+    return Effect.pending(with_desired(pending, "tts_voice", voice), settle=settle)
 
 
 def _set_tts_voice(
@@ -398,7 +402,8 @@ def _set_tts_voice(
     state: AppState,
 ) -> Effect:
     voice = str(request.payload["voice"])
-    remember = "piper_voice" if state.tts_provider == PIPER else "edge_voice"
+    running = state.tts_provider.effective or state.tts_provider.desired
+    remember = "piper_voice" if running == PIPER else "edge_voice"
 
     def settle(current: AppState, effective: object) -> AppState:
         applied = str(effective)

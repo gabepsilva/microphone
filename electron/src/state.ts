@@ -12,7 +12,7 @@ export type AppState = {
   audio_stream_muted: boolean;
   response_policy: string;
   tts_enabled: boolean;
-  tts_provider: string;
+  tts_provider: Selection;
   tts_voice: Selection;
   piper_voice: string;
   edge_voice: string;
@@ -79,7 +79,7 @@ export function emptyAppState(): AppState {
     audio_stream_muted: false,
     response_policy: "both",
     tts_enabled: true,
-    tts_provider: "piper",
+    tts_provider: { desired: "piper", effective: "piper" },
     tts_voice: emptySelection(),
     piper_voice: "en_US-lessac-medium",
     edge_voice: "en-US-AndrewNeural",
@@ -154,11 +154,13 @@ export function applyStateFragment(
           next.response_policy = value;
         }
         break;
-      case "tts_provider":
-        if (typeof value === "string") {
-          next.tts_provider = value;
+      case "tts_provider": {
+        const selection = asSelection(value);
+        if (selection !== null) {
+          next.tts_provider = selection;
         }
         break;
+      }
       case "tts_voice": {
         const selection = asSelection(value);
         if (selection !== null) {

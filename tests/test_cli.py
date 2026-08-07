@@ -990,7 +990,8 @@ def test_snapshot_describes_the_live_session_after_startup(wiring) -> None:
     microphone = wiring["microphone"]
 
     assert snapshot.tts_enabled is tui.state.tts_enabled
-    assert snapshot.tts_provider == tui.state.tts_provider
+    assert snapshot.tts_provider.desired == tui.state.tts_provider
+    assert snapshot.tts_provider.effective == tui.state.tts_provider
     assert snapshot.response_policy == tui.state.policy
     assert snapshot.codex_model == tui.state.codex_model
     assert snapshot.codex_reasoning == tui.state.codex_effort

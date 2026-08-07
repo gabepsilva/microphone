@@ -289,7 +289,7 @@ def test_app_state_seeds_every_field_this_slice_maintains() -> None:
         audio_stream_muted=True,
         response_policy="audio",
         tts_enabled=False,
-        tts_provider="edge",
+        tts_provider=Selection(desired="edge", effective="edge"),
         tts_voice=Selection(desired=state.tts_voice, effective=state.tts_voice),
         piper_voice=state.piper_voice,
         edge_voice=state.edge_voice,
@@ -761,7 +761,7 @@ def test_settings_actions_update_canonical_state() -> None:
     assert conversation.efforts == ["high"]
     assert silence.seconds == 0.25
     assert controller.state.response_policy == "voice"
-    assert controller.state.tts_provider == "edge"
+    assert controller.state.tts_provider == Selection(desired="edge", effective="edge")
     assert controller.state.codex_model == "gpt-5.6-sol"
     assert controller.state.codex_reasoning == "high"
     assert controller.state.turn_silence == 0.25
@@ -780,9 +780,10 @@ def test_provider_switch_restores_the_remembered_voice() -> None:
         controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
         Accepted,
     )
+    assert controller.state.tts_provider == Selection(desired="edge", effective="piper")
     tts.complete_provider()
     assert tts.voice == "en-US-JennyNeural"
-    assert controller.state.tts_provider == "edge"
+    assert controller.state.tts_provider == Selection(desired="edge", effective="edge")
     assert controller.state.tts_voice == Selection(
         desired="en-US-JennyNeural", effective="en-US-JennyNeural"
     )
@@ -838,10 +839,13 @@ def test_a_late_tts_provider_applied_callback_does_not_persist() -> None:
 
     outcome = controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER)
     assert isinstance(outcome, Accepted)
+    assert controller.state.tts_provider == Selection(desired="edge", effective="piper")
     assert controller.fail(outcome.request_id, "cancelled") is not None
     tts.complete_provider()
     assert recorded == []
-    assert controller.state.tts_provider == "piper"
+    # Failure leaves desired where acceptance put it; effective stays on the
+    # engine that is still speaking (controller.fail does not roll back).
+    assert controller.state.tts_provider == Selection(desired="edge", effective="piper")
 
 
 def test_a_late_tts_voice_applied_callback_does_not_persist() -> None:
@@ -871,7 +875,7 @@ def test_setting_the_provider_does_not_unmute_speech() -> None:
     )
     tts.complete_provider()
     assert controller.state.tts_enabled is False
-    assert controller.state.tts_provider == "edge"
+    assert controller.state.tts_provider == Selection(desired="edge", effective="edge")
 
 
 def test_settings_persistence_runs_from_the_handler_not_the_hook() -> None:

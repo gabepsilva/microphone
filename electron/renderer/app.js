@@ -231,7 +231,8 @@ function applyState(state) {
   document.getElementById("tts-enabled").checked = Boolean(state.tts_enabled);
   document.getElementById("tts-state").textContent = state.tts_enabled ? "on" : "off";
   document.getElementById("response-policy").value = state.response_policy || "both";
-  document.getElementById("tts-provider").value = state.tts_provider || "piper";
+  document.getElementById("tts-provider").value =
+    state.tts_provider?.desired ?? state.tts_provider?.effective ?? "piper";
   syncVoicePicker(state);
   syncCodexPickers(state);
   document.getElementById("turn-silence").value = state.turn_silence ?? 3;
