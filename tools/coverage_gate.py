@@ -36,7 +36,8 @@ FLOORS = {
     "tools/mutation_gate.py": 78.0,
     # Recorded 2026-08-05 with the hosted lane split from issue #87.
     "tools/orchestration_gate.py": 98.0,
-    "tools/ratchet_gate.py": 92.0,
+    # Raised 2026-08-07 from 92 with Electron floor ratchet paths (#97 phase 3).
+    "tools/ratchet_gate.py": 93.0,
     "tools/test_integrity.py": 93.0,
     "tools/worker_gate.py": 97.0,
     # Recorded 2026-08-05 with the catalog handler gate for issue #81 milestone 8.

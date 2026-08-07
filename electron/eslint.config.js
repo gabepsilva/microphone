@@ -5,6 +5,7 @@ module.exports = tseslint.config(
     ignores: [
       "dist/**",
       "node_modules/**",
+      "coverage/**",
       "renderer/**",
       "eslint.config.js",
       // Planted CJS shapes for sandbox-preload gates (intentionally use require).
@@ -13,7 +14,7 @@ module.exports = tseslint.config(
   },
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.ts", "tests/**/*.ts"],
+    files: ["src/**/*.ts", "tests/**/*.ts", "tools/**/*.ts"],
     languageOptions: {
       parserOptions: {
         // Emit tsconfig is src-only; check project includes tests for typed lint.
