@@ -14,6 +14,12 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 app.commandLine.appendSwitch("in-process-gpu");
+// Under Wayland with fractional scaling, an XWayland window is rasterised at
+// 1x and upscaled by the compositor — that, not the CSS, is what reads as
+// blurry text. The hint selects Wayland natively when the session offers it
+// and falls back to X11 otherwise, so Chromium rasterises glyphs at the
+// monitor's real scale.
+app.commandLine.appendSwitch("ozone-platform-hint", "auto");
 
 /** Command connection — never park a long-poll here (#96 G1). */
 const commands = new TagAlongClient();
