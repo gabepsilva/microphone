@@ -291,7 +291,12 @@ def test_poll_with_timeout_returns_empty_when_nothing_arrives(tmp_path: Path) ->
         server.stop()
 
 
-def test_poll_rejects_invalid_timeout_ms(tmp_path: Path) -> None:
+def test_poll_rejects_invalid_timeout_ms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tagalong.transport as transport
+
+    monkeypatch.setattr(transport, "MAX_POLL_MS", 100)
     _, server, client = wired(tmp_path)
     try:
         client.call("initialize", {"client": "electron"})
@@ -302,6 +307,17 @@ def test_poll_rejects_invalid_timeout_ms(tmp_path: Path) -> None:
             client.call("poll", {"timeout_ms": True})
         with pytest.raises(TransportError, match="timeout_ms must be >= 0"):
             client.call("poll", {"timeout_ms": -1})
+        with pytest.raises(TransportError, match="timeout_ms must be finite"):
+            client.call("poll", {"timeout_ms": float("inf")})
+        with pytest.raises(TransportError, match="timeout_ms must be finite"):
+            client.call("poll", {"timeout_ms": float("nan")})
+        # Above the ceiling: clamp and return empty rather than kill the thread.
+        started = time.monotonic()
+        polled = client.call("poll", {"timeout_ms": 1_000_000})
+        elapsed = time.monotonic() - started
+        assert polled == {"events": [], "lost": False}
+        assert elapsed >= 0.05
+        assert elapsed < 1.0
     finally:
         client.close()
         server.stop()
