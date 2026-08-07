@@ -1,5 +1,11 @@
 /** Frozen preload surface. Types cannot express "do not add a key". */
-export const PRELOAD_ALLOWLIST = ["setTts", "snapshot"] as const;
+export const PRELOAD_ALLOWLIST = [
+  "capabilities",
+  "commandsList",
+  "devicesList",
+  "dispatch",
+  "snapshot",
+] as const;
 
 export function allowlistKeys(exposed: object): string[] {
   return Object.keys(exposed).sort();

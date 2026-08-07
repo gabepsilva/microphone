@@ -1283,6 +1283,45 @@ def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
+    """A call(\"dispatch\") outside ipc.ts must fail — D3c table gate for #96."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-dispatch-only-via-allowlist" in rules
+    assert '$CLIENT.call("dispatch", ...)' in rules
+
+    image = _semgrep_image()
+    backdoor = (
+        "export function plant(client: { call: Function }): void {\n"
+        '  client.call("dispatch", { action: "session.quit", payload: {} });\n'
+        "}\n"
+    )
+    allowed = (
+        "export function registerIpcHandlers(client: { call: Function }): void {\n"
+        '  client.call("dispatch", { action: "tts.set_enabled", payload: {} });\n'
+        "}\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        src.mkdir(parents=True)
+        (src / "main.ts").write_text(backdoor, encoding="utf-8")
+        (src / "ipc.ts").write_text(allowed, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, "Semgrep accepted bare dispatch outside ipc.ts"
+        assert "electron-dispatch-only-via-allowlist" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-dispatch-only-via-allowlist"
+        }
+        assert any(path.endswith("main.ts") for path in paths)
+        assert not any(path.endswith("ipc.ts") for path in paths)
+
+
 # --------------------------------------------------------------------------
 # tools/electron_actions_gate.py
 # --------------------------------------------------------------------------

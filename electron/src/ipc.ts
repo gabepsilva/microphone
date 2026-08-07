@@ -1,8 +1,8 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 
 import type { TagAlongClient } from "./client";
-import { ACTIONS } from "./protocol/actions";
 import { CHANNELS, type ChannelName } from "./protocol/channels";
+import { validateDispatch } from "./protocol/dispatch_allowlist";
 
 type IpcHandle = {
   handle: (
@@ -28,14 +28,23 @@ export function registerIpcHandlers(
 
   handle(CHANNELS.snapshot, () => client.call("snapshot"));
 
-  handle(CHANNELS.setTts, (_event, enabled) => {
-    if (typeof enabled !== "boolean") {
-      return Promise.reject(new Error("enabled must be a boolean"));
+  handle(CHANNELS.devicesList, () => client.call("devices.list"));
+
+  handle(CHANNELS.commandsList, () => client.call("commands.list"));
+
+  handle(CHANNELS.capabilities, () => client.call("capabilities"));
+
+  // Single dispatch door: allowlist + per-action payload checks (#96 D3c).
+  handle(CHANNELS.dispatch, (_event, action, payload) => {
+    try {
+      const validated = validateDispatch(action, payload ?? {});
+      return client.call("dispatch", {
+        action: validated.action,
+        payload: validated.payload,
+      });
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
-    return client.call("dispatch", {
-      action: ACTIONS.tts_set_enabled,
-      payload: { enabled },
-    });
   });
 
   return registered;
