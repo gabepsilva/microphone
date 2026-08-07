@@ -5,7 +5,9 @@ import {
   applyStateFragment,
   emptyAppState,
   parseAppState,
+  parseTranscriptRows,
   type AppState,
+  type TranscriptRow,
 } from "./state";
 
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -33,7 +35,13 @@ type SnapshotResult = {
   sequence: number;
   instance: string;
   protocol_version: number;
+  transcript?: unknown;
 };
+
+export type TranscriptWireEvent =
+  | { name: "transcript.entry_added"; row: TranscriptRow }
+  | { name: "transcript.entry_updated"; row: TranscriptRow }
+  | { name: "transcript.cleared" };
 
 /** JSON-RPC client for one TagAlong Unix socket. Injectable connect for tests. */
 export class TagAlongClient {
@@ -164,6 +172,10 @@ export type SessionEventsOptions = {
   /** Long-poll budget in ms. Default 30s. */
   timeoutMs?: number;
   onState: (state: AppState) => void;
+  /** Full accepted transcript after subscribe / lost recovery (#102). */
+  onTranscriptSnapshot?: (rows: TranscriptRow[]) => void;
+  /** Incremental transcript events from the shared EventLog. */
+  onTranscriptEvent?: (event: TranscriptWireEvent) => void;
   onError?: (error: Error) => void;
 };
 
@@ -175,12 +187,15 @@ export type SessionEventsOptions = {
  */
 export class SessionEvents {
   private _state: AppState = emptyAppState();
+  private _transcript: TranscriptRow[] = [];
   private _hasSnapshot = false;
   private _stopped = true;
   private _generation = 0;
   private _loop: Promise<void> | null = null;
   private readonly timeoutMs: number;
   private readonly onState: (state: AppState) => void;
+  private readonly onTranscriptSnapshot: (rows: TranscriptRow[]) => void;
+  private readonly onTranscriptEvent: (event: TranscriptWireEvent) => void;
   private readonly onError: (error: Error) => void;
 
   constructor(
@@ -189,11 +204,18 @@ export class SessionEvents {
   ) {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.onState = options.onState;
+    this.onTranscriptSnapshot = options.onTranscriptSnapshot ?? (() => undefined);
+    this.onTranscriptEvent = options.onTranscriptEvent ?? (() => undefined);
     this.onError = options.onError ?? (() => undefined);
   }
 
   get state(): AppState {
     return this._state;
+  }
+
+  /** Last subscribe/lost transcript snapshot — for late window attach. */
+  get transcript(): readonly TranscriptRow[] {
+    return this._transcript;
   }
 
   /** True once a subscribe snapshot has been parsed — not the empty defaults. */
@@ -220,8 +242,43 @@ export class SessionEvents {
   private async _subscribe(): Promise<void> {
     const snapshot = (await this.events.call("subscribe")) as SnapshotResult;
     this._state = parseAppState(snapshot.state);
+    this._transcript = parseTranscriptRows(snapshot.transcript);
     this._hasSnapshot = true;
     this.onState(this._state);
+    this.onTranscriptSnapshot(this._transcript);
+  }
+
+  private _applyTranscriptEvent(event: {
+    name: string;
+    payload: Record<string, unknown>;
+  }): void {
+    if (event.name === "transcript.cleared") {
+      this._transcript = [];
+      this.onTranscriptEvent({ name: "transcript.cleared" });
+      return;
+    }
+    if (
+      event.name !== "transcript.entry_added" &&
+      event.name !== "transcript.entry_updated"
+    ) {
+      return;
+    }
+    const rows = parseTranscriptRows([
+      { id: event.payload.id, entry: event.payload.entry },
+    ]);
+    const row = rows[0];
+    if (row === undefined) {
+      return;
+    }
+    if (event.name === "transcript.entry_added") {
+      this._transcript = [...this._transcript, row];
+      this.onTranscriptEvent({ name: "transcript.entry_added", row });
+      return;
+    }
+    this._transcript = this._transcript.map((existing) =>
+      existing.id === row.id ? row : existing,
+    );
+    this.onTranscriptEvent({ name: "transcript.entry_updated", row });
   }
 
   private async _run(generation: number): Promise<void> {
@@ -242,7 +299,9 @@ export class SessionEvents {
           if (event.name === "state.changed") {
             this._state = applyStateFragment(this._state, event.payload ?? {});
             this.onState(this._state);
+            continue;
           }
+          this._applyTranscriptEvent(event);
         }
       } catch (error) {
         if (generation !== this._generation) {

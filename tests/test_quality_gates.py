@@ -1501,6 +1501,41 @@ def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+def test_semgrep_forbids_innerhtml_in_electron_renderer() -> None:
+    """Planted innerHTML under electron/renderer/ must fail (#102 XSS gate)."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-renderer-no-innerhtml" in rules
+    assert "/electron/renderer/" in rules
+
+    image = _semgrep_image()
+    planted = (
+        "export function fill(select) {\n"
+        '  select.innerHTML = "<option>x</option>";\n'
+        "}\n"
+    )
+    allowed = "export function fill(select) {\n  select.replaceChildren();\n}\n"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        renderer = root / "electron" / "renderer"
+        renderer.mkdir(parents=True)
+        (renderer / "planted.js").write_text(planted, encoding="utf-8")
+        (renderer / "safe.js").write_text(allowed, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, "Semgrep accepted innerHTML under electron/renderer/"
+        assert "electron-renderer-no-innerhtml" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-renderer-no-innerhtml"
+        }
+        assert any(path.endswith("planted.js") for path in paths)
+        assert not any(path.endswith("safe.js") for path in paths)
+
+
 # --------------------------------------------------------------------------
 # tools/electron_actions_gate.py
 # --------------------------------------------------------------------------

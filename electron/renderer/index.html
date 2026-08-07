@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+    />
     <title>TagAlong</title>
     <style>
       :root {
@@ -122,6 +126,56 @@
         font-size: 0.75rem;
         color: var(--muted);
       }
+      #transcript-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.65rem;
+        max-height: 22rem;
+        overflow: auto;
+      }
+      .transcript-row {
+        border-top: 1px solid var(--border);
+        padding-top: 0.55rem;
+      }
+      .transcript-row:first-child {
+        border-top: none;
+        padding-top: 0;
+      }
+      .transcript-meta {
+        display: flex;
+        gap: 0.5rem;
+        font-size: 0.75rem;
+        color: var(--muted);
+        margin-bottom: 0.2rem;
+      }
+      .transcript-kind {
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .transcript-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 0.95rem;
+      }
+      .transcript-output {
+        margin: 0.35rem 0 0;
+        padding: 0.4rem 0.5rem;
+        background: var(--bg);
+        border-radius: 6px;
+        font-size: 0.8rem;
+        white-space: pre-wrap;
+        overflow-x: auto;
+      }
+      #partial-line {
+        margin-top: 0.75rem;
+        font-size: 0.9rem;
+        color: var(--muted);
+        font-style: italic;
+      }
+      #partial-line .partial-source {
+        color: var(--accent);
+        font-style: normal;
+      }
     </style>
   </head>
   <body>
@@ -129,6 +183,12 @@
       <h1>TagAlong</h1>
       <p class="sub">Control surface for the running session · attach-only</p>
       <p id="banner" class="status">connecting…</p>
+
+      <section>
+        <h2>Transcript</h2>
+        <div id="transcript-list" aria-live="polite"></div>
+        <div id="partial-line" hidden></div>
+      </section>
 
       <section>
         <h2>Devices</h2>
@@ -219,252 +279,6 @@
         </p>
       </section>
     </main>
-    <script>
-      const NO_MIC = "__none__";
-      const NO_AUDIO = "none";
-      const api = window.tagalong;
-      const banner = document.getElementById("banner");
-      let applying = false;
-      let attachmentIds = [];
-
-      function setBanner(text, isError) {
-        banner.textContent = text;
-        banner.classList.toggle("error", Boolean(isError));
-      }
-
-      if (!api) {
-        setBanner("preload bridge missing (window.tagalong undefined)", true);
-      }
-
-      function selectionValue(sel) {
-        return sel && sel.desired != null ? sel.desired : NO_MIC;
-      }
-
-      function fillSelect(select, options, selected) {
-        const current = selected;
-        select.innerHTML = "";
-        for (const opt of options) {
-          const el = document.createElement("option");
-          el.value = opt.value;
-          el.textContent = opt.label;
-          select.appendChild(el);
-        }
-        if ([...select.options].some((o) => o.value === current)) {
-          select.value = current;
-        }
-      }
-
-      async function refreshDevices(state) {
-        let listed;
-        try {
-          listed = await api.devicesList();
-        } catch (error) {
-          setBanner(error.message, true);
-          listed = { inputs: [], applications: [] };
-        }
-        const micOptions = [
-          { value: NO_MIC, label: "None" },
-          ...listed.inputs.map((d) => ({ value: d.name, label: d.name })),
-        ];
-        const audioOptions = [
-          { value: NO_AUDIO, label: "None" },
-          ...listed.applications.map((a) => ({
-            value: a.name,
-            label: a.label || a.name,
-          })),
-        ];
-        fillSelect(
-          document.getElementById("microphone"),
-          micOptions,
-          state.microphone?.desired ?? NO_MIC,
-        );
-        fillSelect(
-          document.getElementById("audio-stream"),
-          audioOptions,
-          state.audio_stream?.desired ?? NO_AUDIO,
-        );
-        document.getElementById("microphone-effective").textContent = state.microphone
-          ?.effective
-          ? `effective: ${state.microphone.effective}`
-          : "";
-        document.getElementById("audio-effective").textContent = state.audio_stream
-          ?.effective
-          ? `effective: ${state.audio_stream.effective}`
-          : "";
-      }
-
-      function applyState(state) {
-        applying = true;
-        document.getElementById("mic-mute").checked = Boolean(state.microphone_muted);
-        document.getElementById("audio-mute").checked = Boolean(
-          state.audio_stream_muted,
-        );
-        document.getElementById("tts-enabled").checked = Boolean(state.tts_enabled);
-        document.getElementById("response-policy").value =
-          state.response_policy || "both";
-        document.getElementById("tts-provider").value = state.tts_provider || "piper";
-        document.getElementById("codex-model").value = state.codex_model || "";
-        document.getElementById("codex-reasoning").value = state.codex_reasoning || "";
-        document.getElementById("turn-silence").value = state.turn_silence ?? 3;
-        const mic = document.getElementById("microphone");
-        if (state.microphone?.desired != null) {
-          if (![...mic.options].some((o) => o.value === state.microphone.desired)) {
-            const opt = document.createElement("option");
-            opt.value = state.microphone.desired;
-            opt.textContent = state.microphone.desired;
-            mic.appendChild(opt);
-          }
-          mic.value = state.microphone.desired;
-        } else {
-          mic.value = NO_MIC;
-        }
-        const audio = document.getElementById("audio-stream");
-        const wanted = state.audio_stream?.desired ?? NO_AUDIO;
-        if (![...audio.options].some((o) => o.value === wanted)) {
-          const opt = document.createElement("option");
-          opt.value = wanted;
-          opt.textContent = wanted;
-          audio.appendChild(opt);
-        }
-        audio.value = wanted;
-        document.getElementById("microphone-effective").textContent = state.microphone
-          ?.effective
-          ? `effective: ${state.microphone.effective}`
-          : "";
-        document.getElementById("audio-effective").textContent = state.audio_stream
-          ?.effective
-          ? `effective: ${state.audio_stream.effective}`
-          : "";
-        applying = false;
-        setBanner("live · session attached");
-      }
-
-      async function dispatch(action, payload) {
-        try {
-          await api.dispatch(action, payload);
-        } catch (error) {
-          setBanner(error.message, true);
-        }
-      }
-
-      function bind() {
-        document.getElementById("microphone").addEventListener("change", (e) => {
-          if (applying) return;
-          const name = e.target.value === NO_MIC ? null : e.target.value;
-          void dispatch("microphone.select", { name });
-        });
-        document.getElementById("audio-stream").addEventListener("change", (e) => {
-          if (applying) return;
-          const name = e.target.value;
-          void dispatch("audio_stream.select", { name });
-        });
-        document.getElementById("mic-mute").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("microphone.set_muted", { muted: e.target.checked });
-        });
-        document.getElementById("audio-mute").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("audio_stream.set_muted", { muted: e.target.checked });
-        });
-        document.getElementById("response-policy").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("response_policy.set", { policy: e.target.value });
-        });
-        document.getElementById("tts-enabled").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("tts.set_enabled", { enabled: e.target.checked });
-        });
-        document.getElementById("tts-provider").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("tts.set_provider", { provider: e.target.value });
-        });
-        document.getElementById("codex-model").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("codex.set_model", { model: e.target.value });
-        });
-        document.getElementById("codex-reasoning").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("codex.set_reasoning", { effort: e.target.value });
-        });
-        document.getElementById("turn-silence").addEventListener("change", (e) => {
-          if (applying) return;
-          void dispatch("turn_silence.set", {
-            seconds: Number(e.target.value),
-          });
-        });
-
-        document.getElementById("interrupt").addEventListener("click", () => {
-          void dispatch("session.interrupt", {});
-        });
-        document.getElementById("end-turn").addEventListener("click", () => {
-          void dispatch("voice.end_turn", {});
-        });
-        document.getElementById("new-session").addEventListener("click", () => {
-          void dispatch("session.new", {});
-        });
-        document.getElementById("save-transcript").addEventListener("click", () => {
-          void dispatch("transcript.save", {});
-        });
-
-        document.getElementById("send").addEventListener("click", async () => {
-          const text = document.getElementById("compose-text").value;
-          const fileInput = document.getElementById("compose-image");
-          attachmentIds = [];
-          if (fileInput.files && fileInput.files[0]) {
-            const buffer = await fileInput.files[0].arrayBuffer();
-            const bytes = new Uint8Array(buffer);
-            let binary = "";
-            for (let i = 0; i < bytes.length; i += 1) {
-              binary += String.fromCharCode(bytes[i]);
-            }
-            const data = btoa(binary);
-            try {
-              const outcome = await api.dispatch("attachment.upload", { data });
-              if (outcome && outcome.effective) {
-                attachmentIds = [outcome.effective];
-              }
-            } catch (error) {
-              setBanner(error.message, true);
-              return;
-            }
-          }
-          await dispatch("message.send", {
-            text,
-            images: attachmentIds,
-            respond: true,
-          });
-          document.getElementById("compose-text").value = "";
-          fileInput.value = "";
-          attachmentIds = [];
-        });
-      }
-
-      async function boot() {
-        if (!api) {
-          return;
-        }
-        bind();
-        api.onState((state) => {
-          applyState(state);
-        });
-        try {
-          const snapshot = await api.snapshot();
-          await refreshDevices(snapshot.state);
-          applyState(snapshot.state);
-        } catch (error) {
-          setBanner(error.message, true);
-        }
-        // Refresh device catalogs periodically — hardware changes are not
-        // on the state.changed stream.
-        setInterval(() => {
-          api
-            .snapshot()
-            .then((snap) => refreshDevices(snap.state))
-            .catch(() => {});
-        }, 5000);
-      }
-
-      boot();
-    </script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>

@@ -2,10 +2,10 @@ import path from "node:path";
 
 import { app, BrowserWindow, ipcMain } from "electron";
 
-import { SessionEvents, TagAlongClient } from "./client";
+import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
 import { registerIpcHandlers } from "./ipc";
 import { CHANNELS } from "./protocol/channels";
-import type { AppState } from "./state";
+import type { AppState, TranscriptRow } from "./state";
 
 // Control surface needs no WebGL. On some Linux GPU/driver stacks the GPU
 // process dies (error_code=1002) and Chromium aborts the whole app. Set these
@@ -28,8 +28,22 @@ function broadcastState(state: AppState): void {
   }
 }
 
+function broadcastTranscriptSnapshot(rows: TranscriptRow[]): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(CHANNELS.transcriptSnapshot, rows);
+  }
+}
+
+function broadcastTranscriptEvent(event: TranscriptWireEvent): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(CHANNELS.transcriptEvent, event);
+  }
+}
+
 const sessionEvents = new SessionEvents(events, {
   onState: broadcastState,
+  onTranscriptSnapshot: broadcastTranscriptSnapshot,
+  onTranscriptEvent: broadcastTranscriptEvent,
   onError: (error) => {
     console.error("tagalong event loop:", error.message);
   },
@@ -52,6 +66,7 @@ async function createWindow(): Promise<void> {
   // Push a real subscribe snapshot once the page can listen — never empty defaults.
   if (sessionEvents.hasSnapshot) {
     broadcastState(sessionEvents.state);
+    broadcastTranscriptSnapshot([...sessionEvents.transcript]);
   }
 }
 

@@ -16,6 +16,43 @@ export type AppState = {
   codex_model: string;
   codex_reasoning: string;
   turn_silence: number;
+  /** Live recognition line (#102 Q3a). */
+  partial_source: string;
+  partial_text: string;
+};
+
+/** Every AppState key — used to pin applyStateFragment exhaustiveness. */
+export const APP_STATE_KEYS = [
+  "microphone",
+  "microphone_muted",
+  "audio_stream",
+  "audio_stream_muted",
+  "response_policy",
+  "tts_enabled",
+  "tts_provider",
+  "codex_model",
+  "codex_reasoning",
+  "turn_silence",
+  "partial_source",
+  "partial_text",
+] as const satisfies ReadonlyArray<keyof AppState>;
+
+export type TranscriptEntry = {
+  kind: string;
+  source: string;
+  text: string;
+  stamp: string;
+  reply_to: string;
+  interrupted: boolean;
+  output: string[];
+  exit_code: number | null;
+  streaming: boolean;
+  seconds: number | null;
+};
+
+export type TranscriptRow = {
+  id: number;
+  entry: TranscriptEntry;
 };
 
 export function emptySelection(): Selection {
@@ -34,6 +71,8 @@ export function emptyAppState(): AppState {
     codex_model: "",
     codex_reasoning: "",
     turn_silence: 3.0,
+    partial_source: "",
+    partial_text: "",
   };
 }
 
@@ -65,27 +104,63 @@ export function applyStateFragment(
   };
   for (const [name, value] of Object.entries(changed)) {
     switch (name) {
-      case "microphone":
+      case "microphone": {
+        const selection = asSelection(value);
+        if (selection !== null) {
+          next.microphone = selection;
+        }
+        break;
+      }
       case "audio_stream": {
         const selection = asSelection(value);
         if (selection !== null) {
-          next[name] = selection;
+          next.audio_stream = selection;
         }
         break;
       }
       case "microphone_muted":
+        if (typeof value === "boolean") {
+          next.microphone_muted = value;
+        }
+        break;
       case "audio_stream_muted":
+        if (typeof value === "boolean") {
+          next.audio_stream_muted = value;
+        }
+        break;
       case "tts_enabled":
         if (typeof value === "boolean") {
-          next[name] = value;
+          next.tts_enabled = value;
         }
         break;
       case "response_policy":
+        if (typeof value === "string") {
+          next.response_policy = value;
+        }
+        break;
       case "tts_provider":
+        if (typeof value === "string") {
+          next.tts_provider = value;
+        }
+        break;
       case "codex_model":
+        if (typeof value === "string") {
+          next.codex_model = value;
+        }
+        break;
       case "codex_reasoning":
         if (typeof value === "string") {
-          next[name] = value;
+          next.codex_reasoning = value;
+        }
+        break;
+      case "partial_source":
+        if (typeof value === "string") {
+          next.partial_source = value;
+        }
+        break;
+      case "partial_text":
+        if (typeof value === "string") {
+          next.partial_text = value;
         }
         break;
       case "turn_silence":
@@ -112,4 +187,44 @@ export function parseAppState(value: unknown): AppState {
     return base;
   }
   return applyStateFragment(base, value as Record<string, unknown>);
+}
+
+export function parseTranscriptRows(value: unknown): TranscriptRow[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const rows: TranscriptRow[] = [];
+  for (const item of value) {
+    if (item === null || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const id = record.id;
+    const entry = record.entry;
+    if (typeof id !== "number" || !Number.isFinite(id)) {
+      continue;
+    }
+    if (entry === null || typeof entry !== "object") {
+      continue;
+    }
+    const fields = entry as Record<string, unknown>;
+    rows.push({
+      id,
+      entry: {
+        kind: typeof fields.kind === "string" ? fields.kind : "",
+        source: typeof fields.source === "string" ? fields.source : "",
+        text: typeof fields.text === "string" ? fields.text : "",
+        stamp: typeof fields.stamp === "string" ? fields.stamp : "",
+        reply_to: typeof fields.reply_to === "string" ? fields.reply_to : "",
+        interrupted: Boolean(fields.interrupted),
+        output: Array.isArray(fields.output)
+          ? fields.output.filter((line): line is string => typeof line === "string")
+          : [],
+        exit_code: typeof fields.exit_code === "number" ? fields.exit_code : null,
+        streaming: Boolean(fields.streaming),
+        seconds: typeof fields.seconds === "number" ? fields.seconds : null,
+      },
+    });
+  }
+  return rows;
 }
