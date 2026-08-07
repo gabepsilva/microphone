@@ -3,7 +3,15 @@ import { describe, expect, it } from "bun:test";
 import type net from "node:net";
 
 import { SessionEvents, TagAlongClient, socketPath } from "../src/client";
-import { applyStateFragment, emptyAppState, parseAppState } from "../src/state";
+import {
+  APP_STATE_KEYS,
+  applyStateFragment,
+  emptyAppState,
+  parseAppState,
+  parseTranscriptRows,
+  type AppState,
+  type TranscriptRow,
+} from "../src/state";
 
 class FakeSocket extends EventEmitter {
   destroyed = false;
@@ -38,6 +46,30 @@ class FakeSocket extends EventEmitter {
       };
       if (request.method === method && !this.answered.has(request.id)) {
         this._reply(request.id, result);
+        return;
+      }
+    }
+    throw new Error(`no pending ${method}`);
+  }
+
+  rejectTo(method: string, message: string): void {
+    for (let index = this.written.length - 1; index >= 0; index -= 1) {
+      const request = JSON.parse(this.written[index]!) as {
+        id: number;
+        method: string;
+      };
+      if (request.method === method && !this.answered.has(request.id)) {
+        this.answered.add(request.id);
+        this.emit(
+          "data",
+          Buffer.from(
+            `${JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              error: { message },
+            })}\n`,
+          ),
+        );
         return;
       }
     }
@@ -85,6 +117,21 @@ async function waitForMethodCount(
   throw new Error(`timed out waiting for ${method} x${count}`);
 }
 
+async function waitForSocket(
+  sockets: FakeSocket[],
+  index: number,
+): Promise<FakeSocket> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const fake = sockets[index];
+    if (fake !== undefined) {
+      return fake;
+    }
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`timed out waiting for socket ${index}`);
+}
+
 describe("socketPath", () => {
   it("joins XDG_RUNTIME_DIR and refuses a missing runtime dir", () => {
     expect(socketPath({ XDG_RUNTIME_DIR: "/run/user/1000" })).toBe(
@@ -105,6 +152,37 @@ describe("applyStateFragment", () => {
     expect(after.tts_enabled).toBe(false);
     expect(after.microphone).toEqual({ desired: "Yeti", effective: null });
   });
+
+  it("handles every AppState key so partial_* cannot be dropped by default", () => {
+    const before = emptyAppState();
+    const changed: Record<string, unknown> = {
+      microphone: { desired: "Yeti", effective: "Yeti" },
+      microphone_muted: true,
+      audio_stream: { desired: "Zoom", effective: null },
+      audio_stream_muted: true,
+      response_policy: "voice",
+      tts_enabled: false,
+      tts_provider: "edge",
+      codex_model: "gpt",
+      codex_reasoning: "high",
+      turn_silence: 1.5,
+      partial_source: "Voice",
+      partial_text: "hello",
+    };
+    for (const key of APP_STATE_KEYS) {
+      expect(key in changed).toBe(true);
+    }
+    const after = applyStateFragment(before, changed);
+    expect(after.partial_source).toBe("Voice");
+    expect(after.partial_text).toBe("hello");
+    expect(after.turn_silence).toBe(1.5);
+    expect(after.microphone).toEqual({ desired: "Yeti", effective: "Yeti" });
+    // Exhaustiveness: every key differs from empty defaults after the merge.
+    const empty = emptyAppState();
+    for (const key of APP_STATE_KEYS) {
+      expect(after[key as keyof AppState]).not.toEqual(empty[key as keyof AppState]);
+    }
+  });
 });
 
 describe("parseAppState", () => {
@@ -121,6 +199,11 @@ describe("parseAppState", () => {
     expect(parsed.response_policy).toBe("both");
   });
 
+  it("returns empty defaults when the snapshot is not an object", () => {
+    expect(parseAppState(null)).toEqual(emptyAppState());
+    expect(parseAppState("nope")).toEqual(emptyAppState());
+  });
+
   it("ignores selection objects whose desired/effective are not string|null", () => {
     const parsed = parseAppState({
       microphone: { desired: 1, effective: "ok" },
@@ -128,6 +211,47 @@ describe("parseAppState", () => {
     });
     expect(parsed.microphone).toEqual({ desired: null, effective: null });
     expect(parsed.audio_stream).toEqual({ desired: null, effective: null });
+  });
+});
+
+describe("parseTranscriptRows", () => {
+  it("skips non-arrays and malformed row shapes", () => {
+    expect(parseTranscriptRows(null)).toEqual([]);
+    expect(parseTranscriptRows("x")).toEqual([]);
+    expect(
+      parseTranscriptRows([
+        null,
+        { id: "1", entry: { text: "no" } },
+        { id: 1, entry: null },
+        {
+          id: 2,
+          entry: {
+            kind: "Voice",
+            source: "mic",
+            text: "ok",
+            output: ["a", 1, "b"],
+            exit_code: 0,
+            seconds: 1.5,
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 2,
+        entry: {
+          kind: "Voice",
+          source: "mic",
+          text: "ok",
+          stamp: "",
+          reply_to: "",
+          interrupted: false,
+          output: ["a", "b"],
+          exit_code: 0,
+          streaming: false,
+          seconds: 1.5,
+        },
+      },
+    ]);
   });
 });
 
@@ -300,6 +424,205 @@ describe("SessionEvents", () => {
     });
     await waitForMethodCount(fake, "poll", 3);
     expect(states.at(-1)?.tts_enabled).toBe(true);
+
+    session.stop();
+  });
+
+  it("seeds transcript from subscribe and applies entry events", async () => {
+    const fake = new FakeSocket();
+    const events = connectOnce(fake);
+    const snapshots: TranscriptRow[][] = [];
+    const wireEvents: Array<{ name: string }> = [];
+
+    const session = new SessionEvents(events, {
+      timeoutMs: 50,
+      onState: () => undefined,
+      onTranscriptSnapshot: (rows) => {
+        snapshots.push(rows);
+      },
+      onTranscriptEvent: (event) => {
+        wireEvents.push({ name: event.name });
+      },
+    });
+
+    const started = session.start();
+    await Promise.resolve();
+    fake.emit("connect");
+    await waitForMethodCount(fake, "initialize", 1);
+    fake.respondTo("initialize", {});
+    await waitForMethodCount(fake, "subscribe", 1);
+    fake.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 0,
+      protocol_version: 1,
+      state: emptyAppState(),
+      transcript: [
+        {
+          id: 1,
+          entry: {
+            kind: "Voice",
+            source: "mic",
+            text: "hi",
+            stamp: "",
+            reply_to: "",
+            interrupted: false,
+            output: [],
+            exit_code: null,
+            streaming: false,
+            seconds: null,
+          },
+        },
+      ],
+    });
+    await started;
+    expect(snapshots.at(-1)?.map((row) => row.id)).toEqual([1]);
+    expect(session.transcript.map((row) => row.id)).toEqual([1]);
+
+    await waitForMethodCount(fake, "poll", 1);
+    fake.respondTo("poll", {
+      lost: false,
+      events: [
+        {
+          sequence: 1,
+          name: "transcript.entry_added",
+          payload: {
+            id: 2,
+            entry: {
+              kind: "Taga",
+              source: "codex",
+              text: "hello",
+              stamp: "",
+              reply_to: "",
+              interrupted: false,
+              output: [],
+              exit_code: null,
+              streaming: false,
+              seconds: null,
+            },
+          },
+        },
+        {
+          sequence: 2,
+          name: "transcript.entry_updated",
+          payload: {
+            id: 2,
+            entry: {
+              kind: "Taga",
+              source: "codex",
+              text: "hello world",
+              stamp: "",
+              reply_to: "",
+              interrupted: false,
+              output: [],
+              exit_code: null,
+              streaming: false,
+              seconds: null,
+            },
+          },
+        },
+        {
+          sequence: 3,
+          name: "state.changed",
+          payload: { partial_source: "Voice", partial_text: "…" },
+        },
+      ],
+    });
+    await waitForMethodCount(fake, "poll", 2);
+    expect(wireEvents.map((event) => event.name)).toEqual([
+      "transcript.entry_added",
+      "transcript.entry_updated",
+    ]);
+    expect(session.transcript.map((row) => row.entry.text)).toEqual([
+      "hi",
+      "hello world",
+    ]);
+    expect(session.state.partial_text).toBe("…");
+
+    fake.respondTo("poll", {
+      lost: false,
+      events: [{ sequence: 4, name: "transcript.cleared", payload: {} }],
+    });
+    await waitForMethodCount(fake, "poll", 3);
+    expect(session.transcript).toEqual([]);
+    expect(wireEvents.at(-1)?.name).toBe("transcript.cleared");
+
+    // Malformed / unknown transcript events are ignored.
+    fake.respondTo("poll", {
+      lost: false,
+      events: [
+        { sequence: 5, name: "transcript.entry_added", payload: { id: "bad" } },
+        { sequence: 6, name: "transcript.other", payload: {} },
+      ],
+    });
+    await waitForMethodCount(fake, "poll", 4);
+    expect(session.transcript).toEqual([]);
+
+    session.stop();
+  });
+
+  it("recovers from poll errors and backs off when resubscribe fails", async () => {
+    const sockets: FakeSocket[] = [];
+    const events = new TagAlongClient(
+      () => {
+        const fake = new FakeSocket();
+        sockets.push(fake);
+        queueMicrotask(() => {
+          fake.emit("connect");
+        });
+        return fake as unknown as net.Socket;
+      },
+      () => "/run/user/1000/tagalong/tagalong.sock",
+    );
+    const errors: string[] = [];
+    const session = new SessionEvents(events, {
+      timeoutMs: 50,
+      onState: () => undefined,
+      onError: (error) => {
+        errors.push(error.message);
+      },
+    });
+
+    const started = session.start();
+    const first = await waitForSocket(sockets, 0);
+    await waitForMethodCount(first, "initialize", 1);
+    first.respondTo("initialize", {});
+    await waitForMethodCount(first, "subscribe", 1);
+    first.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 0,
+      protocol_version: 1,
+      state: emptyAppState(),
+      transcript: [],
+    });
+    await started;
+    await waitForMethodCount(first, "poll", 1);
+
+    // Poll failure closes the socket; reconnect + subscribe recovers.
+    first.rejectTo("poll", "poll blew up");
+    const second = await waitForSocket(sockets, 1);
+    await waitForMethodCount(second, "initialize", 1);
+    second.respondTo("initialize", {});
+    await waitForMethodCount(second, "subscribe", 1);
+    second.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 1,
+      protocol_version: 1,
+      state: { ...emptyAppState(), tts_enabled: false },
+      transcript: [],
+    });
+    await waitForMethodCount(second, "poll", 1);
+    expect(errors).toContain("poll blew up");
+    expect(session.state.tts_enabled).toBe(false);
+
+    // Resubscribe failure hits the backoff delay path.
+    second.rejectTo("poll", "again");
+    const third = await waitForSocket(sockets, 2);
+    await waitForMethodCount(third, "initialize", 1);
+    third.respondTo("initialize", {});
+    await waitForMethodCount(third, "subscribe", 1);
+    third.rejectTo("subscribe", "subscribe denied");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(errors).toContain("subscribe denied");
 
     session.stop();
   });

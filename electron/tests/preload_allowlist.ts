@@ -5,6 +5,8 @@ export const PRELOAD_ALLOWLIST = [
   "devicesList",
   "dispatch",
   "onState",
+  "onTranscriptEvent",
+  "onTranscriptSnapshot",
   "snapshot",
 ] as const;
 

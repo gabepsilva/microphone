@@ -14,7 +14,7 @@ type StateListener = (event: unknown, state: unknown) => void;
 async function loadPreload(modulePath: string): Promise<{
   exposed: ExposedApi;
   invokes: Array<{ channel: string; args: unknown[] }>;
-  emitState: (state: unknown) => void;
+  emit: (channel: string, payload: unknown) => void;
 }> {
   let exposed: ExposedApi | undefined;
   const invokes: Array<{ channel: string; args: unknown[] }> = [];
@@ -41,6 +41,8 @@ async function loadPreload(modulePath: string): Promise<{
     },
   }));
   // Cache-bust so each test loads a fresh module against the current mock.
+  // Exercise every bridge method on that single import — Bun's lcov keeps one
+  // SF record per path, so a later ?t= import would erase earlier hits (#102).
   await import(`${modulePath}?t=${Date.now()}-${Math.random()}`);
   if (exposed === undefined) {
     throw new Error(`preload did not call exposeInMainWorld: ${modulePath}`);
@@ -48,11 +50,9 @@ async function loadPreload(modulePath: string): Promise<{
   return {
     exposed,
     invokes,
-    emitState: (state: unknown) => {
-      for (const set of listeners.values()) {
-        for (const listener of set) {
-          listener({}, state);
-        }
+    emit: (channel: string, payload: unknown) => {
+      for (const listener of listeners.get(channel) ?? []) {
+        listener({}, payload);
       }
     },
   };
@@ -75,8 +75,8 @@ describe("preload allowlist", () => {
     expect(matchesAllowlist(exposed)).toBe(false);
   });
 
-  it("each invoke binding hits its own CHANNELS entry", async () => {
-    const { exposed, invokes } = await loadPreload("../src/preload.ts");
+  it("wires invoke and push bindings on one module load", async () => {
+    const { exposed, invokes, emit } = await loadPreload("../src/preload.ts");
 
     const snapshot = exposed.snapshot as () => Promise<unknown>;
     const devicesList = exposed.devicesList as () => Promise<unknown>;
@@ -86,6 +86,15 @@ describe("preload allowlist", () => {
       action: string,
       payload?: Record<string, unknown>,
     ) => Promise<unknown>;
+    const onState = exposed.onState as (
+      callback: (state: unknown) => void,
+    ) => () => void;
+    const onTranscriptSnapshot = exposed.onTranscriptSnapshot as (
+      callback: (rows: unknown) => void,
+    ) => () => void;
+    const onTranscriptEvent = exposed.onTranscriptEvent as (
+      callback: (event: unknown) => void,
+    ) => () => void;
 
     await snapshot();
     await devicesList();
@@ -103,22 +112,35 @@ describe("preload allowlist", () => {
         args: ["tts.set_enabled", { enabled: false }],
       },
     ]);
-  });
 
-  it("onState forwards ipc events and unsubscribe removes the listener", async () => {
-    const { exposed, emitState } = await loadPreload("../src/preload.ts");
-    const onState = exposed.onState as (
-      callback: (state: unknown) => void,
-    ) => () => void;
-
-    const seen: unknown[] = [];
-    const unsubscribe = onState((state) => {
-      seen.push(state);
+    const states: unknown[] = [];
+    const snapshots: unknown[] = [];
+    const events: unknown[] = [];
+    const unsubState = onState((state) => {
+      states.push(state);
     });
-    emitState({ tts_enabled: true });
-    expect(seen).toEqual([{ tts_enabled: true }]);
-    unsubscribe();
-    emitState({ tts_enabled: false });
-    expect(seen).toEqual([{ tts_enabled: true }]);
+    const unsubSnap = onTranscriptSnapshot((rows) => {
+      snapshots.push(rows);
+    });
+    const unsubEvent = onTranscriptEvent((event) => {
+      events.push(event);
+    });
+
+    emit(CHANNELS.stateChanged, { tts_enabled: true });
+    emit(CHANNELS.transcriptSnapshot, [{ id: 1 }]);
+    emit(CHANNELS.transcriptEvent, { name: "transcript.cleared" });
+    expect(states).toEqual([{ tts_enabled: true }]);
+    expect(snapshots).toEqual([[{ id: 1 }]]);
+    expect(events).toEqual([{ name: "transcript.cleared" }]);
+
+    unsubState();
+    unsubSnap();
+    unsubEvent();
+    emit(CHANNELS.stateChanged, { tts_enabled: false });
+    emit(CHANNELS.transcriptSnapshot, [{ id: 2 }]);
+    emit(CHANNELS.transcriptEvent, { name: "transcript.cleared" });
+    expect(states).toEqual([{ tts_enabled: true }]);
+    expect(snapshots).toEqual([[{ id: 1 }]]);
+    expect(events).toEqual([{ name: "transcript.cleared" }]);
   });
 });

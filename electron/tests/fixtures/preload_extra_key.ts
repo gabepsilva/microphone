@@ -19,5 +19,23 @@ contextBridge.exposeInMainWorld("tagalong", {
       ipcRenderer.removeListener(CHANNELS.stateChanged, listener);
     };
   },
+  onTranscriptSnapshot: (callback: (rows: unknown) => void) => {
+    const listener = (): void => {
+      callback([]);
+    };
+    ipcRenderer.on(CHANNELS.transcriptSnapshot, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.transcriptSnapshot, listener);
+    };
+  },
+  onTranscriptEvent: (callback: (event: unknown) => void) => {
+    const listener = (): void => {
+      callback({});
+    };
+    ipcRenderer.on(CHANNELS.transcriptEvent, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.transcriptEvent, listener);
+    };
+  },
   readFile: (path: string) => ipcRenderer.invoke("tagalong:readFile", path),
 });

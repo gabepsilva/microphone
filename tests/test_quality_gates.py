@@ -1501,6 +1501,60 @@ def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+def test_semgrep_forbids_innerhtml_in_electron_renderer() -> None:
+    """Each HTML-injection sink under electron/renderer/ must fail alone (#102)."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-renderer-no-innerhtml" in rules
+    assert "/electron/renderer/" in rules
+    for needle in (
+        "$EL.innerHTML = ...",
+        "$EL.outerHTML = ...",
+        '$EL["innerHTML"] = ...',
+        '$EL["outerHTML"] = ...',
+        "$EL.insertAdjacentHTML(...)",
+        "$DOC.write(...)",
+    ):
+        assert needle in rules
+
+    image = _semgrep_image()
+    # One bypass form per file so a non-zero exit pins which pattern fired.
+    planted_forms = {
+        "a_assign.js": "export function f(el) {\n  el.innerHTML = x;\n}\n",
+        "b_plusequals.js": "export function f(el) {\n  el.innerHTML += x;\n}\n",
+        "c_bracket.js": 'export function f(el) {\n  el["innerHTML"] = x;\n}\n',
+        "d_outerhtml.js": "export function f(el) {\n  el.outerHTML = x;\n}\n",
+        "e_insertadjacent.js": (
+            'export function f(el) {\n  el.insertAdjacentHTML("beforeend", x);\n}\n'
+        ),
+        "f_docwrite.js": "export function f(doc) {\n  doc.write(x);\n}\n",
+    }
+    allowed = "export function fill(select) {\n  select.replaceChildren();\n}\n"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        renderer = root / "electron" / "renderer"
+        renderer.mkdir(parents=True)
+        for name, source in planted_forms.items():
+            (renderer / name).write_text(source, encoding="utf-8")
+        (renderer / "safe.js").write_text(allowed, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, (
+            "Semgrep accepted an HTML-injection sink under electron/renderer/"
+        )
+        assert "electron-renderer-no-innerhtml" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-renderer-no-innerhtml"
+        }
+        for name in planted_forms:
+            assert any(path.endswith(name) for path in paths), (name, paths)
+        assert not any(path.endswith("safe.js") for path in paths)
+
+
 # --------------------------------------------------------------------------
 # tools/electron_actions_gate.py
 # --------------------------------------------------------------------------
