@@ -5,9 +5,11 @@ import {
   buildTranscriptRowElement,
   commandOutputLines,
   entryBodyText,
+  entryFootnote,
   idlePartialText,
   renderPartialLine,
   renderTranscriptSnapshot,
+  rowLayout,
   sourceClass,
   sourceLabel,
   type DomDocument,
@@ -77,20 +79,32 @@ function makeDocument(): { document: FakeDocument; root: FakeNode } {
   return { document, root };
 }
 
-/** The row's body column, where every piece of entry text lands. */
-function main(row: FakeNode): FakeNode {
-  const found = row.children.find((child) => child.className === "entry-main");
+/** The message bubble, where every piece of entry text lands. */
+function bubble(row: FakeNode): FakeNode {
+  const found = row.children.find((child) => child.className === "msg-bubble");
   if (found === undefined) {
-    throw new Error("row has no entry-main");
+    throw new Error("row has no msg-bubble");
+  }
+  return found;
+}
+
+function meta(row: FakeNode): FakeNode {
+  const found = row.children.find((child) => child.className === "msg-meta");
+  if (found === undefined) {
+    throw new Error("row has no msg-meta");
   }
   return found;
 }
 
 function bodyText(row: FakeNode): string | null {
-  const found = main(row).children.find((child) =>
-    child.className.startsWith("transcript-text"),
+  const found = bubble(row).children.find((child) =>
+    child.className.startsWith("msg-body"),
   );
   return found?.textContent ?? null;
+}
+
+function textsIn(node: FakeNode): string[] {
+  return node.children.map((child) => child.textContent ?? "");
 }
 
 describe("transcript_view hostile text", () => {
@@ -112,13 +126,13 @@ describe("transcript_view hostile text", () => {
     root.appendChild(row);
 
     expect(row.children.map((child) => child.className)).toEqual([
-      "entry-stamp",
-      "entry-source source-voice",
-      "entry-main",
+      "msg-meta",
+      "msg-bubble",
     ]);
+    expect(textsIn(meta(row))).toEqual(["Voice", "02:59:02"]);
     expect(bodyText(row)).toBe(hostile);
-    const output = main(row).children.find(
-      (child) => child.className === "transcript-output",
+    const output = bubble(row).children.find(
+      (child) => child.className === "msg-output",
     );
     expect(output?.textContent).toBe(`out:${hostile}`);
   });
@@ -149,22 +163,20 @@ describe("transcript_view hostile text", () => {
       partial_text: hostile,
     });
     expect(partial.hidden).toBe(false);
-    expect(
-      [...(partial.children as FakeNode[])].map((child) => child.textContent).join(""),
-    ).toBe(`◌ Voice  ${hostile}`);
+    expect(textsIn(partial as FakeNode).join("")).toBe(`Voice${hostile}`);
   });
 
   it("clears the list on transcript.cleared", () => {
     const { document, root } = makeDocument();
     renderTranscriptSnapshot(root, document, [
-      { id: 1, entry: { kind: "Text", source: "tui", text: "hi" } },
+      { id: 1, entry: { kind: "speech", source: "Text", text: "hi" } },
     ]);
     applyTranscriptDomEvent(root, document, { name: "transcript.cleared" });
     expect(root.children).toHaveLength(0);
   });
 });
 
-describe("transcript_view TUI parity", () => {
+describe("transcript_view entry model", () => {
   it("colours known speakers and leaves unknown ones muted", () => {
     expect(sourceClass("Voice")).toBe("source-voice");
     expect(sourceClass("Taga")).toBe("source-taga");
@@ -173,31 +185,47 @@ describe("transcript_view TUI parity", () => {
     expect(sourceClass("Whoever")).toBe("source-unknown");
   });
 
-  it("labels a note with a dot rather than a speaker name", () => {
-    expect(sourceLabel({ kind: "note", source: "Taga" })).toBe("·");
+  it("bubbles the room and gives Taga the full column", () => {
+    expect(rowLayout({ kind: "speech", source: "Voice" })).toBe("inbound");
+    expect(rowLayout({ kind: "speech", source: "Audio" })).toBe("inbound");
+    expect(rowLayout({ kind: "speech", source: "Agent" })).toBe("inbound");
+    expect(rowLayout({ kind: "speech", source: "Taga" })).toBe("answer");
+    expect(rowLayout({ kind: "reasoning", source: "Taga" })).toBe("answer");
+    expect(rowLayout({ kind: "note", source: "Voice" })).toBe("note");
+    expect(rowLayout({ kind: "command", source: "Taga" })).toBe("command");
+  });
+
+  it("labels interface rows by what they are, not by a speaker", () => {
+    expect(sourceLabel({ kind: "note", source: "Taga" })).toBe("note");
+    expect(sourceLabel({ kind: "command", source: "Taga" })).toBe("command");
+    expect(sourceLabel({ kind: "reasoning", source: "Taga" })).toBe("thinking");
     expect(sourceLabel({ kind: "speech", source: "Taga" })).toBe("Taga");
     expect(sourceLabel({ kind: "speech" })).toBe("");
   });
 
   it("renders each entry kind the way the TUI does", () => {
     expect(entryBodyText({ kind: "speech", text: "hi" })).toBe("hi");
-    expect(entryBodyText({ kind: "speech", text: "hi", streaming: true })).toBe("hi ▌");
+    expect(entryBodyText({ kind: "speech", text: "hi", streaming: true })).toBe("hi ▍");
     expect(entryBodyText({ kind: "command", text: "ls -l" })).toBe("$ ls -l");
-    expect(entryBodyText({ kind: "reasoning", streaming: true })).toBe("thinking ▌");
-    expect(entryBodyText({ kind: "reasoning", seconds: 1.24, text: "why" })).toBe(
-      "thinking · 1.2s\nwhy",
-    );
-    expect(entryBodyText({ kind: "reasoning" })).toBe("thinking");
+    expect(entryBodyText({ kind: "reasoning", streaming: true })).toBe("thinking…");
+    expect(entryBodyText({ kind: "reasoning", text: "why" })).toBe("why");
   });
 
-  it("appends a command exit line only for finished commands", () => {
-    expect(
-      commandOutputLines({ kind: "command", output: ["a", 3], exit_code: 1 }),
-    ).toEqual(["a", "[command exit: 1]"]);
-    expect(commandOutputLines({ kind: "command", output: ["a"] })).toEqual(["a"]);
-    expect(commandOutputLines({ kind: "speech", output: ["a"], exit_code: 0 })).toEqual(
-      ["a"],
+  it("puts the thinking cost and the command exit in the meta line", () => {
+    expect(entryFootnote({ kind: "reasoning", seconds: 1.24 })).toBe("1.2s");
+    expect(entryFootnote({ kind: "reasoning", seconds: 1.24, streaming: true })).toBe(
+      "",
     );
+    expect(entryFootnote({ kind: "command", exit_code: 1 })).toBe("exit 1");
+    expect(entryFootnote({ kind: "command" })).toBe("");
+    expect(entryFootnote({ kind: "speech", exit_code: 0 })).toBe("");
+  });
+
+  it("keeps only string output lines", () => {
+    expect(commandOutputLines({ kind: "command", output: ["a", 3, null] })).toEqual([
+      "a",
+    ]);
+    expect(commandOutputLines({ kind: "speech" })).toEqual([]);
   });
 
   it("marks an interrupted answer with cut-off chrome", () => {
@@ -206,25 +234,26 @@ describe("transcript_view TUI parity", () => {
       id: 3,
       entry: { kind: "speech", source: "Taga", text: "half", interrupted: true },
     }) as FakeNode;
-    const cutoff = main(row).children.find(
-      (child) => child.className === "entry-cutoff",
+    const cutoff = bubble(row).children.find(
+      (child) => child.className === "msg-cutoff",
     );
-    expect(cutoff?.textContent).toBe("⊥ cut off: user started speaking");
+    expect(cutoff?.textContent).toBe("cut off: user started speaking");
   });
 
-  it("drops the stamp and speaker columns for a command row", () => {
+  it("tags a row with its layout and its speaker palette", () => {
     const { document } = makeDocument();
     const row = buildTranscriptRowElement(document, {
       id: 4,
-      entry: { kind: "command", text: "ls" },
+      entry: { kind: "command", source: "Taga", text: "ls", exit_code: 0 },
     }) as FakeNode;
-    expect(row.className).toBe("transcript-row command");
+    expect(row.className).toBe("msg msg-command source-taga");
+    expect(textsIn(meta(row))).toEqual(["command", "exit 0"]);
   });
 
   it("says why the partial line is quiet instead of hiding it", () => {
-    expect(idlePartialText({})).toBe("silence: mic hot, nothing pending");
+    expect(idlePartialText({})).toBe("listening — nothing pending");
     expect(idlePartialText({ microphone_muted: true })).toBe(
-      "mic muted, Audio still transcribing",
+      "mic muted, audio still transcribing",
     );
     expect(idlePartialText({ audio_stream_muted: true })).toBe(
       "speaker muted, mic still hot",
@@ -237,8 +266,8 @@ describe("transcript_view TUI parity", () => {
     const partial = document.createElement("div");
     renderPartialLine(partial, { microphone_muted: true });
     expect(partial.hidden).toBe(false);
-    expect(
-      [...(partial.children as FakeNode[])].map((child) => child.textContent).join(""),
-    ).toBe("◌ mic muted, Audio still transcribing");
+    expect(textsIn(partial as FakeNode).join("")).toBe(
+      "mic muted, audio still transcribing",
+    );
   });
 });

@@ -17,6 +17,8 @@ export type DomDocument = {
 
 export type DomElement = {
   className: string;
+  /** Absent in the test double; the renderer guards every use. */
+  classList?: { toggle(name: string, force?: boolean): void };
   hidden: boolean;
   dataset: Record<string, string>;
   textContent: string | null;
@@ -34,6 +36,12 @@ export function sourceClass(source: unknown): string;
 export function sourceLabel(entry: TranscriptEntryLike): string;
 
 export function entryBodyText(entry: TranscriptEntryLike): string;
+
+export function entryFootnote(entry: TranscriptEntryLike): string;
+
+export function rowLayout(
+  entry: TranscriptEntryLike,
+): "note" | "command" | "inbound" | "answer";
 
 export function commandOutputLines(entry: TranscriptEntryLike): string[];
 

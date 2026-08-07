@@ -33,13 +33,21 @@ if (!api) {
   setBanner("preload bridge missing (window.tagalong undefined)", true);
 }
 
+/** How the sidebar picker labels a policy, so the prompt chip can restate it. */
+const POLICY_LABELS = {
+  audio: "Audio",
+  both: "Voice + Audio",
+  voice: "Voice",
+  quiet: "Stay silent",
+};
+
 /** Draw the splash key reference from the one shortcut table. */
 function renderShortcuts(el, shortcuts) {
   el.replaceChildren();
   for (const shortcut of shortcuts) {
     const row = document.createElement("div");
     row.className = "shortcut";
-    const keys = document.createElement("span");
+    const keys = document.createElement("kbd");
     keys.className = "shortcut-keys";
     keys.textContent = shortcut.keys;
     const label = document.createElement("span");
@@ -139,6 +147,12 @@ function applyState(state) {
   document.getElementById("codex-model").value = state.codex_model || "";
   document.getElementById("codex-reasoning").value = state.codex_reasoning || "";
   document.getElementById("turn-silence").value = state.turn_silence ?? 3;
+  // The prompt restates what the sidebar decides, the way a chat client shows
+  // its model beside the box you type in.
+  document.getElementById("prompt-model").textContent = state.codex_model || "";
+  const policy = state.response_policy || "both";
+  document.getElementById("policy-chip").textContent =
+    `Replies to ${POLICY_LABELS[policy] ?? policy}`;
   const mic = document.getElementById("microphone");
   if (state.microphone?.desired != null) {
     if (![...mic.options].some((o) => o.value === state.microphone.desired)) {
@@ -192,9 +206,9 @@ async function uploadImage(file) {
 }
 
 function markAttached(count) {
-  const label = document.getElementById("attach-label");
-  label.textContent = count > 0 ? `＋ image (${count})` : "＋ image";
-  label.classList.toggle("has-file", count > 0);
+  const button = document.getElementById("attach-button");
+  button.classList.toggle("has-file", count > 0);
+  button.title = count > 0 ? `${count} image attached` : "Attach an image";
 }
 
 async function send() {
@@ -305,7 +319,17 @@ function bind() {
   });
 
   composeText.addEventListener("input", autoGrow);
-  document.getElementById("compose-image").addEventListener("change", (e) => {
+  document.getElementById("send").addEventListener("click", () => {
+    commands["prompt.send"]();
+  });
+  document.getElementById("sidebar-toggle").addEventListener("click", () => {
+    commands["view.toggle_sidebar"]();
+  });
+  const fileInput = document.getElementById("compose-image");
+  document.getElementById("attach-button").addEventListener("click", () => {
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", (e) => {
     markAttached(e.target.files && e.target.files.length ? 1 : 0);
   });
   // ^V of an image lands here rather than in the file picker.

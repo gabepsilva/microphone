@@ -11,152 +11,174 @@
   </head>
   <body>
     <div id="body">
-      <div id="left">
-        <div id="transcript-label">TRANSCRIPT</div>
+      <main id="left">
+        <header id="topbar">
+          <div class="brand">
+            <span class="brand-mark">T<span class="brand-chevron">»</span></span>
+            <span class="brand-name">TagAlong</span>
+          </div>
+          <div id="banner" class="status">connecting…</div>
+          <button type="button" id="sidebar-toggle" title="Toggle sidebar (Ctrl+B)">
+            Panel
+          </button>
+        </header>
+
         <div id="transcript-area">
-          <!-- Shown only until the first entry lands; app.js fills it from the
-               shortcut table so the splash cannot drift from the bindings. -->
-          <div id="empty-transcript">
-            <div class="splash-head">
-              <div class="brand-mark">
-                <span class="brand-t">T</span><span class="brand-chevron">»</span>
-              </div>
-              <div>
-                <div class="splash-title">TagAlong</div>
-                <div class="splash-sub">
-                  Mic + meeting audio, with Taga in the room.
-                </div>
-              </div>
-            </div>
+          <!-- Shown only until the first entry lands; app.js fills the shortcut
+               list from the same table the key handler reads. -->
+          <section id="empty-transcript">
+            <div class="splash-mark">T<span class="brand-chevron">»</span></div>
+            <h1 class="splash-title">TagAlong</h1>
+            <p class="splash-sub">Mic + meeting audio, with Taga in the room.</p>
             <div class="splash-shortcuts">
-              <div>
-                <div class="splash-col-head">PROMPT</div>
+              <div class="splash-col">
+                <h2 class="splash-col-head">Prompt</h2>
                 <div id="shortcuts-prompt"></div>
               </div>
-              <div>
-                <div class="splash-col-head">SESSION</div>
+              <div class="splash-col">
+                <h2 class="splash-col-head">Session</h2>
                 <div id="shortcuts-session"></div>
               </div>
             </div>
-          </div>
+          </section>
           <div id="transcript-list" aria-live="polite"></div>
         </div>
+
         <div id="partial"></div>
+
         <div id="promptbar">
-          <span id="prompt-mark">›</span>
-          <textarea
-            id="compose-text"
-            rows="1"
-            placeholder="Message Taga…"
-            aria-label="Message Taga"
-          ></textarea>
-          <label id="attach-label" for="compose-image" title="Attach an image"
-            >＋ image</label
-          >
-          <input id="compose-image" type="file" accept="image/*" />
-          <span id="input-hint">Text always gets a reply</span>
+          <div id="prompt-shell">
+            <button type="button" id="attach-button" title="Attach an image">+</button>
+            <input id="compose-image" type="file" accept="image/*" />
+            <textarea
+              id="compose-text"
+              rows="1"
+              placeholder="Message Taga…"
+              aria-label="Message Taga"
+            ></textarea>
+            <span id="prompt-model" title="Codex model"></span>
+            <button type="button" id="send" title="Send (Enter)">↑</button>
+          </div>
+          <div id="promptfoot">
+            <span id="input-hint">Text always gets a reply</span>
+            <span id="policy-chip"></span>
+          </div>
         </div>
-        <div id="banner" class="status">connecting…</div>
-      </div>
+      </main>
 
       <aside id="sidebar">
-        <div id="panel-clock">
-          <span class="brand-t">T</span><span class="brand-chevron">»</span>
-        </div>
-
-        <div class="panel-row">
-          <label class="panel-label" for="response-policy"
-            >Taga agent responds to:</label
-          >
-          <select id="response-policy">
-            <option value="audio">Audio</option>
-            <option value="both">Voice + Audio</option>
-            <option value="voice">Voice</option>
-            <option value="quiet">Stay silent</option>
-          </select>
-        </div>
-
-        <hr class="panel-rule" />
-        <div class="panel-head">AUDIO</div>
-        <div class="panel-row">
-          <div class="channel-name">
-            <span id="mic-dot" class="dot dot-mic">○</span>
-            <span class="channel-mic">Microphone</span>
+        <section class="panel">
+          <h2 class="panel-head">Taga responds to</h2>
+          <div class="field">
+            <div class="select">
+              <select id="response-policy" aria-label="Taga responds to">
+                <option value="audio">Audio</option>
+                <option value="both">Voice + Audio</option>
+                <option value="voice">Voice</option>
+                <option value="quiet">Stay silent</option>
+              </select>
+            </div>
           </div>
-          <select id="microphone"></select>
-          <label class="mute-box"
-            ><input id="mic-mute" type="checkbox" /><span>mute</span></label
-          >
-          <div class="eff" id="microphone-effective"></div>
-        </div>
-        <div class="panel-row">
-          <div class="channel-name">
-            <span id="audio-dot" class="dot dot-audio">○</span>
-            <span class="channel-audio">Audio Stream</span>
+        </section>
+
+        <section class="panel">
+          <h2 class="panel-head">Audio</h2>
+          <div class="field">
+            <div class="field-head">
+              <span class="dot dot-mic" id="mic-dot"></span>
+              <label class="field-label" for="microphone">Microphone</label>
+            </div>
+            <div class="select">
+              <select id="microphone"></select>
+            </div>
+            <div class="field-foot">
+              <span class="eff" id="microphone-effective"></span>
+              <label class="switch"
+                ><input id="mic-mute" type="checkbox" /><span class="track"></span
+                ><span class="switch-label">mute</span></label
+              >
+            </div>
           </div>
-          <select id="audio-stream"></select>
-          <label class="mute-box"
-            ><input id="audio-mute" type="checkbox" /><span>mute</span></label
-          >
-          <div class="eff" id="audio-effective"></div>
-        </div>
-        <div id="silence-row">
-          <label id="silence-label" for="turn-silence">Silence Turn</label>
-          <input id="turn-silence" type="number" min="0" step="0.5" />
-          <span id="silence-unit">sec</span>
-        </div>
+          <div class="field">
+            <div class="field-head">
+              <span class="dot dot-audio" id="audio-dot"></span>
+              <label class="field-label" for="audio-stream">Audio stream</label>
+            </div>
+            <div class="select">
+              <select id="audio-stream"></select>
+            </div>
+            <div class="field-foot">
+              <span class="eff" id="audio-effective"></span>
+              <label class="switch"
+                ><input id="audio-mute" type="checkbox" /><span class="track"></span
+                ><span class="switch-label">mute</span></label
+              >
+            </div>
+          </div>
+          <div class="field field-inline">
+            <label class="field-label" for="turn-silence">Silence turn</label>
+            <span class="stepper">
+              <input id="turn-silence" type="number" min="0" step="0.5" />
+              <span class="unit">sec</span>
+            </span>
+          </div>
+        </section>
 
-        <hr class="panel-rule" />
-        <div class="panel-head">CODEX</div>
-        <div class="panel-row">
-          <input
-            id="codex-model"
-            type="text"
-            placeholder="model id"
-            aria-label="Codex model"
-          />
-        </div>
-        <div class="panel-row">
-          <div class="panel-label">reasoning effort</div>
-          <input
-            id="codex-reasoning"
-            type="text"
-            placeholder="effort"
-            aria-label="Reasoning effort"
-          />
-        </div>
+        <section class="panel">
+          <h2 class="panel-head">Model</h2>
+          <div class="field">
+            <input
+              id="codex-model"
+              type="text"
+              placeholder="model id"
+              aria-label="Codex model"
+            />
+          </div>
+          <div class="field">
+            <label class="field-label" for="codex-reasoning">Reasoning effort</label>
+            <input
+              id="codex-reasoning"
+              type="text"
+              placeholder="effort"
+              aria-label="Reasoning effort"
+            />
+          </div>
+        </section>
 
-        <hr class="panel-rule" />
-        <div class="panel-head">TTS QUEUE</div>
-        <div class="panel-row">
-          <div class="panel-label">speech engine</div>
-          <select id="tts-provider">
-            <option value="piper">Piper (local)</option>
-            <option value="edge">Edge (cloud)</option>
-          </select>
-        </div>
-        <div class="kv">
-          <span class="kv-key">voice reply</span>
-          <label class="mute-box kv-value"
-            ><input id="tts-enabled" type="checkbox" /><span id="tts-state"
-              >off</span
-            ></label
-          >
-        </div>
+        <section class="panel">
+          <h2 class="panel-head">Speech</h2>
+          <div class="field">
+            <label class="field-label" for="tts-provider">Engine</label>
+            <div class="select">
+              <select id="tts-provider">
+                <option value="piper">Piper (local)</option>
+                <option value="edge">Edge (cloud)</option>
+              </select>
+            </div>
+          </div>
+          <div class="field field-inline">
+            <span class="field-label">Voice reply</span>
+            <label class="switch"
+              ><input id="tts-enabled" type="checkbox" /><span class="track"></span
+              ><span class="switch-label" id="tts-state">off</span></label
+            >
+          </div>
+        </section>
 
-        <hr class="panel-rule" />
-        <div class="panel-head">SESSION</div>
-        <div class="actions">
-          <button type="button" id="interrupt">Interrupt</button>
-          <button type="button" id="end-turn">End voice turn</button>
-          <button type="button" id="new-session">New session</button>
-          <button type="button" id="save-transcript">Save transcript</button>
-        </div>
-        <p class="note">
-          Compose is labelled <strong>Agent</strong> under today’s socket policy
-          (Electron peers are <code>ActorKind.AGENT</code>). There is no Quit control;
-          the TUI owns process lifecycle.
-        </p>
+        <section class="panel">
+          <h2 class="panel-head">Session</h2>
+          <div class="actions">
+            <button type="button" id="interrupt">Interrupt</button>
+            <button type="button" id="end-turn">End voice turn</button>
+            <button type="button" id="new-session">New session</button>
+            <button type="button" id="save-transcript">Save transcript</button>
+          </div>
+          <p class="note">
+            Messages sent here arrive as <strong>Agent</strong> — Electron peers are
+            <code>ActorKind.AGENT</code>. There is no Quit; the TUI owns process
+            lifecycle.
+          </p>
+        </section>
       </aside>
     </div>
     <script type="module" src="./app.js"></script>
