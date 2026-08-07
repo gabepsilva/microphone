@@ -13,6 +13,10 @@ mutants/
 dist/
 *.egg-info/
 
+# Electron client (Bun installs + tsc output)
+electron/node_modules/
+electron/dist/
+
 # Generated audio and transcription output
 virtual-mic-*.mp3
 virtual-mic-*.wav

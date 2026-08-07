@@ -273,8 +273,8 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "required group omitted from the local verify target",
             (
                 "makefile",
+                "verify: verify-quick verify-coverage verify-mutation verify-electron",
                 "verify: verify-quick verify-coverage verify-mutation",
-                "verify: verify-quick verify-coverage",
             ),
         ),
         (
@@ -301,16 +301,16 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "quality lane omitted from the protected aggregator",
             (
                 "workflow",
+                "needs: [quick, coverage, mutation, electron, security-static]",
                 "needs: [quick, coverage, mutation, security-static]",
-                "needs: [quick, coverage, security-static]",
             ),
         ),
         (
             "aggregator with no parseable needs list",
             (
                 "workflow",
-                "needs: [quick, coverage, mutation, security-static]",
-                "depends-on: [quick, coverage, mutation, security-static]",
+                "needs: [quick, coverage, mutation, electron, security-static]",
+                "depends-on: [quick, coverage, mutation, electron, security-static]",
             ),
         ),
         (
@@ -321,7 +321,7 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "aggregator that does not positively require success",
             (
                 "workflow",
-                'test "$LANE_RESULTS" = "success success success success"',
+                'test "$LANE_RESULTS" = "success success success success success"',
                 'test "$LANE_RESULTS" != "failure"',
             ),
         ),

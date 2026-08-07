@@ -19,9 +19,9 @@ this file only carries what no tool can check.
 - For any change presented as a bug fix, run
   `make verify-regression TEST=<selection>`. A regression test that passes
   without the fix is not evidence.
-- A new or changed gate needs a planted violation in
-  `tests/test_quality_gates.py` proving it rejects what it claims to reject.
-  A gate is not verified by observing that it passes.
+- A new or changed gate needs a planted violation proving it rejects what it
+  claims to reject — in `tests/test_quality_gates.py`, or in `electron/tests/`
+  for gates under `VERIFY_ELECTRON`. Observing that a gate passes is not proof.
 - Fake adapters — audio, PipeWire, subprocess, Codex, TTS — never the unit
   under test. A test that patches its own subject asserts on the patch.
 - Do not add `# noqa`, `# type: ignore`, or `# nosec` without a rule ID, a

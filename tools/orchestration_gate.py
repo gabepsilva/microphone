@@ -28,9 +28,15 @@ GROUPS = {
     "verify-quick": "VERIFY_QUICK",
     "verify-coverage": "VERIFY_COVERAGE",
     "verify-mutation": "VERIFY_MUTATION",
+    "verify-electron": "VERIFY_ELECTRON",
     "verify-security": "VERIFY_SECURITY",
 }
-VERIFY_GROUPS = ("verify-quick", "verify-coverage", "verify-mutation")
+VERIFY_GROUPS = (
+    "verify-quick",
+    "verify-coverage",
+    "verify-mutation",
+    "verify-electron",
+)
 HOSTED_GROUPS = (*VERIFY_GROUPS, "verify-security")
 
 REQUIRED_TARGETS = {
@@ -49,6 +55,12 @@ REQUIRED_TARGETS = {
     },
     "VERIFY_COVERAGE": {"test-coverage"},
     "VERIFY_MUTATION": {"mutation"},
+    "VERIFY_ELECTRON": {
+        "electron-typecheck",
+        "electron-lint",
+        "electron-format-check",
+        "electron-test",
+    },
     "VERIFY_SECURITY": {"security-static"},
 }
 
