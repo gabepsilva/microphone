@@ -721,7 +721,12 @@ def microphone_presence(mic_activity, audio_activity, tts):
 def attach_conversation_hooks(tui, conversation, tts, attachments):
     """Point the interface's first-slice controls at the controller."""
     actor = local_user("tui")
-    controller = Controller(app_state_from_session(tui.state))
+    # Adopt the TUI's transcript store so save/wire and EventLog share one lock.
+    controller = Controller(
+        app_state_from_session(tui.state),
+        transcript=tui.transcript,
+    )
+    controller.transcript.start_coalesce_pump()
     bind_first_slice(
         controller, conversation=conversation, tts=tts, attachments=attachments
     )
@@ -934,7 +939,7 @@ def main():
     )
     bind_session_transcript_slice(
         controller,
-        (conversation, submitter, attachments, tui),
+        (conversation, submitter, attachments, controller.transcript),
     )
 
     # Built before the listeners because each one reads the other's tap: the
@@ -1011,6 +1016,7 @@ def run_attached_session(controller, tui, conversation, microphone, audio) -> No
         pump.stop()
         if server is not None:
             server.stop()
+        controller.close()
 
 
 def run_entrypoint():

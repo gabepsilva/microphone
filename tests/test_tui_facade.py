@@ -95,6 +95,48 @@ def test_an_accepted_turn_is_recorded_after_echo_filtering(tui) -> None:
     assert entry_texts(facade) == ["a real question"]
 
 
+def test_transcript_save_view_excludes_provisional_rows(tui) -> None:
+    """F5 / #102: export matches the recorded view, not every painted row.
+
+    Before the store owned save, ``transcript_entries`` returned ``app.entries``
+    including commits still awaiting ``finish_turn``. A save in that window
+    exported speech the session file would never contain on echo reject.
+    """
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.commit(tui.VOICE, "maybe echo")
+        await pilot.pause()
+        assert entry_texts(facade) == ["maybe echo"]
+        assert facade.transcript_entries() == []
+        facade.finish_turn(tui.VOICE, accepted=True)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert [entry.text for entry in facade.transcript_entries()] == ["maybe echo"]
+
+
+def test_controller_adopts_tui_store_and_publishes_accept(tui) -> None:
+    from tagalong.control import Controller
+
+    facade = tui.VoiceCodexTUI()
+    controller = Controller(transcript=facade.transcript)
+    _snapshot, subscription = controller.subscribe()
+
+    async def body(pilot):
+        facade.commit(tui.VOICE, "hi")
+        await pilot.pause()
+        assert [event.name for event in subscription.drain()] == []
+        facade.finish_turn(tui.VOICE, accepted=True)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    names = [event.name for event in subscription.drain()]
+    assert names == ["transcript.entry_added"]
+
+
 def test_a_rejected_echo_is_removed_instead_of_recorded(tui) -> None:
     recorded: list = []
     facade = tui.VoiceCodexTUI(on_entry=recorded.append)

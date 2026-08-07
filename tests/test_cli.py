@@ -21,6 +21,7 @@ import pytest
 
 from tagalong import cli
 from tagalong.catalog import CodexModelOption
+from tagalong.control.transcript import TranscriptStore
 from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator, UserTextMessage
 from tagalong.tui import SessionState
 
@@ -65,9 +66,10 @@ class FakeTUI:
         self.closed_speakers: list[str] = []
         self.app = SimpleNamespace()
         self._call: object | None = None
+        self.transcript = TranscriptStore()
 
     def transcript_entries(self):
-        return []
+        return list(self.transcript.transcript_entries())
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
@@ -1165,6 +1167,11 @@ def test_run_attached_session_stops_the_socket_when_the_tui_exits(
     server = seen["server"]
     assert isinstance(server, LocalServer)
     assert not server.path.exists()
+    # Session teardown stops the coalesce pump (Controller.close).
+    assert (
+        controller.transcript._pump_thread is None
+        or not controller.transcript._pump_thread.is_alive()
+    )
 
 
 def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
