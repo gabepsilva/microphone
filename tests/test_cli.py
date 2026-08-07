@@ -932,6 +932,8 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
     assert tui.hooks.on_save is not None
     assert tui.hooks.on_attachment_upload is not None
     assert tui.hooks.on_quit is not None
+    # Non-headless quit_cleanup stops capture channels only (Textual exits itself).
+    assert tui.hooks.on_quit() is True
 
 
 def test_main_finishes_transcript_recording_after_the_session(
@@ -1117,6 +1119,54 @@ def test_attach_remote_access_survives_a_socket_bind_failure(
         assert server is None
     finally:
         pump.stop()
+
+
+def test_main_headless_builds_headless_host_not_tui(wiring, monkeypatch) -> None:
+    from tagalong.headless import HeadlessSession
+
+    built = wiring
+    hosts: list[object] = []
+    original = cli.build_session_host
+
+    def tracking(*args, **kwargs):
+        host = original(*args, **kwargs)
+        hosts.append(host)
+        return host
+
+    config = str(cli.sys.argv[cli.sys.argv.index("--config") + 1])
+    monkeypatch.setattr(cli.sys, "argv", ["tagalong", "--config", config, "--headless"])
+    monkeypatch.setattr(cli, "build_session_host", tracking)
+    monkeypatch.setattr(HeadlessSession, "run", lambda self: None)
+
+    cli.main()
+
+    assert len(hosts) == 1
+    assert isinstance(hosts[0], HeadlessSession)
+    assert "controller" in built
+    assert built["session"][0] is hosts[0]
+    # quit_cleanup must unblock HeadlessSession.run (Textual exits itself).
+    host = hosts[0]
+    assert host.hooks.on_quit is not None
+    assert host.hooks.on_quit() is True
+    assert host._stop.is_set()
+
+
+def test_main_headless_still_acquires_the_instance_lock(wiring, monkeypatch) -> None:
+    from tagalong.headless import HeadlessSession
+
+    assert wiring is not None
+    acquired: list[bool] = []
+
+    def lock(*_a, **_k):
+        acquired.append(True)
+
+    config = str(cli.sys.argv[cli.sys.argv.index("--config") + 1])
+    monkeypatch.setattr(cli.sys, "argv", ["tagalong", "--config", config, "--headless"])
+    monkeypatch.setattr(cli, "acquire_single_instance_lock", lock)
+    monkeypatch.setattr(HeadlessSession, "run", lambda self: None)
+
+    cli.main()
+    assert acquired == [True]
 
 
 def test_run_attached_session_stops_the_socket_when_the_tui_exits(

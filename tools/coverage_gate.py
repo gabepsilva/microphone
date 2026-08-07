@@ -77,6 +77,8 @@ FLOORS = {
     "tagalong/control/outcomes.py": 100.0,
     "tagalong/control/policy.py": 100.0,
     "tagalong/control/state.py": 100.0,
+    # Recorded 2026-08-07 with headless start mode (#102 D9).
+    "tagalong/headless.py": 97.0,
     "tagalong/domain.py": 98.0,
     "tagalong/listener.py": 100.0,
     # Recorded 2026-07-27 with the speech-provider split. Each measured the

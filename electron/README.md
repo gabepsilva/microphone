@@ -56,10 +56,11 @@ and bare `call("dispatch", ...)` outside `ipc.ts`.
 Prerequisites: PortAudio + a working mic (for device pickers), PipeWire (for
 far-end applications), and Codex credentials as for a normal TUI session.
 
-1. **Start the session**
+1. **Start the session** (TUI, or headless so this client is the only UI)
 
    ```bash
    uv run tagalong
+   # or: uv run tagalong --headless
    ```
 
    Leave the TUI running.

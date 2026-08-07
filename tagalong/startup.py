@@ -153,6 +153,15 @@ def build_parser():
         "--tts-voice",
         help="Voice name; defaults to the chosen provider's own default voice",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Run the session without Textual; keep the Unix socket open so "
+            "Electron (or another client) can attach. Exclusive flock is "
+            "unchanged — this is a start mode, not a detachable daemon (#102)."
+        ),
+    )
     return parser
 
 

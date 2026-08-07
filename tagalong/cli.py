@@ -757,22 +757,22 @@ def start_capture_channels(controller, tui, actor, microphone, audio_setup):
     return applications
 
 
-def attach_remote_access(controller, tui):
-    """Subscribe the TUI to controller events and open the local socket.
+def attach_remote_access(controller, host):
+    """Subscribe *host* to controller events and open the local socket.
 
-    The pump is what keeps the sidebar honest when a second writer changes
-    canonical state. The socket is how Electron and MCP become that writer.
-    A missing ``XDG_RUNTIME_DIR`` leaves the TUI session running without a
-    socket rather than falling back to ``/tmp``.
+    The pump keeps SessionState honest when a second writer changes canonical
+    state. The socket is how Electron and MCP become that writer. A missing
+    ``XDG_RUNTIME_DIR`` leaves the session running without a socket rather
+    than falling back to ``/tmp``.
     """
     from .tui import apply_state_fragment
 
     _snapshot, subscription = controller.subscribe()
 
     def apply(changed):
-        apply_state_fragment(tui.state, changed)
-        refresh = getattr(getattr(tui, "app", None), "refresh_sidebar", None)
-        call = getattr(tui, "_call", None)
+        apply_state_fragment(host.state, changed)
+        refresh = getattr(getattr(host, "app", None), "refresh_sidebar", None)
+        call = getattr(host, "_call", None)
         if refresh is not None and call is not None:
             call(refresh)
 
@@ -852,6 +852,151 @@ def finish_recorded_session(tui, recorder, applications) -> None:
     applications.stop()
 
 
+def build_session_host(args, selection, codex_models, countdown, tts):
+    """Construct the Textual or headless host for this start mode (#102 D9)."""
+    state = build_session_state(args, selection, codex_models)
+    if args.headless:
+        from .headless import HeadlessSession
+
+        return HeadlessSession(state, countdown=countdown, speech=tts)
+
+    from .tui import VoiceCodexTUI
+
+    return VoiceCodexTUI(state, countdown=countdown, speech=tts)
+
+
+@dataclass(frozen=True)
+class LiveSessionParts:
+    """Resolved startup pieces ``run_live_session`` needs after the lock."""
+
+    config: StartupConfigFile
+    codex_models: object
+    model_path: str
+    model_arch: object
+    # SpeakerGate structurally serves PolicyPort; param name differs (`policy_name`).
+    gate: Any
+
+
+def run_live_session(args, selection, parts: LiveSessionParts) -> None:
+    """Wire collaborators onto a host and run until the host exits (#102 D9)."""
+    from .attachments import DEFAULT_IMAGE_CLIPBOARD
+    from .tui import PromptPorts
+
+    turn_silence = TurnSilence(args.turn_silence)
+    countdown = TurnSilenceClock(turn_silence)
+    tts = build_speech(selection, args)
+    host = build_session_host(args, selection, parts.codex_models, countdown, tts)
+    recorder = TranscriptRecorder()
+    attachments = AttachmentRegistry(store=AttachmentStore())
+    prompt_ports = PromptPorts(
+        clipboard=DEFAULT_IMAGE_CLIPBOARD,
+        store=attachments.store,
+        attachments=attachments,
+    )
+    prompt_host = cast(Any, getattr(host, "app", None) or host)
+    prompt_host.prompt_ports = prompt_ports
+    conversation = CodexConversation(
+        CodexSettings(
+            sandbox=args.sandbox,
+            model=args.codex_model,
+            reasoning_effort=args.codex_reasoning,
+            service_tier="fast" if args.codex_fast else None,
+            prefire=args.codex_prefire,
+        ),
+        host,
+        tts,
+    )
+
+    controller, actor = attach_conversation_hooks(host, conversation, tts, attachments)
+    host.bind_partial_publisher(controller.set_partial)
+    bind_settings_slice(
+        controller,
+        (conversation, tts, parts.gate, turn_silence),
+        persist=parts.config.record,
+    )
+    install_settings_hooks(host, controller, actor)
+    wire_transcript_recording(host, conversation, recorder, controller, actor)
+    submitter = TranscriptSubmitter(
+        conversation,
+        parts.gate,
+        tts,
+        prefire_plan=(
+            PrefirePlan(conversation.latency) if args.codex_prefire else None
+        ),
+    )
+    bind_session_transcript_slice(
+        controller,
+        (conversation, submitter, attachments, controller.transcript),
+    )
+
+    mic_activity, audio_activity = sound_taps(host)
+    host.set_codex(thread=conversation.thread.id)
+    channel_parts = ChannelParts(
+        submitter=submitter,
+        display=host,
+        confidence=args.confidence,
+        turn_silence=turn_silence,
+        countdown=countdown,
+        model_path=parts.model_path,
+        model_arch=parts.model_arch,
+    )
+    initial_devices = (
+        [(selection.device_index, selection.device)]
+        if selection.device_index is not None and selection.device is not None
+        else []
+    )
+    microphone = MicrophoneChannel(
+        host,
+        partial(
+            open_microphone_channel,
+            channel_parts,
+            mic_activity,
+            microphone_presence(mic_activity, audio_activity, tts),
+        ),
+        partial(close_microphone_channel, channel_parts, mic_activity),
+        devices=initial_devices,
+    )
+    them = AudioChannel(
+        host,
+        parts.gate,
+        partial(open_audio_channel, channel_parts, audio_activity),
+        partial(close_audio_channel, channel_parts, audio_activity),
+    )
+    applications = start_capture_channels(
+        controller,
+        host,
+        actor,
+        microphone,
+        (
+            them,
+            parts.config,
+            selection.device["name"]
+            if selection.device is not None
+            else args.microphone,
+            selection.audio_stream,
+        ),
+    )
+
+    def quit_cleanup() -> None:
+        applications.stop()
+        # Textual exits itself after on_quit returns; headless needs an explicit
+        # unblock of ``HeadlessSession.run``.
+        if args.headless:
+            host.stop()
+
+    install_session_transcript_hooks(
+        host, controller, actor, on_quit_cleanup=quit_cleanup
+    )
+    if args.headless:
+        print(
+            "Headless session running — attach Electron (or another socket client). "
+            "SIGINT/SIGTERM stops the process.",
+            file=sys.stderr,
+        )
+    run_attached_session(controller, host, conversation, microphone, them)
+    finish_recorded_session(host, recorder, applications)
+
+
 def main():
     parser, args = parse_startup_args()
     # Parsing comes first so `--help` and a rejected argument still answer while
@@ -864,7 +1009,6 @@ def main():
     codex_models = probe_codex_models()
     validate_codex_reasoning(parser, args, codex_models)
     selection = resolve_startup_selection(args)
-    audio_stream = selection.audio_stream
 
     settings = startup_settings(selection, args)
     if args.save_config is not None:
@@ -884,130 +1028,25 @@ def main():
         wanted_model_arch=model_arch,
     )
 
-    gate = speaker_gate(selection)
-
-    from .attachments import DEFAULT_IMAGE_CLIPBOARD
-    from .tui import PromptPorts, VoiceCodexTUI
-
-    turn_silence = TurnSilence(args.turn_silence)
-    countdown = TurnSilenceClock(turn_silence)
-    tts = build_speech(selection, args)
-    tui = VoiceCodexTUI(
-        build_session_state(args, selection, codex_models),
-        countdown=countdown,
-        speech=tts,
-    )
-    recorder = TranscriptRecorder()
-    transcript_display = tui
-    attachments = AttachmentRegistry(store=AttachmentStore())
-    prompt_ports = PromptPorts(
-        clipboard=DEFAULT_IMAGE_CLIPBOARD,
-        store=attachments.store,
-        attachments=attachments,
-    )
-    prompt_host = cast(Any, getattr(tui, "app", None) or tui)
-    prompt_host.prompt_ports = prompt_ports
-    conversation = CodexConversation(
-        CodexSettings(
-            sandbox=args.sandbox,
-            model=args.codex_model,
-            reasoning_effort=args.codex_reasoning,
-            service_tier="fast" if args.codex_fast else None,
-            prefire=args.codex_prefire,
-        ),
-        transcript_display,
-        tts,
-    )
-
-    controller, actor = attach_conversation_hooks(tui, conversation, tts, attachments)
-    tui.bind_partial_publisher(controller.set_partial)
-    bind_settings_slice(
-        controller,
-        (conversation, tts, gate, turn_silence),
-        persist=config.record,
-    )
-    install_settings_hooks(tui, controller, actor)
-    wire_transcript_recording(tui, conversation, recorder, controller, actor)
-    # The plan reads the conversation's own measured time-to-first-word, so
-    # the moment a turn is guessed at tracks what Taga is actually doing.
-    submitter = TranscriptSubmitter(
-        conversation,
-        gate,
-        tts,
-        prefire_plan=(
-            PrefirePlan(conversation.latency) if args.codex_prefire else None
+    run_live_session(
+        args,
+        selection,
+        LiveSessionParts(
+            config=config,
+            codex_models=codex_models,
+            model_path=model_path,
+            model_arch=downloaded_arch,
+            gate=speaker_gate(selection),
         ),
     )
-    bind_session_transcript_slice(
-        controller,
-        (conversation, submitter, attachments, controller.transcript),
-    )
-
-    # Built before the listeners because each one reads the other's tap: the
-    # microphone has to know when the far end is playing to tell its voice
-    # from the person in the room.
-    mic_activity, audio_activity = sound_taps(tui)
-
-    tui.set_codex(thread=conversation.thread.id)
-
-    parts = ChannelParts(
-        submitter=submitter,
-        display=transcript_display,
-        confidence=args.confidence,
-        turn_silence=turn_silence,
-        countdown=countdown,
-        model_path=model_path,
-        model_arch=downloaded_arch,
-    )
-    initial_devices = (
-        [(selection.device_index, selection.device)]
-        if selection.device_index is not None and selection.device is not None
-        else []
-    )
-    microphone = MicrophoneChannel(
-        tui,
-        partial(
-            open_microphone_channel,
-            parts,
-            mic_activity,
-            microphone_presence(mic_activity, audio_activity, tts),
-        ),
-        partial(close_microphone_channel, parts, mic_activity),
-        devices=initial_devices,
-    )
-    them = AudioChannel(
-        tui,
-        gate,
-        partial(open_audio_channel, parts, audio_activity),
-        partial(close_audio_channel, parts, audio_activity),
-    )
-    applications = start_capture_channels(
-        controller,
-        tui,
-        actor,
-        microphone,
-        (
-            them,
-            config,
-            selection.device["name"]
-            if selection.device is not None
-            else args.microphone,
-            audio_stream,
-        ),
-    )
-    install_session_transcript_hooks(
-        tui, controller, actor, on_quit_cleanup=applications.stop
-    )
-    run_attached_session(controller, tui, conversation, microphone, them)
-    finish_recorded_session(tui, recorder, applications)
 
 
-def run_attached_session(controller, tui, conversation, microphone, audio) -> None:
-    """Run the TUI with event subscription and the local socket attached."""
-    pump, server = attach_remote_access(controller, tui)
+def run_attached_session(controller, host, conversation, microphone, audio) -> None:
+    """Run the host with event subscription and the local socket attached."""
+    pump, server = attach_remote_access(controller, host)
     try:
         run_session(
-            tui,
+            host,
             [],
             conversation,
             microphone=microphone,
