@@ -150,6 +150,28 @@ class PiperSentenceTTS(QueuedSentenceTTS):
         finally:
             self.model_ready.set()
 
+    def wait_ready(self, timeout: float | None = None) -> None:
+        """Block until the model is loaded, or raise the load failure.
+
+        A switch must not retire the previous engine until this returns: a
+        failed download otherwise installs a mute that still advertises the
+        new voice. Speaking continues to use :meth:`_await_model`, which
+        prints once and clears the error for the rest of the session.
+        """
+        budget = self.LOAD_TIMEOUT_SECONDS if timeout is None else timeout
+        if not self.model_ready.wait(timeout=budget):
+            raise RuntimeError(
+                f"Piper voice {self.voice!r} did not become ready within {budget}s"
+            )
+        if self.model is not None:
+            return
+        error = self.model_error
+        if error is not None:
+            raise RuntimeError(
+                f"Piper voice {self.voice!r} failed to load: {error}"
+            ) from error
+        raise RuntimeError(f"Piper voice {self.voice!r} failed to load")
+
     def _await_model(self):
         """Return the loaded voice, or None once the failure has been reported.
 

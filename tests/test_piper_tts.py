@@ -552,3 +552,79 @@ def test_speech_spans_the_gap_between_two_sentences(monkeypatch, playback) -> No
         assert piper.is_speaking() is True
     finally:
         piper.close()
+
+
+def test_wait_ready_returns_once_the_model_has_loaded(piper) -> None:
+    piper.wait_ready(timeout=WAIT_SECONDS)
+    assert piper.model is not None
+
+
+def test_wait_ready_raises_when_the_model_fails_to_load(monkeypatch, playback) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
+    monkeypatch.setitem(
+        sys.modules,
+        "piper",
+        SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: None)),
+    )
+    monkeypatch.setattr(
+        "tagalong.piper_tts.ensure_model",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("no model")),
+    )
+    engine = PiperSentenceTTS("en_US-lessac-medium")
+    try:
+        with pytest.raises(RuntimeError, match="failed to load"):
+            engine.wait_ready(timeout=WAIT_SECONDS)
+        assert engine.model_error is not None
+    finally:
+        engine.close()
+
+
+def test_wait_ready_times_out_when_the_loader_never_finishes(
+    monkeypatch, playback
+) -> None:
+    release = threading.Event()
+
+    def hang_load(_self):
+        release.wait(WAIT_SECONDS)
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
+    monkeypatch.setitem(
+        sys.modules,
+        "piper",
+        SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: None)),
+    )
+    monkeypatch.setattr(PiperSentenceTTS, "_load_model", hang_load)
+    engine = PiperSentenceTTS("en_US-lessac-medium")
+    try:
+        with pytest.raises(RuntimeError, match="did not become ready"):
+            engine.wait_ready(timeout=0.05)
+    finally:
+        release.set()
+        engine.close()
+
+
+def test_wait_ready_raises_when_ready_without_a_model_or_error(
+    monkeypatch, playback
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", playback.popen)
+    monkeypatch.setitem(
+        sys.modules,
+        "piper",
+        SimpleNamespace(PiperVoice=SimpleNamespace(load=lambda _path: None)),
+    )
+
+    def clear_load(self):
+        self.model = None
+        self.model_error = None
+        self.model_ready.set()
+
+    monkeypatch.setattr(PiperSentenceTTS, "_load_model", clear_load)
+    engine = PiperSentenceTTS("en_US-lessac-medium")
+    try:
+        with pytest.raises(RuntimeError, match="failed to load"):
+            engine.wait_ready(timeout=WAIT_SECONDS)
+    finally:
+        engine.close()

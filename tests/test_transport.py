@@ -262,6 +262,47 @@ def test_codex_catalog_answers_empty_when_the_cli_offers_nothing(
         server.stop()
 
 
+def test_speech_catalog_offers_curated_voices_with_download_flags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        transport,
+        "piper_speech_catalog",
+        lambda: [
+            {
+                "id": "en_US-lessac-medium",
+                "label": "Lessac medium",
+                "downloaded": True,
+            },
+            {
+                "id": "en_US-amy-medium",
+                "label": "Amy medium",
+                "downloaded": False,
+            },
+        ],
+    )
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        assert client.call("speech.catalog") == {
+            "voices": [
+                {
+                    "id": "en_US-lessac-medium",
+                    "label": "Lessac medium",
+                    "downloaded": True,
+                },
+                {
+                    "id": "en_US-amy-medium",
+                    "label": "Amy medium",
+                    "downloaded": False,
+                },
+            ]
+        }
+    finally:
+        client.close()
+        server.stop()
+
+
 def test_subscribe_then_poll_sees_state_changed(tmp_path: Path) -> None:
     _, server, client = wired(tmp_path)
     try:

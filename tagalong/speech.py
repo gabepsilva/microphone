@@ -65,12 +65,24 @@ class SpeechEngine(Protocol):
 
     def is_speaking(self) -> bool: ...
 
+    def wait_ready(self, timeout: float | None = None) -> None: ...
+
     def close(self) -> None: ...
 
 
 def default_voice(provider: str) -> str:
     """Name the voice a provider uses when the session did not choose one."""
     return DEFAULT_VOICES[provider]
+
+
+def _engine_voice(engine, provider, voice=None):
+    """Prefer the voice the engine records; fall back to what the caller asked."""
+    recorded = getattr(engine, "voice", None)
+    if recorded is not None:
+        return recorded
+    if voice is not None:
+        return voice
+    return default_voice(provider)
 
 
 def build_speech_engine(provider, voice=None, output_sink=None) -> SpeechEngine:
@@ -122,6 +134,11 @@ class SwitchableSpeech:
         self.lock = threading.Lock()
         self.closed = False
         self.switch = None
+        # The voice the installed engine was built with. Provider switches and
+        # voice-only switches both update it once the new engine is ready —
+        # never when the thread merely starts — so clients do not advertise a
+        # name that never loaded.
+        self.voice = _engine_voice(engine, provider)
         # Whether replies are spoken belongs to the session, not to whichever
         # engine happens to be installed: a muted session that switches
         # providers is still muted, and a freshly built engine speaks unless
@@ -163,7 +180,7 @@ class SwitchableSpeech:
     def is_speaking(self):
         return self._current().is_speaking()
 
-    def set_provider(self, provider, voice=None):
+    def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
         """Start replacing the engine; report whether the switch was started.
 
         A switch that is already running wins, and a request for the provider
@@ -178,24 +195,52 @@ class SwitchableSpeech:
                 return False
             self.switch = threading.Thread(
                 target=self._switch_to,
-                args=(provider, voice, self.output_sink),
+                args=(provider, voice, self.output_sink, on_applied, on_failed),
                 name="SpeechProviderSwitch",
                 daemon=True,
             )
             self.switch.start()
         return True
 
-    def _switch_to(self, provider, voice, output_sink):
-        """Build the new engine, then retire the old one it replaces."""
+    def set_voice(self, voice, *, on_applied=None, on_failed=None):
+        """Start rebuilding the current provider with a different voice.
+
+        Same-provider voice changes cannot ride on :meth:`set_provider`, which
+        refuses when the provider is unchanged. Failure leaves the prior engine
+        installed; ``on_applied`` / ``on_failed`` fire after readiness settles.
+        """
+        with self.lock:
+            if self.closed or voice == self.voice:
+                return False
+            if self.switch is not None and self.switch.is_alive():
+                return False
+            self.switch = threading.Thread(
+                target=self._switch_to,
+                args=(self.provider, voice, self.output_sink, on_applied, on_failed),
+                name="SpeechVoiceSwitch",
+                daemon=True,
+            )
+            self.switch.start()
+        return True
+
+    def _switch_to(self, provider, voice, output_sink, on_applied=None, on_failed=None):
+        """Build the new engine, wait until it is ready, then retire the old one."""
+        engine = None
         try:
             engine = self.build(provider, voice, output_sink)
+            engine.wait_ready()
         except Exception as error:
+            if engine is not None:
+                engine.close()
             print(
                 f"\nCould not switch speech to {provider}: {error}",
                 file=sys.stderr if self.stream is None else self.stream,
                 flush=True,
             )
+            if on_failed is not None:
+                on_failed(str(error))
             return
+        applied_voice = _engine_voice(engine, provider, voice)
         with self.lock:
             # A session that closed while the model loaded gets no speech: the
             # engine just built is shut down instead of installed, and nothing
@@ -209,10 +254,15 @@ class SwitchableSpeech:
                 if not self.enabled:
                     engine.set_enabled(False)
                 retired, self.engine, self.provider = self.engine, engine, provider
+                self.voice = applied_voice
         if not installing:
             engine.close()
+            if on_failed is not None:
+                on_failed("speech session closed during switch")
             return
         retired.close()
+        if on_applied is not None:
+            on_applied(applied_voice)
 
     def close(self):
         with self.lock:

@@ -38,6 +38,7 @@ class FakeEngine:
         self.interrupts = 0
         self.enabled: list[bool] = []
         self.closed = False
+        self.ready_error: BaseException | None = None
 
     def begin_turn(self):
         self.turns += 1
@@ -57,18 +58,27 @@ class FakeEngine:
     def is_speaking(self):
         return bool(self.spoken)
 
+    def wait_ready(self, timeout=None):
+        del timeout
+        if self.ready_error is not None:
+            raise self.ready_error
+
     def close(self):
         self.closed = True
 
 
-def recording_builder(built=None, block=None):
+def recording_builder(built=None, block=None, ready_error=None):
     """Build fake engines, optionally holding the build open like a slow load."""
     built = [] if built is None else built
 
     def build(provider, voice, output_sink):
         if block is not None:
             block.wait(WAIT_SECONDS)
+        if voice is None:
+            voice = default_voice(provider)
         engine = FakeEngine(provider, voice, output_sink)
+        if ready_error is not None:
+            engine.ready_error = ready_error
         built.append(engine)
         return engine
 
@@ -322,3 +332,119 @@ def test_a_switch_reports_the_new_engine_speech_not_the_old(engines) -> None:
     assert wait_until(lambda: speech.provider == "edge")
     assert len(engines) == 2
     assert speech.is_speaking() is False
+
+
+def test_set_voice_rebuilds_the_same_provider_with_the_new_voice() -> None:
+    speech, built = started("piper")
+
+    assert speech.set_voice("en_US-amy-medium") is True
+    assert wait_until(lambda: speech.voice == "en_US-amy-medium")
+
+    assert speech.provider == "piper"
+    assert [engine.voice for engine in built] == [
+        default_voice("piper"),
+        "en_US-amy-medium",
+    ]
+    assert built[0].closed is True
+    assert speech.engine is built[1]
+
+
+def test_set_voice_rejects_the_voice_already_in_use() -> None:
+    speech, built = started("piper")
+
+    assert speech.set_voice(speech.voice) is False
+    assert len(built) == 1
+    assert built[0].closed is False
+
+
+def test_a_failed_ready_gate_keeps_the_working_engine_and_reports_failure(
+    capsys,
+) -> None:
+    applied: list[str] = []
+    failed: list[str] = []
+    build, built = recording_builder(ready_error=RuntimeError("download failed"))
+    original = FakeEngine("piper", default_voice("piper"))
+    speech = SwitchableSpeech("piper", original, build=build)
+
+    assert (
+        speech.set_voice(
+            "en_US-amy-medium", on_applied=applied.append, on_failed=failed.append
+        )
+        is True
+    )
+
+    assert wait_until(lambda: failed == ["download failed"])
+    assert "Could not switch speech" in capsys.readouterr().err
+    assert applied == []
+    assert speech.voice == default_voice("piper")
+    assert speech.engine is original
+    assert original.closed is False
+    assert built[0].closed is True
+
+
+def test_a_successful_voice_switch_fires_on_applied_after_ready() -> None:
+    applied: list[str] = []
+    speech, _ = started("piper")
+
+    assert speech.set_voice("en_US-ryan-medium", on_applied=applied.append) is True
+    assert wait_until(lambda: applied == ["en_US-ryan-medium"])
+    assert speech.voice == "en_US-ryan-medium"
+
+
+def test_set_provider_updates_the_remembered_voice() -> None:
+    speech, built = started("piper")
+
+    assert speech.set_provider("edge", voice="en-US-JennyNeural") is True
+    assert wait_until(lambda: speech.provider == "edge")
+    assert speech.voice == "en-US-JennyNeural"
+    assert built[1].voice == "en-US-JennyNeural"
+
+
+def test_set_voice_already_running_is_not_joined_by_a_second() -> None:
+    release = threading.Event()
+    build, built = recording_builder(block=release)
+    speech = SwitchableSpeech(DEFAULT_PROVIDER, FakeEngine("piper"), build=build)
+
+    assert speech.set_voice("en_US-amy-medium") is True
+    assert speech.set_voice("en_US-ryan-medium") is False
+
+    release.set()
+    assert wait_until(lambda: speech.voice == "en_US-amy-medium")
+    assert len(built) == 1
+
+
+def test_engine_voice_falls_back_to_the_requested_name_when_unset() -> None:
+    """Builders that omit ``engine.voice`` still install the requested id."""
+
+    def build(provider, voice, output_sink):  # noqa: ARG001 - factory shape
+        return FakeEngine(provider, None, output_sink)
+
+    speech = SwitchableSpeech.start("piper", voice="en_US-joe-medium", build=build)
+    assert speech.set_voice("en_US-amy-medium") is True
+    assert wait_until(lambda: speech.voice == "en_US-amy-medium")
+    assert speech.engine.voice is None
+
+
+def test_closing_during_a_voice_switch_reports_failure() -> None:
+    release = threading.Event()
+    failed: list[str] = []
+    build, built = recording_builder(block=release)
+    original = FakeEngine("piper", default_voice("piper"))
+    speech = SwitchableSpeech(DEFAULT_PROVIDER, original, build=build)
+
+    assert (
+        speech.set_voice(
+            "en_US-amy-medium",
+            on_failed=failed.append,
+        )
+        is True
+    )
+    closing = threading.Thread(target=speech.close, daemon=True)
+    closing.start()
+    release.set()
+    closing.join(timeout=WAIT_SECONDS)
+
+    assert wait_until(lambda: failed == ["speech session closed during switch"])
+    assert wait_until(lambda: len(built) == 1 and built[0].closed is True)
+    assert speech.provider == DEFAULT_PROVIDER
+    assert speech.engine is original
