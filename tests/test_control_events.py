@@ -259,41 +259,38 @@ def test_publish_rate_meter_counts_the_trailing_second() -> None:
     now["t"] = 0.1
     log.publish("b")
     assert log.publishes_last_second == 2
-    # Advance past the window without publishing — the meter prunes on read.
+    # Advance past the window — the meter is read-only; publish prunes.
     now["t"] = 1.2
     assert log.publishes_last_second == 0
     log.publish("c")
     assert log.publishes_last_second == 1
-    # Publish again after another gap so ``publish`` itself prunes the deque.
     now["t"] = 2.5
     log.publish("d")
     assert log.publishes_last_second == 1
 
 
-def test_coalesced_stream_plus_partials_stay_under_publish_tripwire() -> None:
-    """#102 D4: one EventLog while steady-state publish stays ≤ ~50/s.
+def test_coalesced_stream_stays_under_publish_tripwire() -> None:
+    """#102 D4: Q5 coalescing keeps the delta path under the trip-wire.
 
-    Paint flushes at ``STREAM_FLUSH_INTERVAL_SECONDS`` (0.05 → ≤20/s per open
-    row) plus ~8/s capture partials stays well under the trip-wire. Uncoalesced
-    token publishes would blow past it; this pins that Q5 is what holds.
+    Load-bearing half: real ``TranscriptStore`` + flush at
+    ``STREAM_FLUSH_INTERVAL_SECONDS`` (≤20 ``entry_updated``/s per open row).
+    Uncoalesced token publishes would blow past 50/s.
+
+    Partial-rate budget (~capture chunk rate, both channels) is an assumption
+    calibrated against ``capture.py`` blocksize/samplerate, not measured here —
+    each recognizer partial is one ``state.changed`` with no throttle.
     """
     log = EventLog()
     store = TranscriptStore(publish=log.publish)
     entry = Entry(kind="speech", source="Taga", text="", streaming=True)
     store.append(entry)
 
-    # Many token deltas, flushed at the TUI paint cadence (20 Hz).
     flushes_per_second = int(1 / VoiceCodexApp.STREAM_FLUSH_INTERVAL_SECONDS)
     for _ in range(flushes_per_second):
         for _ in range(10):
             store.append_text(entry, "x")
         store.flush_updates()
-    for index in range(8):
-        log.publish(
-            "state.changed",
-            {"partial_source": "Voice", "partial_text": f"p{index}"},
-        )
 
-    # entry_added + 20 entry_updated + 8 partial state.changed ≈ 29.
+    # entry_added + one entry_updated per paint flush.
+    assert log.publishes_last_second == flushes_per_second + 1
     assert log.publishes_last_second <= PUBLISH_RATE_TRIPWIRE_PER_SECOND
-    assert log.publishes_last_second == flushes_per_second + 8 + 1

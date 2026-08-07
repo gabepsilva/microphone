@@ -158,10 +158,11 @@ def test_partials_mirror_onto_controller_app_state(tui) -> None:
     assert changed
     assert changed[-1].payload["partial_text"] == "hello partial"
 
+    # EventPump must not echo partials onto SessionState (TUI is the writer).
     echoed = SessionState()
     apply_state_fragment(echoed, dict(changed[-1].payload))
-    assert echoed.partial_source == tui.VOICE
-    assert echoed.partial_text == "hello partial"
+    assert echoed.partial_source == ""
+    assert echoed.partial_text == ""
 
 
 def test_a_rejected_echo_is_removed_instead_of_recorded(tui) -> None:

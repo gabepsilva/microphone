@@ -270,14 +270,6 @@ def _set_turn_silence(state: Any, value: object) -> None:
     state.turn_silence = float(cast(float, value))
 
 
-def _set_partial_source(state: Any, value: object) -> None:
-    state.partial_source = str(value)
-
-
-def _set_partial_text(state: Any, value: object) -> None:
-    state.partial_text = str(value)
-
-
 _STATE_SETTERS = {
     "tts_enabled": _set_tts_enabled,
     "tts_provider": _set_tts_provider,
@@ -289,8 +281,9 @@ _STATE_SETTERS = {
     "codex_model": _set_codex_model,
     "codex_reasoning": _set_codex_reasoning,
     "turn_silence": _set_turn_silence,
-    "partial_source": _set_partial_source,
-    "partial_text": _set_partial_text,
+    # partial_source / partial_text intentionally absent: the TUI originates
+    # them via set_partial. Echoing through EventPump would race _partial_lock
+    # and could resurrect a cleared live line (#102 / PR #110).
 }
 
 
@@ -2705,6 +2698,10 @@ class VoiceCodexTUI:
         needs them. State always holds the newest text; at most one repaint is
         queued, and it is posted so the recognizer never waits on layout.
         The same values are mirrored onto controller ``AppState`` for the wire.
+
+        Publish runs under ``_partial_lock`` so two capture threads cannot
+        invert AppState relative to SessionState. Lock order on this path is
+        always ``_partial_lock`` then ``Controller._lock`` (via ``set_partial``).
         """
         with self._partial_lock:
             self.state.partial_source = source
@@ -2716,9 +2713,10 @@ class VoiceCodexTUI:
             schedule = not self._partial_pending and self._ready.is_set()
             if schedule:
                 self._partial_pending = True
-        publish = self._publish_partial
-        if publish is not None:
-            publish(source, text)
+            # Inside the lock so publish order matches the SessionState write.
+            publish = self._publish_partial
+            if publish is not None:
+                publish(source, text)
         if schedule:
             self._post(self._flush_partial)
 

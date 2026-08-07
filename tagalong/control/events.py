@@ -187,11 +187,13 @@ class EventLog:
 
     @property
     def publishes_last_second(self) -> int:
-        """How many ``publish`` calls landed in the trailing one-second window."""
+        """How many ``publish`` calls landed in the trailing one-second window.
+
+        Read-only: does not prune. ``publish`` is the sole mutator of the
+        deque, under the controller lock that serialises EventLog writes.
+        """
         now = self._mono()
-        while self._publish_times and now - self._publish_times[0] >= 1.0:
-            self._publish_times.popleft()
-        return len(self._publish_times)
+        return sum(1 for stamp in self._publish_times if now - stamp < 1.0)
 
     def publish(self, name: str, payload: Mapping[str, object] | None = None) -> Event:
         """Number an event and hand it to every open subscriber."""
