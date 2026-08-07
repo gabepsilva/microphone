@@ -237,7 +237,7 @@ def _set_tts_provider(state: Any, value: object) -> None:
     ``edge_voice`` fragments that travel with the same state.changed payload
     (#124 D13) — this setter does not invent a default.
     """
-    state.tts_provider = str(value)
+    state.tts_provider = _selection_desired(value) or DEFAULT_PROVIDER
 
 
 def _set_tts_voice(state: Any, value: object) -> None:

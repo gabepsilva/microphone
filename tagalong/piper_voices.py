@@ -11,10 +11,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from .piper_tts import DEFAULT_MODEL_HOME, model_paths
-
 # Locked shortlist for #124 — every id exists in upstream voices.json with
 # ``num_speakers = 1`` (validated in design round 3 / D10).
+# Kept free of ``piper_tts`` / numpy so ``control.actions`` (and Edge-only
+# sessions) can import the id tuple without loading the local synthesis stack.
 PIPER_VOICE_IDS: tuple[str, ...] = (
     "en_US-lessac-medium",
     "en_US-lessac-low",
@@ -39,16 +39,21 @@ def piper_voice_label(voice_id: str) -> str:
 def speech_catalog(
     *,
     voice_ids: Sequence[str] = PIPER_VOICE_IDS,
-    home: str | Path = DEFAULT_MODEL_HOME,
+    home: str | Path | None = None,
 ) -> list[dict[str, object]]:
     """Return ``{id, label, downloaded}`` rows for the curated Piper list.
 
     ``downloaded`` is an exists-check on the model pair under the Piper home,
     so a client can label a 63 MB surprise before the operator clicks it.
     """
+    # Import here so listing ids never pays for onnxruntime/numpy — same
+    # reason ``speech.py`` defers engine imports (Edge-only sessions).
+    from .piper_tts import DEFAULT_MODEL_HOME, model_paths
+
+    model_home = DEFAULT_MODEL_HOME if home is None else home
     rows: list[dict[str, object]] = []
     for voice_id in voice_ids:
-        model, config = model_paths(voice_id, home)
+        model, config = model_paths(voice_id, model_home)
         rows.append(
             {
                 "id": voice_id,
