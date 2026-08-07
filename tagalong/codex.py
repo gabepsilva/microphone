@@ -746,6 +746,10 @@ class CodexConversation:
                 developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
             )
         except Exception as error:
+            # Keep the thread marked poisoned so the next attempt bails at
+            # _recover_poisoned_thread instead of re-paying the silence bound.
+            with self.context_lock:
+                self.thread_poisoned = True
             self.transcript_display.error(f"Could not recover Codex thread: {error}")
             return False
         with self.context_lock:
@@ -874,18 +878,21 @@ class CodexConversation:
         """
         notifications: queue.Queue = queue.Queue()
         done = object()
+        recovering = False
 
         def run() -> None:
-            events = turn.stream()
+            events = None
             try:
+                events = turn.stream()
                 for event in events:
                     notifications.put(("event", event))
                 notifications.put(("done", done))
             except Exception as error:
                 notifications.put(("error", error))
             finally:
-                with suppress(Exception):
-                    events.close()
+                if events is not None:
+                    with suppress(Exception):
+                        events.close()
 
         helper = threading.Thread(target=run, name="codex-stream", daemon=True)
         helper.start()
@@ -897,6 +904,7 @@ class CodexConversation:
                     with suppress(Exception):
                         turn.interrupt()
                     self._fork_for_recovery()
+                    recovering = True
                     return renderer.errors
                 if kind == "done":
                     return renderer.errors
@@ -906,7 +914,10 @@ class CodexConversation:
                     raise RuntimeError(f"unexpected stream signal: {kind!r}")
                 renderer.handle(payload.payload)
         finally:
-            helper.join(timeout=STREAM_SILENCE_SECONDS)
+            # On recovery the helper is still parked in a never-yielding stream;
+            # a full-bound join would double the outage. timeout=0 stays inside
+            # tools/worker_gate.py (only None/absent are rejected).
+            helper.join(timeout=0 if recovering else STREAM_SILENCE_SECONDS)
 
     def _warm_up(self):
         """Pay a thread's first-turn cost before anyone is waiting on it.

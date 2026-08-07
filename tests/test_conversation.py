@@ -1712,11 +1712,14 @@ def test_failed_poison_recovery_does_not_start_a_turn(quiet_conversation) -> Non
 def test_a_silent_stream_trips_the_bound_and_forks(
     monkeypatch, quiet_conversation
 ) -> None:
-    """Zero notifications for the silence window → unconditional recovery fork."""
+    """Zero notifications for the silence window → unconditional recovery fork.
+
+    Models the #116 wedge: interrupt fails and the stream never unblocks, so the
+    finally join must not pay a second full silence bound.
+    """
     monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
     conversation = quiet_conversation
     conversation.warmup_pending = False
-    released = threading.Event()
     created: list[threading.Thread] = []
     real_thread = threading.Thread
 
@@ -1727,21 +1730,24 @@ def test_a_silent_stream_trips_the_bound_and_forks(
 
     monkeypatch.setattr(codex_module.threading, "Thread", tracking_thread)
 
-    class SilentTurn(FakeTurn):
+    class WedgedTurn(FakeTurn):
         def stream(self):
-            released.wait(timeout=WAIT_SECONDS)
+            # Stay blocked even after interrupt — the real zombie ignores cancel.
+            threading.Event().wait()
             return
             yield  # pragma: no cover — generator so stream() is iterable
 
         def interrupt(self):
             self.interrupted += 1
-            released.set()
+            raise RuntimeError("-32600: no active turn to interrupt")
 
-    conversation.thread.next_turn = SilentTurn()
+    conversation.thread.next_turn = WedgedTurn()
     conversation.ingest("Voice", "are you there", respond=True, timestamp="T1")
     queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
+    started = time.monotonic()
     conversation._run_codex(queued)
+    elapsed = time.monotonic() - started
 
     assert conversation.fake_codex.forked_from == "thread-1"
     assert conversation.thread.id == "thread-2"
@@ -1750,6 +1756,8 @@ def test_a_silent_stream_trips_the_bound_and_forks(
     helpers = [thread for thread in created if thread.name == "codex-stream"]
     assert len(helpers) == 1
     assert helpers[0].daemon is True
+    # One silence bound, not two: recovery join is timeout=0.
+    assert elapsed < 0.15
 
 
 def test_a_slow_but_ticking_stream_does_not_fork(
@@ -1786,28 +1794,94 @@ def test_recovery_fork_failure_uses_the_existing_error_path(
     monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
     conversation = quiet_conversation
     conversation.fake_codex.fork_error = RuntimeError("fork denied")
-    released = threading.Event()
 
-    class SilentTurn(FakeTurn):
+    class WedgedTurn(FakeTurn):
         def stream(self):
-            released.wait(timeout=WAIT_SECONDS)
+            threading.Event().wait()
             return
             yield  # pragma: no cover
 
         def interrupt(self):
             self.interrupted += 1
-            released.set()
+            raise RuntimeError("-32600: no active turn to interrupt")
 
-    conversation.thread.next_turn = SilentTurn()
+    conversation.thread.next_turn = WedgedTurn()
     conversation.ingest("Voice", "hello", respond=True, timestamp="T1")
     queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
+    started = time.monotonic()
     conversation._run_codex(queued)
+    elapsed = time.monotonic() - started
 
     assert (
         "error",
         "Could not recover Codex thread: fork denied",
     ) in conversation.fake_display.calls
+    assert conversation.thread_poisoned is True
+    assert elapsed < 0.15
+
+
+def test_a_synchronously_failing_stream_surfaces_immediately(
+    quiet_conversation,
+) -> None:
+    """stream() raising before iteration must not wait out the silence bound."""
+
+    class BoomTurn(FakeTurn):
+        def stream(self):
+            raise RuntimeError("stream broke before iterate")
+
+    quiet_conversation.thread.next_turn = BoomTurn()
+    quiet_conversation.ingest("Voice", "hello", respond=True, timestamp="T1")
+    queued = quiet_conversation.requests.get(timeout=WAIT_SECONDS)
+
+    started = time.monotonic()
+    quiet_conversation._run_codex(queued)
+    elapsed = time.monotonic() - started
+
+    assert (
+        "error",
+        "Codex error: stream broke before iterate",
+    ) in quiet_conversation.fake_display.calls
+    assert quiet_conversation.fake_codex.forked_from is None
+    assert elapsed < 1.0
+
+
+def test_failed_silence_recovery_blocks_the_next_turn_without_rewaiting(
+    monkeypatch, quiet_conversation
+) -> None:
+    """Fork failure poisons the thread so the next attempt exits immediately."""
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
+    conversation = quiet_conversation
+    conversation.fake_codex.fork_error = RuntimeError("fork denied")
+
+    class WedgedTurn(FakeTurn):
+        def stream(self):
+            threading.Event().wait()
+            return
+            yield  # pragma: no cover
+
+        def interrupt(self):
+            raise RuntimeError("-32600: no active turn to interrupt")
+
+    conversation.thread.next_turn = WedgedTurn()
+    conversation.ingest("Voice", "first", respond=True, timestamp="T1")
+    first = conversation.requests.get(timeout=WAIT_SECONDS)
+    conversation._run_codex(first)
+    assert conversation.thread_poisoned is True
+    turns_after_wedge = list(conversation.thread.turns)
+
+    conversation.thread.next_turn = FakeTurn(
+        events=[delta("Should not."), turn_completed()]
+    )
+    conversation.ingest("Voice", "second", respond=True, timestamp="T2")
+    second = conversation.requests.get(timeout=WAIT_SECONDS)
+    started = time.monotonic()
+    conversation._run_codex(second)
+    elapsed = time.monotonic() - started
+
+    assert conversation.thread.turns == turns_after_wedge
+    assert "codex_delta" not in conversation.fake_display.names()
+    assert elapsed < 0.1
 
 
 # --------------------------------------------------------------------------
