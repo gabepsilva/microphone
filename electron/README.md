@@ -109,6 +109,14 @@ far-end applications), and Codex credentials as for a normal TUI session.
      it (`options_including`). Every sidebar change applies immediately — the
      silence field dispatches on `input`, not on blur.
 
+7b. **Speech voice picker** (#124)
+
+- With **Engine** set to Piper, **Voice** is a `<select>` fed by
+  `speech.catalog` (curated ids + `downloaded` flags). Undownloaded voices
+  are labeled `(download)`. Choosing one dispatches `tts.set_voice`; the
+  selection settles when the ready-gated switch succeeds. Hide/disable the
+  control when Engine is Edge.
+
 8. **Compose**
    - Type text, optionally attach an image (**+** button or paste), press
      **Enter** — or the send button.

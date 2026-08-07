@@ -66,6 +66,7 @@ describe("IPC channel registration", () => {
       { channel: CHANNELS.devicesList, method: "devices.list" },
       { channel: CHANNELS.commandsList, method: "commands.list" },
       { channel: CHANNELS.codexCatalog, method: "codex.catalog" },
+      { channel: CHANNELS.speechCatalog, method: "speech.catalog" },
       { channel: CHANNELS.capabilities, method: "capabilities" },
     ];
     for (const { channel, method } of expected) {

@@ -24,6 +24,7 @@ import {
   modelOptions,
   parseCodexCatalog,
 } from "./codex_catalog.js";
+import { parseSpeechCatalog, voiceOptionsIncluding } from "./speech_catalog.js";
 
 const NO_MIC = "__none__";
 const NO_AUDIO = "none";
@@ -40,6 +41,7 @@ let attachmentIds = [];
 // Last state seen, so a keyboard shortcut can toggle a value it must first read.
 let current = {};
 // The session's model catalog, for the two Codex pickers.
+let speechVoices = [];
 let codexModels = [];
 // The session's slash catalog, and what the open menu is showing of it.
 let catalog = [];
@@ -145,6 +147,23 @@ function syncEffective(state) {
   document.getElementById("audio-dot").classList.toggle("live", audioLive);
 }
 
+/** Draw the Piper voice picker when the engine is local. */
+function syncVoicePicker(state) {
+  const field = document.getElementById("tts-voice-field");
+  const select = document.getElementById("tts-voice");
+  const provider = state.tts_provider || "piper";
+  const piper = provider === "piper";
+  field.hidden = !piper;
+  select.disabled = !piper;
+  if (!piper) {
+    return;
+  }
+  const current =
+    state.tts_voice?.desired ?? state.tts_voice?.effective ?? state.piper_voice ?? "";
+  const options = voiceOptionsIncluding(speechVoices, current);
+  fillSelect(select, options, current);
+}
+
 /** Draw the model and effort pickers from the catalog and the running state. */
 function syncCodexPickers(state) {
   const model = state.codex_model || "";
@@ -206,6 +225,7 @@ function applyState(state) {
   document.getElementById("tts-state").textContent = state.tts_enabled ? "on" : "off";
   document.getElementById("response-policy").value = state.response_policy || "both";
   document.getElementById("tts-provider").value = state.tts_provider || "piper";
+  syncVoicePicker(state);
   syncCodexPickers(state);
   document.getElementById("turn-silence").value = state.turn_silence ?? 3;
   // The prompt restates what the sidebar decides, the way a chat client shows
@@ -513,6 +533,10 @@ function bind() {
     if (applying) return;
     void dispatch("tts.set_provider", { provider: e.target.value });
   });
+  document.getElementById("tts-voice").addEventListener("change", (e) => {
+    if (applying) return;
+    void dispatch("tts.set_voice", { voice: e.target.value });
+  });
   document.getElementById("codex-model").addEventListener("change", (e) => {
     if (applying) return;
     const model = e.target.value;
@@ -680,6 +704,12 @@ async function boot() {
     syncCodexPickers(current);
   } catch (error) {
     // Without a catalog the pickers still offer what the session is running.
+    setBanner(error.message, true);
+  }
+  try {
+    speechVoices = parseSpeechCatalog(await api.speechCatalog());
+    syncVoicePicker(current);
+  } catch (error) {
     setBanner(error.message, true);
   }
   // Refresh device catalogs periodically — hardware changes are not

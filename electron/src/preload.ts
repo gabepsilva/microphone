@@ -25,6 +25,10 @@ function invokeCodexCatalog(): Promise<unknown> {
   return ipcRenderer.invoke(CHANNELS.codexCatalog);
 }
 
+function invokeSpeechCatalog(): Promise<unknown> {
+  return ipcRenderer.invoke(CHANNELS.speechCatalog);
+}
+
 function invokeCapabilities(): Promise<unknown> {
   return ipcRenderer.invoke(CHANNELS.capabilities);
 }
@@ -65,6 +69,7 @@ contextBridge.exposeInMainWorld("tagalong", {
   devicesList: invokeDevicesList,
   commandsList: invokeCommandsList,
   codexCatalog: invokeCodexCatalog,
+  speechCatalog: invokeSpeechCatalog,
   capabilities: invokeCapabilities,
   onState,
   onTranscriptSnapshot,

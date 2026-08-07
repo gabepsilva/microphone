@@ -2,6 +2,7 @@
 export const PRELOAD_ALLOWLIST = [
   "capabilities",
   "codexCatalog",
+  "speechCatalog",
   "commandsList",
   "devicesList",
   "dispatch",
