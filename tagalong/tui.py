@@ -58,6 +58,7 @@ from .commands import (
     match_commands,
     preferred_index,
 )
+from .control.transcript import TranscriptStore
 from .domain import (
     AGENT,
     AUDIO,
@@ -1829,7 +1830,12 @@ class VoiceCodexApp(App):
     STREAM_FLUSH_INTERVAL_SECONDS = 0.05
 
     def __init__(
-        self, state: SessionState, hooks: TuiHooks, countdown=None, speech=None
+        self,
+        state: SessionState,
+        hooks: TuiHooks,
+        countdown=None,
+        speech=None,
+        transcript: TranscriptStore | None = None,
     ) -> None:
         super().__init__()
         self.state = state
@@ -1838,6 +1844,9 @@ class VoiceCodexApp(App):
         # The session's speech, polled for whether it is still talking. Absent
         # when the session was started silent.
         self.speech = speech
+        # Controller-adjacent source of truth for save / recorder / wire; the
+        # ``entries`` list remains the widget cache (including provisionals).
+        self.transcript = transcript if transcript is not None else TranscriptStore()
         self.entries: list[Entry] = []
         self._streaming: EntryRow | None = None
         self._command_row: EntryRow | None = None
@@ -1974,6 +1983,8 @@ class VoiceCodexApp(App):
     def add_entry(self, entry: Entry, *, record: bool = True) -> EntryRow:
         entry.stamp = entry.stamp or self._stamp()
         was_empty = not self.entries
+        # ``record=False`` is the provisional commit path (finish_turn pending).
+        self.transcript.append(entry, provisional=not record)
         self.entries.append(entry)
         if record and not entry_is_open(entry):
             self._record(entry)
@@ -2001,10 +2012,12 @@ class VoiceCodexApp(App):
         identity rather than assuming the echo owns the newest rows.
         """
         if accepted:
+            self.transcript.accept(entries)
             for entry in entries:
                 self._record(entry)
             return
 
+        self.transcript.reject(entries)
         rejected = {id(entry) for entry in entries}
         removed_before_window = sum(
             id(entry) in rejected for entry in self.entries[: self._window_start]
@@ -2042,6 +2055,7 @@ class VoiceCodexApp(App):
         self.record_open_entries()
         for row in self._window:
             row.remove()
+        self.transcript.clear()
         self.entries.clear()
         self._streaming = None
         self._command_row = None
@@ -2218,8 +2232,11 @@ class VoiceCodexApp(App):
         """Repaint every row that has changed since the last flush.
 
         An idle session does no work here, which is why this can run on a
-        timer at all.
+        timer at all. Also drains coalesced transcript wire updates so a
+        socket client sees at most one ``entry_updated`` per open row per
+        paint interval (issue #102 Q5).
         """
+        self.transcript.flush_updates()
         if not self._dirty:
             return
         for row in self._dirty:
@@ -2474,8 +2491,7 @@ class VoiceCodexApp(App):
         if self.hooks.on_interrupt:
             self.hooks.on_interrupt()
         if self._streaming is not None:
-            self._streaming.entry.streaming = False
-            self._streaming.entry.interrupted = True
+            self.transcript.finalize(self._streaming.entry, interrupted=True)
             self.mark_dirty(self._streaming)
             self._record(self._streaming.entry)
             self._streaming = None
@@ -2572,11 +2588,16 @@ class VoiceCodexTUI:
         state: SessionState | None = None,
         countdown=None,
         speech=None,
+        transcript: TranscriptStore | None = None,
         **hooks,
     ) -> None:
         self.state = state or SessionState()
         self.hooks = TuiHooks(**hooks)
-        self.app = VoiceCodexApp(self.state, self.hooks, countdown, speech)
+        # Own a store until the controller adopts it (same object, shared lock).
+        self.transcript = transcript if transcript is not None else TranscriptStore()
+        self.app = VoiceCodexApp(
+            self.state, self.hooks, countdown, speech, transcript=self.transcript
+        )
         self._ready = threading.Event()
         self._app_thread: int | None = None
         # When the open reasoning section started, or None when none is open.
@@ -2600,8 +2621,8 @@ class VoiceCodexTUI:
         self.app.apply_pending_stream_text = self._apply_pending_stream_text
 
     def transcript_entries(self) -> list[Entry]:
-        """The live transcript rows a ``transcript.save`` export reads."""
-        return list(self.app.entries)
+        """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
+        return list(self.transcript.transcript_entries())
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -2798,7 +2819,7 @@ class VoiceCodexTUI:
             row = self.app._streaming
         if row is None:
             raise RuntimeError("Could not create a streaming Taga transcript row.")
-        row.entry.text += delta
+        self.transcript.append_text(row.entry, delta)
         self.app.mark_dirty(row)
 
     def end_codex(self) -> None:
@@ -2822,7 +2843,7 @@ class VoiceCodexTUI:
         # nothing to mark.
         row = self.app._streaming
         if row is not None:
-            row.entry.streaming = False
+            self.transcript.finalize(row.entry)
             self.app.mark_dirty(row)
             self.app._streaming = None
             self.app._record(row.entry)
@@ -2869,7 +2890,7 @@ class VoiceCodexTUI:
             row = self.app._reasoning_row
         if row is None:
             raise RuntimeError("Could not create a streaming reasoning row.")
-        row.entry.text += delta
+        self.transcript.append_text(row.entry, delta)
         self.app.mark_dirty(row)
 
     def reasoning_completed(self) -> None:
@@ -2889,8 +2910,7 @@ class VoiceCodexTUI:
         row = self.app._reasoning_row
         if row is None:
             return
-        row.entry.streaming = False
-        row.entry.seconds = elapsed
+        self.transcript.finalize(row.entry, seconds=elapsed)
         self.app.mark_dirty(row)
         self.app._reasoning_row = None
         self.app._record(row.entry)
@@ -2912,7 +2932,7 @@ class VoiceCodexTUI:
         row = self.app._command_row
         if row is None:
             return
-        row.entry.output.append(line)
+        self.transcript.append_command_output(row.entry, line)
         self.app.mark_dirty(row)
 
     def command_completed(self, exit_code: int | None) -> None:
@@ -2942,7 +2962,7 @@ class VoiceCodexTUI:
         row = self.app._command_row
         if row is None:
             return
-        row.entry.exit_code = code
+        self.transcript.finalize(row.entry, exit_code=code)
         self.app.mark_dirty(row)
         self.app._command_row = None
         self.app._record(row.entry)

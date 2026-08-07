@@ -21,6 +21,7 @@ import pytest
 
 from tagalong import cli
 from tagalong.catalog import CodexModelOption
+from tagalong.control.transcript import TranscriptStore
 from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator, UserTextMessage
 from tagalong.tui import SessionState
 
@@ -65,9 +66,10 @@ class FakeTUI:
         self.closed_speakers: list[str] = []
         self.app = SimpleNamespace()
         self._call: object | None = None
+        self.transcript = TranscriptStore()
 
     def transcript_entries(self):
-        return []
+        return list(self.transcript.transcript_entries())
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)

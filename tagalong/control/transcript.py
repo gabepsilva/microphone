@@ -32,16 +32,31 @@ class TranscriptRow:
 
 
 class TranscriptStore:
-    """Ordered transcript with accepted and provisional views."""
+    """Ordered transcript with accepted and provisional views.
 
-    def __init__(self, publish: Publish | None = None) -> None:
-        self._lock = threading.Lock()
+    When constructed by :class:`~tagalong.control.controller.Controller`,
+    ``lock`` is the controller's writer lock so transcript publishes and
+    ``EventLog.publish`` stay in one order without nested-lock deadlocks.
+    """
+
+    def __init__(
+        self,
+        publish: Publish | None = None,
+        *,
+        lock: threading.RLock | None = None,
+    ) -> None:
+        self._lock = lock if lock is not None else threading.RLock()
         self._rows: list[TranscriptRow] = []
         self._by_id: dict[int, TranscriptRow] = {}
         self._by_entry: dict[int, int] = {}
         self._next_id = 1
         self._dirty: set[int] = set()
         self._publish = publish
+
+    @property
+    def lock(self) -> threading.RLock:
+        """Writer lock shared with the controller when one owns this store."""
+        return self._lock
 
     def set_publisher(self, publish: Publish | None) -> None:
         """Install or clear the EventLog publish callback (controller-owned)."""

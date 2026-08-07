@@ -66,6 +66,7 @@ from .outcomes import (
 )
 from .policy import AGENT_DENIED_ACTIONS, authorizes
 from .state import AppState, Effect
+from .transcript import TranscriptStore
 
 # Enough for a client to retry the handful of requests a disconnect can leave
 # unanswered, and bounded so a long session cannot accumulate keys forever.
@@ -195,12 +196,21 @@ class Controller:
         catalog: tuple[ActionSpec, ...] = CATALOG,
         capacity: int = DEFAULT_CAPACITY,
         clock: Callable[[], datetime] = utc_now,
+        transcript: TranscriptStore | None = None,
     ) -> None:
-        self._lock = threading.Lock()
+        # RLock shared with TranscriptStore so mutations and EventLog.publish
+        # stay one critical section without nested-lock deadlocks (#102).
+        if transcript is None:
+            self._lock = threading.RLock()
+            self._transcript = TranscriptStore(lock=self._lock)
+        else:
+            self._transcript = transcript
+            self._lock = transcript.lock
         self._state = AppState() if state is None else state
         self._catalog = catalog
         self._by_id = {action.id: action for action in catalog}
         self._events = EventLog(capacity, clock)
+        self._transcript.set_publisher(self._events.publish)
         self._handlers: dict[str, Handler] = {}
         self._requests = _Requests()
         self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
@@ -209,6 +219,11 @@ class Controller:
         self._unpublished: OrderedDict[str, _Unpublished] = OrderedDict()
         self._announced: OrderedDict[str, Applied] = OrderedDict()
         self._counter = 0
+
+    @property
+    def transcript(self) -> TranscriptStore:
+        """The ordered live transcript rows for this session."""
+        return self._transcript
 
     # -- wiring ---------------------------------------------------------
 
