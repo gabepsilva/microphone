@@ -9,7 +9,6 @@ import { ACTIONS, type ActionId } from "./actions";
 export const DISPATCH_ALLOWLIST = [
   ACTIONS.message_send,
   ACTIONS.attachment_upload,
-  ACTIONS.transcript_append,
   ACTIONS.session_new,
   ACTIONS.session_interrupt,
   ACTIONS.voice_end_turn,
@@ -81,9 +80,6 @@ export function validateDispatch(
       break;
     case ACTIONS.attachment_upload:
       requireString(payload, "data");
-      break;
-    case ACTIONS.transcript_append:
-      requireString(payload, "text");
       break;
     default:
       break;
