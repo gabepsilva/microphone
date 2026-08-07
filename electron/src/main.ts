@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, Menu, ipcMain } from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
 import { registerIpcHandlers } from "./ipc";
@@ -50,9 +50,13 @@ const sessionEvents = new SessionEvents(events, {
 });
 
 async function createWindow(): Promise<void> {
+  // No File/Edit/View/Window/Help: every entry it would offer is either a
+  // lifecycle the TUI owns or a browser affordance this surface does not use.
+  Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
-    width: 720,
+    width: 1200,
     height: 820,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

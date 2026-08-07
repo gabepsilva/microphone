@@ -93,14 +93,23 @@ far-end applications), and Codex credentials as for a normal TUI session.
    - Choose a mic; confirm TUI effective/desired update. Toggle mute both ways.
 
 6. **Session actions**
-   - **Interrupt**, **End voice turn**, **New session**, **Save transcript**
-     each invoke the matching allowlisted action. Confirm TUI behaviour
-     matches. Confirm there is **no Quit** control in Electron.
-   - The same actions answer to the keys the empty screen lists (`^X`, `^D`,
-     `^N`, `^S`, plus `^P`, `^K`, `^T`, `^B`). `renderer/shortcuts.js` is the
-     one table both the splash and the key handler read.
+   - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save
+     transcript (`^S`), plus `^P`, `^K`, `^T`, `^B` — there are no buttons for
+     these; the empty screen is their reference and `renderer/shortcuts.js` is
+     the one table both it and the key handler read. `/new` runs from the
+     palette too. Confirm TUI behaviour matches, and that there is **no Quit**.
 
-7. **Compose**
+7. **Model pickers**
+   - **Model** and **Reasoning effort** are selects fed by `codex.catalog`
+     (the CLI's own catalog, read once at boot — probing shells out to
+     `codex debug models`). Choosing a model whose efforts exclude the running
+     one also dispatches the model's default effort, as `adopt_efforts_for`
+     does in the TUI.
+   - A model the catalog no longer lists still appears while the session runs
+     it (`options_including`). Every sidebar change applies immediately — the
+     silence field dispatches on `input`, not on blur.
+
+8. **Compose**
    - Type text, optionally attach an image (**+** button or paste), press
      **Enter** — or the send button.
    - Shift+Enter adds a line; Esc dismisses the palette, then clears the draft.
@@ -110,22 +119,23 @@ far-end applications), and Codex credentials as for a normal TUI session.
      before that fix shows nothing here.
    - Confirm a spoken/model reply still works when Voice reply is on.
 
-8. **Slash commands**
+9. **Slash commands**
    - Type `/` — the palette lists `commands.list` below the prompt. ↑↓ browse,
      Tab completes, Enter runs, Esc dismisses. Ranking is ported from
      `commands.match_commands`; `tests/commands.test.ts` pins the tiers.
    - `/new` dispatches `session.new`. `/help` names no action — the catalog it
      would print is the menu already on screen.
 
-9. **Markdown**
-   - A finished Taga answer renders fenced code, headings, lists, quotes,
-     tables, and inline emphasis (`renderer/markdown.js`, mirroring
-     `tui.uses_markdown_body`). Streaming turns and anything transcribed from
-     the room stay literal.
-   - Links are shown but **never** given an `href`: nothing in this window may
-     navigate away from the app, and there is no open-externally channel yet.
+10. **Markdown**
 
-10. **Security smoke**
+- A finished Taga answer renders fenced code, headings, lists, quotes,
+  tables, and inline emphasis (`renderer/markdown.js`, mirroring
+  `tui.uses_markdown_body`). Streaming turns and anything transcribed from
+  the room stay literal.
+- Links are shown but **never** given an `href`: nothing in this window may
+  navigate away from the app, and there is no open-externally channel yet.
+
+11. **Security smoke**
     - DevTools → console: `window.require` / `process` should be unavailable
       (`contextIsolation` + no `nodeIntegration`).
     - Attempting `session.quit` via a forged preload path must fail the

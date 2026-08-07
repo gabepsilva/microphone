@@ -16,6 +16,8 @@
   --line: #2a2a32;
   --accent: #7c8cf8;
   --accent-soft: rgba(124, 140, 248, 0.16);
+  /* The mark's own green, straight from the TUI (tui.sync_clock). */
+  --brand: #6cc06c;
   --green: #6cc06c;
   --danger: #e0736a;
   --voice: #6ba7ff;
@@ -95,7 +97,7 @@ body {
   letter-spacing: -0.01em;
 }
 .brand-chevron {
-  color: var(--accent);
+  color: var(--brand);
 }
 .brand-name {
   font-weight: 600;
@@ -313,18 +315,16 @@ body {
   font-weight: 600;
 }
 
-/* From the room: a sent bubble, right-aligned like a chat client. */
+/* From the room: a bubble, but on the same side as everything else. One
+   column reads as one conversation; the bubble alone says who spoke. */
 .msg-inbound {
-  align-items: flex-end;
-}
-.msg-inbound .msg-meta {
-  padding-right: 0.25rem;
+  align-items: flex-start;
 }
 .msg-inbound .msg-bubble {
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  border-bottom-right-radius: 4px;
+  border-top-left-radius: 4px;
   padding: 0.6rem 0.9rem;
   max-width: 85%;
 }
@@ -498,6 +498,10 @@ body {
 #prompt-shell:focus-within {
   border-color: var(--accent);
 }
+/* A pill only reads as one on a single line; a grown box needs a corner. */
+#prompt-shell.multiline {
+  border-radius: 15px;
+}
 #compose-text {
   flex: 1;
   min-width: 0;
@@ -623,10 +627,17 @@ body {
 
 /* -- sidebar --------------------------------------------------------- */
 
+/* Pinned: the controls stay put however far the transcript is scrolled, and
+   only scroll on their own if they outgrow the window. */
 #sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
   border-left: 1px solid var(--line);
   background: var(--surface);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.5rem 1rem 1.5rem;
 }
 .panel {

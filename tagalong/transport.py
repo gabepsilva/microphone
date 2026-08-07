@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .catalog import probe_codex_models
 from .choosers import input_devices
 from .control import (
     Accepted,
@@ -319,6 +320,7 @@ class LocalServer:
             "snapshot": self._rpc_snapshot,
             "capabilities": self._rpc_capabilities,
             "commands.list": self._rpc_commands,
+            "codex.catalog": self._rpc_codex_catalog,
             "devices.list": self._rpc_devices_list,
             "subscribe": self._rpc_subscribe,
             "poll": self._rpc_poll,
@@ -435,6 +437,33 @@ class LocalServer:
         ]
         # lost is terminal for this Subscription; recovery is subscribe again.
         return _result(rpc_id, {"events": events, "lost": session.subscribed.lost})
+
+    def _rpc_codex_catalog(
+        self,
+        rpc_id: object,
+        params: Mapping[str, Any],
+        session: _Session,
+        actor: Actor,
+    ) -> dict[str, object]:
+        """Offer the model catalog a client needs to draw its pickers.
+
+        A query, like ``devices.list``: which models exist and what reasoning
+        efforts each one accepts is the CLI's answer, not session state, so a
+        client that guesses either would offer a switch the session refuses.
+        An empty catalog is an answer too — the client keeps whatever the
+        session is already running.
+        """
+        del params, session, actor
+        listing = [
+            {
+                "slug": option.slug,
+                "label": option.label,
+                "efforts": list(option.efforts),
+                "default_effort": option.default_effort,
+            }
+            for option in probe_codex_models()
+        ]
+        return _result(rpc_id, {"models": listing})
 
     def _rpc_devices_list(
         self,

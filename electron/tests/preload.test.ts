@@ -81,6 +81,7 @@ describe("preload allowlist", () => {
     const snapshot = exposed.snapshot as () => Promise<unknown>;
     const devicesList = exposed.devicesList as () => Promise<unknown>;
     const commandsList = exposed.commandsList as () => Promise<unknown>;
+    const codexCatalog = exposed.codexCatalog as () => Promise<unknown>;
     const capabilities = exposed.capabilities as () => Promise<unknown>;
     const dispatch = exposed.dispatch as (
       action: string,
@@ -99,6 +100,7 @@ describe("preload allowlist", () => {
     await snapshot();
     await devicesList();
     await commandsList();
+    await codexCatalog();
     await capabilities();
     await dispatch("tts.set_enabled", { enabled: false });
 
@@ -106,6 +108,7 @@ describe("preload allowlist", () => {
       { channel: CHANNELS.snapshot, args: [] },
       { channel: CHANNELS.devicesList, args: [] },
       { channel: CHANNELS.commandsList, args: [] },
+      { channel: CHANNELS.codexCatalog, args: [] },
       { channel: CHANNELS.capabilities, args: [] },
       {
         channel: CHANNELS.dispatch,

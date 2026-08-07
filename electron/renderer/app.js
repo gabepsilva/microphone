@@ -15,6 +15,12 @@ import {
   matchCommands,
   parseCommandList,
 } from "./commands.js";
+import {
+  effortForModel,
+  effortOptions,
+  modelOptions,
+  parseCodexCatalog,
+} from "./codex_catalog.js";
 
 const NO_MIC = "__none__";
 const NO_AUDIO = "none";
@@ -30,6 +36,8 @@ let applying = false;
 let attachmentIds = [];
 // Last state seen, so a keyboard shortcut can toggle a value it must first read.
 let current = {};
+// The session's model catalog, for the two Codex pickers.
+let codexModels = [];
 // The session's slash catalog, and what the open menu is showing of it.
 let catalog = [];
 let paletteRows = [];
@@ -101,17 +109,33 @@ function syncEffective(state) {
   document.getElementById("audio-effective").textContent = state.audio_stream?.effective
     ? `effective: ${state.audio_stream.effective}`
     : "";
-  // A channel reads as live when something is selected and nothing is muting it.
-  const mic = document.getElementById("mic-dot");
+  // A channel reads as live when something is selected and nothing is muting
+  // it. The dot is drawn in CSS — giving it a glyph too would show two marks.
   const micLive = Boolean(state.microphone?.effective) && !state.microphone_muted;
-  mic.textContent = micLive ? "●" : "○";
-  mic.classList.toggle("live", micLive);
-  const audio = document.getElementById("audio-dot");
+  document.getElementById("mic-dot").classList.toggle("live", micLive);
   const audioEffective = state.audio_stream?.effective;
   const audioLive =
     Boolean(audioEffective) && audioEffective !== NO_AUDIO && !state.audio_stream_muted;
-  audio.textContent = audioLive ? "●" : "○";
-  audio.classList.toggle("live", audioLive);
+  document.getElementById("audio-dot").classList.toggle("live", audioLive);
+}
+
+/** Draw the model and effort pickers from the catalog and the running state. */
+function syncCodexPickers(state) {
+  const model = state.codex_model || "";
+  const effort = state.codex_reasoning || "";
+  fillSelect(
+    document.getElementById("codex-model"),
+    modelOptions(codexModels, model),
+    model,
+  );
+  fillSelect(
+    document.getElementById("codex-reasoning"),
+    effortOptions(codexModels, model, effort).map((name) => ({
+      value: name,
+      label: name,
+    })),
+    effort,
+  );
 }
 
 async function refreshDevices(state) {
@@ -155,8 +179,7 @@ function applyState(state) {
   document.getElementById("tts-state").textContent = state.tts_enabled ? "on" : "off";
   document.getElementById("response-policy").value = state.response_policy || "both";
   document.getElementById("tts-provider").value = state.tts_provider || "piper";
-  document.getElementById("codex-model").value = state.codex_model || "";
-  document.getElementById("codex-reasoning").value = state.codex_reasoning || "";
+  syncCodexPickers(state);
   document.getElementById("turn-silence").value = state.turn_silence ?? 3;
   // The prompt restates what the sidebar decides, the way a chat client shows
   // its model beside the box you type in.
@@ -370,10 +393,22 @@ async function runSelectedCommand() {
   await dispatch(spec.action_id, {});
 }
 
+// Height of an empty draft, measured once: what "still one line" means.
+let promptBaseHeight = 0;
+
 /** The prompt grows with the draft, the way the TUI's does. */
 function autoGrow() {
   composeText.style.height = "auto";
-  composeText.style.height = `${composeText.scrollHeight}px`;
+  const height = composeText.scrollHeight;
+  composeText.style.height = `${height}px`;
+  if (promptBaseHeight === 0) {
+    promptBaseHeight = height;
+  }
+  // The pill shape belongs to a single line; once the box grows, so does the
+  // corner it needs.
+  document
+    .getElementById("prompt-shell")
+    .classList.toggle("multiline", height > promptBaseHeight + 2);
 }
 
 const commands = {
@@ -443,28 +478,29 @@ function bind() {
   });
   document.getElementById("codex-model").addEventListener("change", (e) => {
     if (applying) return;
-    void dispatch("codex.set_model", { model: e.target.value });
+    const model = e.target.value;
+    void dispatch("codex.set_model", { model }).then(() => {
+      // A model that does not accept the running effort has to be given one
+      // it does, or the session keeps a setting the model refuses.
+      const effort = effortForModel(codexModels, model, current.codex_reasoning || "");
+      if (effort !== null) {
+        void dispatch("codex.set_reasoning", { effort });
+      }
+    });
   });
   document.getElementById("codex-reasoning").addEventListener("change", (e) => {
     if (applying) return;
     void dispatch("codex.set_reasoning", { effort: e.target.value });
   });
-  document.getElementById("turn-silence").addEventListener("change", (e) => {
+  // `input`, not `change`: a number field only fires `change` on blur, and a
+  // setting typed into the sidebar should be in force before the focus moves.
+  document.getElementById("turn-silence").addEventListener("input", (e) => {
     if (applying) return;
-    void dispatch("turn_silence.set", { seconds: Number(e.target.value) });
-  });
-
-  document.getElementById("interrupt").addEventListener("click", () => {
-    commands["session.interrupt"]();
-  });
-  document.getElementById("end-turn").addEventListener("click", () => {
-    commands["session.end_turn"]();
-  });
-  document.getElementById("new-session").addEventListener("click", () => {
-    commands["session.new"]();
-  });
-  document.getElementById("save-transcript").addEventListener("click", () => {
-    commands["session.save_transcript"]();
+    const seconds = Number(e.target.value);
+    if (e.target.value === "" || !Number.isFinite(seconds)) {
+      return;
+    }
+    void dispatch("turn_silence.set", { seconds });
   });
 
   composeText.addEventListener("input", () => {
@@ -547,6 +583,7 @@ async function boot() {
   renderPartialLine(partialLine, {});
   // The prompt has the keyboard from the first frame, as in the TUI.
   composeText.focus();
+  autoGrow();
   if (!api) {
     return;
   }
@@ -555,6 +592,14 @@ async function boot() {
     catalog = parseCommandList(await api.commandsList());
   } catch (error) {
     // A session without a catalog still types; only the menu is missing.
+    setBanner(error.message, true);
+  }
+  try {
+    // Read once: the CLI's catalog does not change under a running session,
+    // and probing it shells out to `codex debug models`.
+    codexModels = parseCodexCatalog(await api.codexCatalog());
+  } catch (error) {
+    // Without a catalog the pickers still offer what the session is running.
     setBanner(error.message, true);
   }
   api.onState((state) => {
