@@ -114,8 +114,10 @@ far-end applications), and Codex credentials as for a normal TUI session.
 - With **Engine** set to Piper, **Voice** is a `<select>` fed by
   `speech.catalog` (curated ids + `downloaded` flags). Undownloaded voices
   are labeled `(download)`. Choosing one dispatches `tts.set_voice`; the
-  selection settles when the ready-gated switch succeeds. Hide/disable the
-  control when Engine is Edge.
+  selection settles when the ready-gated switch succeeds. The catalog refreshes
+  on the device-list interval so `(download)` clears after a fetch. When
+  desired and effective diverge, an `effective:` footnote appears under the
+  picker (same pattern as microphone/audio). Hide/disable when Engine is Edge.
 
 8. **Compose**
    - Type text, optionally attach an image (**+** button or paste), press

@@ -25,6 +25,11 @@ import {
   parseCodexCatalog,
 } from "./codex_catalog.js";
 import { parseSpeechCatalog, voiceOptionsIncluding } from "./speech_catalog.js";
+import {
+  syncVoicePicker as drawVoicePicker,
+  voiceChangePayload,
+  voiceEffectiveText,
+} from "./voice_picker.js";
 
 const NO_MIC = "__none__";
 const NO_AUDIO = "none";
@@ -137,6 +142,8 @@ function syncEffective(state) {
   document.getElementById("audio-effective").textContent = state.audio_stream?.effective
     ? `effective: ${state.audio_stream.effective}`
     : "";
+  document.getElementById("tts-voice-effective").textContent =
+    voiceEffectiveText(state);
   // A channel reads as live when something is selected and nothing is muting
   // it. The dot is drawn in CSS — giving it a glyph too would show two marks.
   const micLive = Boolean(state.microphone?.effective) && !state.microphone_muted;
@@ -149,19 +156,14 @@ function syncEffective(state) {
 
 /** Draw the Piper voice picker when the engine is local. */
 function syncVoicePicker(state) {
-  const field = document.getElementById("tts-voice-field");
-  const select = document.getElementById("tts-voice");
-  const provider = state.tts_provider || "piper";
-  const piper = provider === "piper";
-  field.hidden = !piper;
-  select.disabled = !piper;
-  if (!piper) {
-    return;
-  }
-  const current =
-    state.tts_voice?.desired ?? state.tts_voice?.effective ?? state.piper_voice ?? "";
-  const options = voiceOptionsIncluding(speechVoices, current);
-  fillSelect(select, options, current);
+  drawVoicePicker(
+    document.getElementById("tts-voice-field"),
+    document.getElementById("tts-voice"),
+    state,
+    speechVoices,
+    (tag) => document.createElement(tag),
+    voiceOptionsIncluding,
+  );
 }
 
 /** Draw the model and effort pickers from the catalog and the running state. */
@@ -214,6 +216,11 @@ async function refreshDevices(state) {
     state.audio_stream?.desired ?? NO_AUDIO,
   );
   syncEffective(state);
+}
+
+async function refreshSpeechCatalog() {
+  speechVoices = parseSpeechCatalog(await api.speechCatalog());
+  syncVoicePicker(current);
 }
 
 function applyState(state) {
@@ -534,8 +541,9 @@ function bind() {
     void dispatch("tts.set_provider", { provider: e.target.value });
   });
   document.getElementById("tts-voice").addEventListener("change", (e) => {
-    if (applying) return;
-    void dispatch("tts.set_voice", { voice: e.target.value });
+    const payload = voiceChangePayload(applying, e.target.value);
+    if (payload === null) return;
+    void dispatch("tts.set_voice", payload);
   });
   document.getElementById("codex-model").addEventListener("change", (e) => {
     if (applying) return;
@@ -707,8 +715,7 @@ async function boot() {
     setBanner(error.message, true);
   }
   try {
-    speechVoices = parseSpeechCatalog(await api.speechCatalog());
-    syncVoicePicker(current);
+    await refreshSpeechCatalog();
   } catch (error) {
     setBanner(error.message, true);
   }
@@ -718,8 +725,11 @@ async function boot() {
   // re-serialising every accepted row across the socket and IPC every five
   // seconds to redraw two selects costs more the longer the session runs.
   // The desired/effective values it needs are already on the last state seen.
+  // The same interval refreshes speech.catalog: `downloaded` flips when a
+  // voice finishes fetching, and that fact is not on state.changed either.
   setInterval(() => {
     void refreshDevices(current).catch(() => {});
+    void refreshSpeechCatalog().catch(() => {});
   }, 5000);
 }
 
