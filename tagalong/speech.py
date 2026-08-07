@@ -148,12 +148,18 @@ class SwitchableSpeech:
     @classmethod
     def start(cls, provider, voice=None, output_sink=None, build=build_speech_engine):
         """Build the session's first engine and wrap it."""
-        return cls(
+        engine = build(provider, voice, output_sink)
+        speech = cls(
             provider,
-            build(provider, voice, output_sink),
+            engine,
             output_sink=output_sink,
             build=build,
         )
+        # Thread the caller's voice through even when a fake builder omits
+        # ``engine.voice`` — otherwise the facade reports the provider default
+        # while the engine was asked for something else.
+        speech.voice = _engine_voice(engine, provider, voice)
+        return speech
 
     def _current(self):
         with self.lock:
@@ -179,6 +185,16 @@ class SwitchableSpeech:
 
     def is_speaking(self):
         return self._current().is_speaking()
+
+    def wait_ready(self, timeout: float | None = None) -> None:
+        """Forward readiness to the installed engine."""
+        self._current().wait_ready(timeout)
+
+    @property
+    def switching(self) -> bool:
+        """True while a provider or voice switch thread is still running."""
+        switch = self.switch
+        return switch is not None and switch.is_alive()
 
     def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
         """Start replacing the engine; report whether the switch was started.
@@ -232,8 +248,11 @@ class SwitchableSpeech:
         except Exception as error:
             if engine is not None:
                 engine.close()
+            target = (
+                f"{provider} voice {voice!r}" if voice is not None else f"{provider}"
+            )
             print(
-                f"\nCould not switch speech to {provider}: {error}",
+                f"\nCould not switch speech to {target}: {error}",
                 file=sys.stderr if self.stream is None else self.stream,
                 flush=True,
             )

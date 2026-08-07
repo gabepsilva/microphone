@@ -374,7 +374,9 @@ def test_a_failed_ready_gate_keeps_the_working_engine_and_reports_failure(
     )
 
     assert wait_until(lambda: failed == ["download failed"])
-    assert "Could not switch speech" in capsys.readouterr().err
+    assert "Could not switch speech to piper voice 'en_US-amy-medium'" in (
+        capsys.readouterr().err
+    )
     assert applied == []
     assert speech.voice == default_voice("piper")
     assert speech.engine is original
@@ -420,9 +422,27 @@ def test_engine_voice_falls_back_to_the_requested_name_when_unset() -> None:
         return FakeEngine(provider, None, output_sink)
 
     speech = SwitchableSpeech.start("piper", voice="en_US-joe-medium", build=build)
+    assert speech.voice == "en_US-joe-medium"
     assert speech.set_voice("en_US-amy-medium") is True
     assert wait_until(lambda: speech.voice == "en_US-amy-medium")
     assert speech.engine.voice is None
+
+
+def test_switchable_speech_forwards_wait_ready() -> None:
+    speech, _ = started("piper")
+    assert speech.wait_ready() is None
+
+
+def test_switching_property_is_true_while_a_switch_runs() -> None:
+    release = threading.Event()
+    build, _ = recording_builder(block=release)
+    speech = SwitchableSpeech(DEFAULT_PROVIDER, FakeEngine("piper"), build=build)
+
+    assert speech.switching is False
+    assert speech.set_provider("edge") is True
+    assert speech.switching is True
+    release.set()
+    assert wait_until(lambda: speech.switching is False)
 
 
 def test_closing_during_a_voice_switch_reports_failure() -> None:
