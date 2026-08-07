@@ -1,10 +1,15 @@
 /**
- * Enforce per-file line-coverage floors under electron/src that only ratchet up.
+ * Enforce per-file line and function coverage floors under electron/ that
+ * only ratchet up.
  *
  * Bun's lcov only lists files the suite loaded. This gate also walks every
- * TypeScript file under src/ so an unimported module cannot escape with
+ * governed TypeScript path so an unimported module cannot escape with
  * "not measured". Process entry wiring that must not launch Electron in CI
  * is listed in coverage_floors.json under unmeasured_entrypoints with a reason.
+ *
+ * Function floors matter here more than in Python: Bun 1.3.9 lcov has no
+ * BRDA/branch records, so FNF/FNH is the only sub-line signal that catches
+ * registration-only hits (handle(...) call runs; arrow body never does).
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -12,8 +17,11 @@ import { join, relative } from "node:path";
 
 export type FloorsConfig = {
   new_file_floor: number;
+  new_file_func_floor: number;
+  /** Paths relative to electron/ (e.g. src/client.ts, tools/coverage_gate.ts). */
   floors: Record<string, number>;
-  /** src-relative paths excluded from measurement (process entry / window). */
+  func_floors: Record<string, number>;
+  /** Paths relative to electron/ excluded from measurement (process entry). */
   unmeasured_entrypoints: Record<string, string>;
 };
 
@@ -21,6 +29,9 @@ export type FileCoverage = {
   hit: number;
   found: number;
   percent: number;
+  funcHit: number;
+  funcFound: number;
+  funcPercent: number;
 };
 
 export type CheckResult = {
@@ -41,16 +52,18 @@ export function lcovPath(root: string = defaultRoot()): string {
   return join(root, "coverage", "lcov.info");
 }
 
-export function srcRoot(root: string = defaultRoot()): string {
-  return join(root, "src");
-}
+/** Directories whose .ts files must meet floors (relative to electron/). */
+export const GOVERNED_DIRS = ["src", "tools"] as const;
 
 export function loadFloors(path: string = floorsPath()): FloorsConfig {
   const raw = JSON.parse(readFileSync(path, "utf8")) as FloorsConfig;
   if (
     typeof raw.new_file_floor !== "number" ||
+    typeof raw.new_file_func_floor !== "number" ||
     typeof raw.floors !== "object" ||
     raw.floors === null ||
+    typeof raw.func_floors !== "object" ||
+    raw.func_floors === null ||
     typeof raw.unmeasured_entrypoints !== "object" ||
     raw.unmeasured_entrypoints === null
   ) {
@@ -59,12 +72,14 @@ export function loadFloors(path: string = floorsPath()): FloorsConfig {
   return raw;
 }
 
-/** Parse lcov.info into path → line coverage (paths as in the SF: records). */
+/** Parse lcov.info into path → line + function coverage (SF: record paths). */
 export function parseLcov(text: string): Record<string, FileCoverage> {
   const measured: Record<string, FileCoverage> = {};
   let current: string | null = null;
   let hit = 0;
   let found = 0;
+  let funcHit = 0;
+  let funcFound = 0;
 
   const flush = () => {
     if (current === null) {
@@ -73,11 +88,17 @@ export function parseLcov(text: string): Record<string, FileCoverage> {
     measured[current] = {
       hit,
       found,
-      percent: found === 0 ? 100 : (100 * hit) / found,
+      // Empty SF record: treat as 0 so it cannot silently certify coverage.
+      percent: found === 0 ? 0 : (100 * hit) / found,
+      funcHit,
+      funcFound,
+      funcPercent: funcFound === 0 ? 0 : (100 * funcHit) / funcFound,
     };
     current = null;
     hit = 0;
     found = 0;
+    funcHit = 0;
+    funcFound = 0;
   };
 
   for (const line of text.split("\n")) {
@@ -92,6 +113,10 @@ export function parseLcov(text: string): Record<string, FileCoverage> {
       if (hits > 0) {
         hit += 1;
       }
+    } else if (line.startsWith("FNF:") && current !== null) {
+      funcFound = Number(line.slice(4));
+    } else if (line.startsWith("FNH:") && current !== null) {
+      funcHit = Number(line.slice(4));
     } else if (line === "end_of_record") {
       flush();
     }
@@ -100,7 +125,7 @@ export function parseLcov(text: string): Record<string, FileCoverage> {
   return measured;
 }
 
-export function listSrcFiles(root: string = srcRoot()): string[] {
+export function listGovernedFiles(root: string = defaultRoot()): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
@@ -112,68 +137,107 @@ export function listSrcFiles(root: string = srcRoot()): string[] {
       }
     }
   };
-  walk(root);
+  for (const dir of GOVERNED_DIRS) {
+    const abs = join(root, dir);
+    if (statSync(abs).isDirectory()) {
+      walk(abs);
+    }
+  }
   return out.sort();
 }
 
+function checkMetric(
+  rel: string,
+  label: string,
+  actual: number,
+  floor: number | undefined,
+  newFloor: number,
+  failures: string[],
+  improvements: string[],
+): void {
+  if (floor === undefined) {
+    if (actual < newFloor) {
+      failures.push(
+        `${rel}: new file at ${actual.toFixed(1)}% ${label} must reach ` +
+          `${newFloor.toFixed(0)}% or record an explicit floor with a reason.`,
+      );
+    }
+    return;
+  }
+  if (actual < floor) {
+    failures.push(
+      `${rel}: ${actual.toFixed(1)}% ${label} is below its floor of ${floor.toFixed(1)}%`,
+    );
+  } else if (Math.floor(actual) >= floor + 1) {
+    improvements.push(
+      `${rel}: ${actual.toFixed(1)}% ${label} — raise its floor to ${Math.floor(actual)}`,
+    );
+  }
+}
+
 /**
- * Compare measured coverage to floors. `srcFiles` are paths relative to src/
- * (e.g. `client.ts`, `protocol/channels.ts`). `measured` keys are as in lcov
- * (`src/client.ts`).
+ * Compare measured coverage to floors. `governed` paths are relative to
+ * electron/ (`src/client.ts`). `measured` keys are as in lcov (same shape).
  */
 export function checkCoverage(
   measured: Record<string, FileCoverage>,
   config: FloorsConfig,
-  srcFiles: string[],
+  governed: string[],
 ): CheckResult {
   const failures: string[] = [];
   const improvements: string[] = [];
   const excluded = new Set(Object.keys(config.unmeasured_entrypoints));
+  const governedSet = new Set(governed);
 
   for (const [path, reason] of Object.entries(config.unmeasured_entrypoints)) {
     if (!reason || !String(reason).trim()) {
       failures.push(`${path}: unmeasured_entrypoints entry needs a non-empty reason`);
     }
-    if (!srcFiles.includes(path)) {
-      failures.push(`${path}: listed as unmeasured_entrypoint but is not under src/`);
+    if (!governedSet.has(path)) {
+      failures.push(
+        `${path}: listed as unmeasured_entrypoint but is not under a governed dir`,
+      );
     }
   }
 
-  for (const rel of srcFiles) {
+  for (const rel of governed) {
     if (excluded.has(rel)) {
       continue;
     }
-    const lcovKey = `src/${rel}`;
-    const file = measured[lcovKey];
-    const actual = file?.percent ?? 0;
-    const floor = config.floors[rel];
-
-    if (floor === undefined) {
-      if (actual < config.new_file_floor) {
-        failures.push(
-          `${rel}: new file at ${actual.toFixed(1)}% must reach ` +
-            `${config.new_file_floor.toFixed(0)}% or record an explicit floor ` +
-            `with a reason.`,
-        );
-      }
-      continue;
-    }
-
-    if (actual < floor) {
-      failures.push(
-        `${rel}: ${actual.toFixed(1)}% is below its floor of ${floor.toFixed(1)}%`,
-      );
-    } else if (Math.floor(actual) >= floor + 1) {
-      improvements.push(
-        `${rel}: ${actual.toFixed(1)}% — raise its floor to ${Math.floor(actual)}`,
-      );
-    }
+    const file = measured[rel];
+    const lineActual = file?.percent ?? 0;
+    const funcActual = file?.funcPercent ?? 0;
+    checkMetric(
+      rel,
+      "lines",
+      lineActual,
+      config.floors[rel],
+      config.new_file_floor,
+      failures,
+      improvements,
+    );
+    checkMetric(
+      rel,
+      "funcs",
+      funcActual,
+      config.func_floors[rel],
+      config.new_file_func_floor,
+      failures,
+      improvements,
+    );
   }
 
   for (const path of Object.keys(config.floors).sort()) {
-    if (!srcFiles.includes(path) && !excluded.has(path)) {
+    if (!governedSet.has(path) && !excluded.has(path)) {
       failures.push(
-        `${path}: has a recorded floor but is not under src/. Remove its floors entry if the file is gone.`,
+        `${path}: has a recorded line floor but is not governed. Remove its floors entry if the file is gone.`,
+      );
+    }
+  }
+  for (const path of Object.keys(config.func_floors).sort()) {
+    if (!governedSet.has(path) && !excluded.has(path)) {
+      failures.push(
+        `${path}: has a recorded func floor but is not governed. Remove its func_floors entry if the file is gone.`,
       );
     }
   }
@@ -184,7 +248,7 @@ export function checkCoverage(
 export function main(
   floorsFile: string = floorsPath(),
   lcovFile: string = lcovPath(),
-  sourceRoot: string = srcRoot(),
+  root: string = defaultRoot(),
 ): number {
   let config: FloorsConfig;
   try {
@@ -206,8 +270,8 @@ export function main(
   }
 
   const measured = parseLcov(lcovText);
-  const srcFiles = listSrcFiles(sourceRoot);
-  const { failures, improvements } = checkCoverage(measured, config, srcFiles);
+  const governed = listGovernedFiles(root);
+  const { failures, improvements } = checkCoverage(measured, config, governed);
 
   for (const failure of failures) {
     console.error(`error: ${failure}`);
@@ -223,7 +287,7 @@ export function main(
 
   const floored = Object.keys(config.floors).length;
   console.log(
-    `electron per-file coverage: ${floored} files at or above their floors ` +
+    `electron per-file coverage: ${floored} files at or above their line/func floors ` +
       `(${Object.keys(config.unmeasured_entrypoints).length} entrypoint(s) exempt).`,
   );
   return 0;

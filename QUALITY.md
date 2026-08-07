@@ -107,17 +107,25 @@ and prints what to do when it fails. This is the map, not the manual.
   load-bearing rather than a convention the orphan map check can walk around.
 - **Electron per-file coverage floors** (`electron/coverage_floors.json` +
   `electron/tools/coverage_gate.ts`, in `VERIFY_ELECTRON` as
-  `electron-coverage`): Bun writes lcov; the gate walks every
-  `electron/src/**/*.ts` file so an unimported module cannot escape as
-  "not measured". Floors record what the suite measured when the gate landed
-  and only ratchet upward (`make ratchet` reads the same JSON).
-  `main.ts` is listed under `unmeasured_entrypoints` because unit tests must
-  not launch a `BrowserWindow` (#97); growing that exemption list is a
-  ratchet failure. Planted proofs live in `electron/tests/coverage_gate.test.ts`.
-  Mutation testing on the Electron protocol surface stays deferred with
-  measured cost: pure protocol code is 163 lines
+  `electron-coverage`): Bun writes lcov; the gate walks every governed
+  `src/**` and `tools/**` TypeScript file so an unimported module cannot
+  escape as "not measured". Floors record line **and** function percents
+  (`DA` + `FNF`/`FNH`) — Bun 1.3.9 emits no branch records, and function
+  floors are what catch registration-only hits (the `ipcMain.handle` call
+  runs; the arrow body never does). Paths are relative to `electron/`.
+  `src/main.ts` is listed under `unmeasured_entrypoints` because unit tests
+  must not launch a `BrowserWindow` (#97); growing that exemption list is a
+  ratchet failure. The gate floors itself (`tools/coverage_gate.ts`), same
+  as `tools/coverage_gate.py:34`. Planted proofs live in
+  `electron/tests/coverage_gate.test.ts`. Invoke-handler and preload channel
+  bindings are asserted behaviorally (fake registry / captured `invoke`), not
+  by reading source. Bun's `FNH` for `preload.ts` under dynamic `import()`
+  stays at 3/8 even when every binding is called — the channel-mapping test
+  is what makes a swapped `CHANNELS.*` fail, not the 37% func floor.
+  Mutation testing on the Electron protocol surface stays
+  deferred with measured cost: pure protocol code is 163 lines
   (`actions.ts` + `channels.ts` + `dispatch_allowlist.ts`), already at 100%
-  line coverage with payload-shape assertions in
+  lines and funcs with payload-shape assertions in
   `electron/tests/dispatch.test.ts` (4 tests / 11 ms). `@stryker-mutator/core`
   9.6.1 alone is a 291 KB pack plus a TypeScript runner plugin and a second
   mutation toolchain in the Bun-only lane — not justified until protocol logic

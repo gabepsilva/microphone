@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
+import { CHANNELS } from "../src/protocol/channels";
 import {
   PRELOAD_ALLOWLIST,
   allowlistKeys,
@@ -12,9 +13,11 @@ type StateListener = (event: unknown, state: unknown) => void;
 
 async function loadPreload(modulePath: string): Promise<{
   exposed: ExposedApi;
+  invokes: Array<{ channel: string; args: unknown[] }>;
   emitState: (state: unknown) => void;
 }> {
   let exposed: ExposedApi | undefined;
+  const invokes: Array<{ channel: string; args: unknown[] }> = [];
   const listeners = new Map<string, Set<StateListener>>();
   mock.module("electron", () => ({
     contextBridge: {
@@ -23,7 +26,10 @@ async function loadPreload(modulePath: string): Promise<{
       },
     },
     ipcRenderer: {
-      invoke: async () => undefined,
+      invoke: async (channel: string, ...args: unknown[]) => {
+        invokes.push({ channel, args });
+        return { ok: true };
+      },
       on: (channel: string, listener: StateListener) => {
         const set = listeners.get(channel) ?? new Set<StateListener>();
         set.add(listener);
@@ -41,6 +47,7 @@ async function loadPreload(modulePath: string): Promise<{
   }
   return {
     exposed,
+    invokes,
     emitState: (state: unknown) => {
       for (const set of listeners.values()) {
         for (const listener of set) {
@@ -66,6 +73,36 @@ describe("preload allowlist", () => {
     const { exposed } = await loadPreload("./fixtures/preload_extra_key.ts");
     expect(allowlistKeys(exposed)).toContain("readFile");
     expect(matchesAllowlist(exposed)).toBe(false);
+  });
+
+  it("each invoke binding hits its own CHANNELS entry", async () => {
+    const { exposed, invokes } = await loadPreload("../src/preload.ts");
+
+    const snapshot = exposed.snapshot as () => Promise<unknown>;
+    const devicesList = exposed.devicesList as () => Promise<unknown>;
+    const commandsList = exposed.commandsList as () => Promise<unknown>;
+    const capabilities = exposed.capabilities as () => Promise<unknown>;
+    const dispatch = exposed.dispatch as (
+      action: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<unknown>;
+
+    await snapshot();
+    await devicesList();
+    await commandsList();
+    await capabilities();
+    await dispatch("tts.set_enabled", { enabled: false });
+
+    expect(invokes).toEqual([
+      { channel: CHANNELS.snapshot, args: [] },
+      { channel: CHANNELS.devicesList, args: [] },
+      { channel: CHANNELS.commandsList, args: [] },
+      { channel: CHANNELS.capabilities, args: [] },
+      {
+        channel: CHANNELS.dispatch,
+        args: ["tts.set_enabled", { enabled: false }],
+      },
+    ]);
   });
 
   it("onState forwards ipc events and unsubscribe removes the listener", async () => {

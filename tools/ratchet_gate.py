@@ -120,11 +120,32 @@ def _electron_floors_payload(source: str) -> dict:
     return json.loads(source)
 
 
+def _check_electron_floor_map(
+    label: str,
+    was_floors: dict,
+    now_floors: dict,
+    failures: list[str],
+) -> None:
+    for path, floor in was_floors.items():
+        if path not in now_floors:
+            if Path(f"electron/{path}").exists():
+                failures.append(
+                    f"electron/{path}: {label} floor removed while the file "
+                    "still exists."
+                )
+            continue
+        if now_floors[path] < floor:
+            failures.append(
+                f"electron/{path}: {label} floor lowered "
+                f"{floor:g} -> {now_floors[path]:g}."
+            )
+
+
 def _check_electron_coverage_floors(base: str, failures: list[str]) -> None:
     """Electron floors live in JSON so the Bun gate and this ratchet share them.
 
-    Weakening means a lowered per-file floor, a lowered new-file floor, a
-    removed floor while ``electron/src/<path>`` still exists, or a newly
+    Weakening means a lowered per-file line/func floor, a lowered new-file
+    floor, a removed floor while ``electron/<path>`` still exists, or a newly
     added ``unmeasured_entrypoints`` key (that shrinks what the gate measures,
     the same way narrowing mutmut ``source_paths`` does).
     """
@@ -142,30 +163,28 @@ def _check_electron_coverage_floors(base: str, failures: list[str]) -> None:
     now = _electron_floors_payload(
         Path(ELECTRON_COVERAGE_FLOORS).read_text(encoding="utf-8")
     )
-    was_floors = was.get("floors") or {}
-    now_floors = now.get("floors") or {}
-    was_new = was.get("new_file_floor")
-    now_new = now.get("new_file_floor")
+    _check_electron_floor_map(
+        "line", was.get("floors") or {}, now.get("floors") or {}, failures
+    )
+    _check_electron_floor_map(
+        "func",
+        was.get("func_floors") or {},
+        now.get("func_floors") or {},
+        failures,
+    )
+
+    for key in ("new_file_floor", "new_file_func_floor"):
+        was_new = was.get(key)
+        now_new = now.get(key)
+        if (
+            was_new is not None
+            and now_new is not None
+            and float(now_new) < float(was_new)
+        ):
+            failures.append(f"electron {key} lowered {was_new:g} -> {now_new:g}.")
+
     was_exempt = set((was.get("unmeasured_entrypoints") or {}).keys())
     now_exempt = set((now.get("unmeasured_entrypoints") or {}).keys())
-
-    for path, floor in was_floors.items():
-        if path not in now_floors:
-            if Path(f"electron/src/{path}").exists():
-                failures.append(
-                    f"electron/{path}: coverage floor removed while the file "
-                    "still exists."
-                )
-            continue
-        if now_floors[path] < floor:
-            failures.append(
-                f"electron/{path}: coverage floor lowered "
-                f"{floor:g} -> {now_floors[path]:g}."
-            )
-
-    if was_new is not None and now_new is not None and float(now_new) < float(was_new):
-        failures.append(f"electron new_file_floor lowered {was_new:g} -> {now_new:g}.")
-
     added_exempt = sorted(now_exempt - was_exempt)
     if added_exempt:
         failures.append(

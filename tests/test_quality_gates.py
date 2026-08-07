@@ -910,9 +910,11 @@ BASE_MAKEFILE = "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 90\n"
 BASE_ELECTRON_FLOORS = (
     "{\n"
     '  "new_file_floor": 60.0,\n'
-    '  "floors": {"client.ts": 90.0},\n'
+    '  "new_file_func_floor": 60.0,\n'
+    '  "floors": {"src/client.ts": 90.0},\n'
+    '  "func_floors": {"src/client.ts": 80.0},\n'
     '  "unmeasured_entrypoints": {\n'
-    '    "main.ts": "process entry (#97)"\n'
+    '    "src/main.ts": "process entry (#97)"\n'
     "  }\n"
     "}\n"
 )
@@ -1013,8 +1015,21 @@ BASE_FILES = {
             "electron/coverage_floors.json",
             "{\n"
             '  "new_file_floor": 60.0,\n'
-            '  "floors": {"client.ts": 40.0},\n'
-            '  "unmeasured_entrypoints": {"main.ts": "process entry (#97)"}\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 40.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+            "}\n",
+        ),
+        (
+            "lowered Electron func floor",
+            "electron/coverage_floors.json",
+            "{\n"
+            '  "new_file_floor": 60.0,\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 10.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
             "}\n",
         ),
         (
@@ -1022,8 +1037,10 @@ BASE_FILES = {
             "electron/coverage_floors.json",
             "{\n"
             '  "new_file_floor": 10.0,\n'
-            '  "floors": {"client.ts": 90.0},\n'
-            '  "unmeasured_entrypoints": {"main.ts": "process entry (#97)"}\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
             "}\n",
         ),
         (
@@ -1031,10 +1048,12 @@ BASE_FILES = {
             "electron/coverage_floors.json",
             "{\n"
             '  "new_file_floor": 60.0,\n'
-            '  "floors": {"client.ts": 90.0},\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
             '  "unmeasured_entrypoints": {\n'
-            '    "main.ts": "process entry (#97)",\n'
-            '    "client.ts": "quietly exempted"\n'
+            '    "src/main.ts": "process entry (#97)",\n'
+            '    "src/client.ts": "quietly exempted"\n'
             "  }\n"
             "}\n",
         ),
@@ -1070,8 +1089,10 @@ def test_ratchet_rejects_removing_an_electron_floor_while_file_exists(
     (repo / "electron/coverage_floors.json").write_text(
         "{\n"
         '  "new_file_floor": 60.0,\n'
+        '  "new_file_func_floor": 60.0,\n'
         '  "floors": {},\n'
-        '  "unmeasured_entrypoints": {"main.ts": "process entry (#97)"}\n'
+        '  "func_floors": {},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
         "}\n",
         encoding="utf-8",
     )
@@ -1089,8 +1110,10 @@ def test_ratchet_allows_dropping_an_electron_floor_when_file_is_gone(
     (repo / "electron/coverage_floors.json").write_text(
         "{\n"
         '  "new_file_floor": 60.0,\n'
+        '  "new_file_func_floor": 60.0,\n'
         '  "floors": {},\n'
-        '  "unmeasured_entrypoints": {"main.ts": "process entry (#97)"}\n'
+        '  "func_floors": {},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
         "}\n",
         encoding="utf-8",
     )
@@ -1105,8 +1128,10 @@ def test_ratchet_allows_a_raised_electron_floor(tmp_path, monkeypatch) -> None:
     (repo / "electron/coverage_floors.json").write_text(
         "{\n"
         '  "new_file_floor": 80.0,\n'
-        '  "floors": {"client.ts": 99.0},\n'
-        '  "unmeasured_entrypoints": {"main.ts": "process entry (#97)"}\n'
+        '  "new_file_func_floor": 80.0,\n'
+        '  "floors": {"src/client.ts": 99.0},\n'
+        '  "func_floors": {"src/client.ts": 95.0},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
         "}\n",
         encoding="utf-8",
     )
