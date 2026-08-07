@@ -1,6 +1,8 @@
 import net from "node:net";
 import path from "node:path";
 
+import { applyStateFragment, emptyAppState, type AppState } from "./state";
+
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   const runtime = env.XDG_RUNTIME_DIR;
   if (!runtime) {
@@ -16,7 +18,19 @@ type Pending = {
   reject: (error: Error) => void;
 };
 
-/** JSON-RPC client for the TagAlong Unix socket. Injectable connect for tests. */
+type PollResult = {
+  events: Array<{ sequence: number; name: string; payload: Record<string, unknown> }>;
+  lost: boolean;
+};
+
+type SnapshotResult = {
+  state: AppState;
+  sequence: number;
+  instance: string;
+  protocol_version: number;
+};
+
+/** JSON-RPC client for one TagAlong Unix socket. Injectable connect for tests. */
 export class TagAlongClient {
   private _socket: net.Socket | null = null;
   private _connecting: Promise<net.Socket> | null = null;
@@ -37,6 +51,16 @@ export class TagAlongClient {
       this._pending.set(id, { resolve, reject });
       socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
+  }
+
+  /** Drop the socket so the next call opens a fresh connection. */
+  close(): void {
+    const socket = this._socket;
+    this._failAll(new Error("connection closed"));
+    this._reset();
+    if (socket !== null && !socket.destroyed) {
+      socket.destroy();
+    }
   }
 
   private _ensure(): Promise<net.Socket> {
@@ -91,7 +115,6 @@ export class TagAlongClient {
       this._buffer = this._buffer.slice(newline + 1);
       let payload: {
         id?: number;
-        method?: string;
         error?: { message: string };
         result?: unknown;
       };
@@ -101,7 +124,9 @@ export class TagAlongClient {
         this._failAll(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      if (payload.method !== "event" && payload.id !== undefined) {
+      // Transport is poll-only — the server never pushes ``method: "event"``.
+      // Match responses by id only (#96).
+      if (payload.id !== undefined) {
         const pending = this._pending.get(payload.id);
         if (pending) {
           this._pending.delete(payload.id);
@@ -128,4 +153,105 @@ export class TagAlongClient {
     this._connecting = null;
     this._buffer = "";
   }
+}
+
+export type SessionEventsOptions = {
+  /** Long-poll budget in ms. Default 30s. */
+  timeoutMs?: number;
+  onState: (state: AppState) => void;
+  onError?: (error: Error) => void;
+};
+
+/**
+ * Parked long-poll loop on a dedicated connection.
+ *
+ * Commands must use a second {@link TagAlongClient}: a parked ``poll`` starves
+ * its own socket (transport sequential `_handle`, #96 G1).
+ */
+export class SessionEvents {
+  private _state: AppState = emptyAppState();
+  private _stopped = true;
+  private _loop: Promise<void> | null = null;
+  private readonly timeoutMs: number;
+  private readonly onState: (state: AppState) => void;
+  private readonly onError: (error: Error) => void;
+
+  constructor(
+    private readonly events: TagAlongClient,
+    options: SessionEventsOptions,
+  ) {
+    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.onState = options.onState;
+    this.onError = options.onError ?? (() => undefined);
+  }
+
+  get state(): AppState {
+    return this._state;
+  }
+
+  async start(): Promise<void> {
+    if (!this._stopped) {
+      return;
+    }
+    this._stopped = false;
+    await this._subscribe();
+    this._loop = this._run();
+  }
+
+  stop(): void {
+    this._stopped = true;
+    this.events.close();
+  }
+
+  private async _subscribe(): Promise<void> {
+    const snapshot = (await this.events.call("subscribe")) as SnapshotResult;
+    this._state = snapshot.state;
+    this.onState(this._state);
+  }
+
+  private async _run(): Promise<void> {
+    while (!this._stopped) {
+      try {
+        const polled = (await this.events.call("poll", {
+          timeout_ms: this.timeoutMs,
+        })) as PollResult;
+        if (this._stopped) {
+          return;
+        }
+        if (polled.lost) {
+          // Terminal per subscription — only subscribe mints a fresh one.
+          await this._subscribe();
+          continue;
+        }
+        for (const event of polled.events) {
+          if (event.name === "state.changed") {
+            this._state = applyStateFragment(this._state, event.payload ?? {});
+            this.onState(this._state);
+          }
+        }
+      } catch (error) {
+        if (this._stopped) {
+          return;
+        }
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.onError(err);
+        // Drop the dead socket and resubscribe on a fresh connection.
+        this.events.close();
+        try {
+          await this._subscribe();
+        } catch (resubscribeError) {
+          const nested =
+            resubscribeError instanceof Error
+              ? resubscribeError
+              : new Error(String(resubscribeError));
+          this.onError(nested);
+          await delay(250);
+        }
+      }
+    }
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
