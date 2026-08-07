@@ -16,3 +16,7 @@ export function parseCommandSpec(value: unknown): CommandSpec | null;
 export function parseCommandList(value: unknown): CommandSpec[];
 
 export function clampIndex(index: number, length: number): number;
+
+export function findCommand(specs: CommandSpec[], text: string): CommandSpec | null;
+
+export function slashArguments(text: string): string[];

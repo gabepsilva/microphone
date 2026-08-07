@@ -178,3 +178,19 @@ describe("markdown rendering is text, never markup", () => {
     expect(flatText(el)).toBe(`ab1${hostile}`);
   });
 });
+
+describe("isSafeUrl", () => {
+  it("allows http(s) and mailto after trim", () => {
+    expect(isSafeUrl("https://example.com")).toBe(true);
+    expect(isSafeUrl("  http://example.com/path  ")).toBe(true);
+    expect(isSafeUrl("mailto:a@b.c")).toBe(true);
+  });
+
+  it("rejects javascript, data, and scheme-smuggling whitespace", () => {
+    expect(isSafeUrl("javascript:alert(1)")).toBe(false);
+    expect(isSafeUrl("data:text/html,x")).toBe(false);
+    expect(isSafeUrl("https://a.com\njavascript:alert(1)")).toBe(false);
+    expect(isSafeUrl("https://a.com\tjavascript:alert(1)")).toBe(false);
+    expect(isSafeUrl("")).toBe(false);
+  });
+});

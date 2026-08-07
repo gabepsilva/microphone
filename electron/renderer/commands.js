@@ -185,3 +185,47 @@ export function clampIndex(index, length) {
   }
   return ((index % length) + length) % length;
 }
+
+/**
+ * Resolve a typed `/name …args` against the session catalog.
+ *
+ * Only the first token is the command; anything after is arguments. The
+ * palette closes once arguments appear (`commandQuery`), but Enter on a
+ * finished line still has to find the same entry.
+ *
+ * @param {CommandSpec[]} specs
+ * @param {string} text
+ * @returns {CommandSpec | null}
+ */
+export function findCommand(specs, text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+  const token = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (token === "") {
+    return null;
+  }
+  return (
+    specs.find(
+      (spec) =>
+        spec.name.toLowerCase() === token ||
+        spec.aliases.some((alias) => alias.toLowerCase() === token),
+    ) ?? null
+  );
+}
+
+/**
+ * Whitespace-delimited arguments after the command name.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function slashArguments(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed.startsWith("/")) {
+    return [];
+  }
+  const parts = trimmed.slice(1).split(/\s+/).filter(Boolean);
+  return parts.slice(1);
+}

@@ -433,6 +433,21 @@ def test_a_note_becomes_a_dim_entry(tui) -> None:
     assert facade.app.entries[0].kind == "note"
 
 
+def test_a_remote_message_becomes_a_speech_entry(tui) -> None:
+    # Socket peers have no prompt of their own; this path draws for them.
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.show_message(tui.AGENT, "hello from a client")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert entry_texts(facade) == ["hello from a client"]
+    assert facade.app.entries[0].kind == "speech"
+    assert facade.app.entries[0].source == tui.AGENT
+
+
 def test_a_codex_turn_streams_into_one_row_and_closes(tui) -> None:
     facade = tui.VoiceCodexTUI()
 

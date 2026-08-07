@@ -264,6 +264,22 @@ def test_headless_device_lists_and_notes_do_not_need_textual() -> None:
     assert _texts(host) == ["hello"]
 
 
+def test_headless_show_message_draws_accepted_speech() -> None:
+    # Socket peers have no prompt; show_message is what puts their line on
+    # the transcript. Unlike commit(), the text is final when it arrives.
+    host = HeadlessSession()
+    recorded: list[Entry] = []
+    host.hooks.on_entry = recorded.append
+
+    host.show_message("Agent", "hello from a client")
+
+    assert [(e.kind, e.source, e.text) for e in host.transcript.entries()] == [
+        ("speech", "Agent", "hello from a client")
+    ]
+    assert [e.text for e in recorded] == ["hello from a client"]
+    assert recorded[0].recorded is True
+
+
 def test_event_pump_apply_updates_headless_session_state() -> None:
     host = HeadlessSession(SessionState(tts_enabled=True))
     apply_state_fragment(host.state, {"tts_enabled": False})

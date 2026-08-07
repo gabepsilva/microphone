@@ -198,11 +198,20 @@ export function parseMarkdown(source) {
 /**
  * Only these schemes become a real anchor. A link the model wrote is still
  * untrusted input, so `javascript:` and friends stay plain text.
+ *
+ * Reject whitespace and controls after trim: a prefix check alone would
+ * accept `https://a.com\\njavascript:…`, which matters once an
+ * open-externally channel starts using this gate.
+ *
  * @param {string} url
  * @returns {boolean}
  */
 export function isSafeUrl(url) {
-  return /^(?:https?:\/\/|mailto:)/i.test(String(url ?? "").trim());
+  const value = String(url ?? "").trim();
+  if (value === "" || /[\s\u0000-\u001f\u007f]/.test(value)) {
+    return false;
+  }
+  return /^(?:https?:\/\/|mailto:)/i.test(value);
 }
 
 function appendInline(document, host, text) {

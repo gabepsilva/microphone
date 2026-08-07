@@ -12,8 +12,10 @@ import {
 import {
   clampIndex,
   commandQuery,
+  findCommand,
   matchCommands,
   parseCommandList,
+  slashArguments,
 } from "./commands.js";
 import {
   effortForModel,
@@ -245,25 +247,21 @@ function markAttached(count) {
   button.title = count > 0 ? `${count} image attached` : "Attach an image";
 }
 
-/** Resolve a typed `/name` against the session catalog. */
-function findCommand(text) {
-  const token = text.slice(1).split(/\s+/)[0].toLowerCase();
-  return (
-    catalog.find(
-      (spec) =>
-        spec.name.toLowerCase() === token ||
-        spec.aliases.some((alias) => alias.toLowerCase() === token),
-    ) ?? null
-  );
-}
-
 async function send() {
   const text = composeText.value;
   // A slash line is a command, never something Taga is asked to answer.
   if (text.startsWith("/")) {
-    const spec = findCommand(text.trim());
+    const trimmed = text.trim();
+    const spec = findCommand(catalog, trimmed);
     if (spec === null) {
-      setBanner(`unknown command: ${text.trim()}`, true);
+      setBanner(`unknown command: ${trimmed}`, true);
+      return;
+    }
+    // Action-backed commands dispatch with an empty payload — there is no
+    // CommandRouter here to validate args the way the TUI does. Refuse
+    // leftovers so `/new keep` cannot silently run `session.new`.
+    if (spec.action_id !== null && slashArguments(trimmed).length > 0) {
+      setBanner(`usage: /${spec.name}`, true);
       return;
     }
     paletteRows = [spec];

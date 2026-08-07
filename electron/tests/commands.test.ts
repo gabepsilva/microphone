@@ -3,9 +3,11 @@ import { describe, expect, it } from "bun:test";
 import {
   clampIndex,
   commandQuery,
+  findCommand,
   matchCommands,
   parseCommandList,
   parseCommandSpec,
+  slashArguments,
   type CommandSpec,
 } from "../renderer/commands.js";
 
@@ -109,5 +111,22 @@ describe("palette selection", () => {
     expect(clampIndex(3, 3)).toBe(0);
     expect(clampIndex(-1, 3)).toBe(2);
     expect(clampIndex(5, 0)).toBe(0);
+  });
+});
+
+describe("slash line resolution", () => {
+  it("resolves the first token against name and aliases", () => {
+    expect(findCommand(CATALOG, "/new")?.name).toBe("new");
+    expect(findCommand(CATALOG, "/clear")?.name).toBe("new");
+    expect(findCommand(CATALOG, "/NEW keep")?.name).toBe("new");
+    expect(findCommand(CATALOG, "/missing")).toBeNull();
+    expect(findCommand(CATALOG, "new")).toBeNull();
+  });
+
+  it("exposes arguments after the command name", () => {
+    expect(slashArguments("/new")).toEqual([]);
+    expect(slashArguments("/new keep")).toEqual(["keep"]);
+    expect(slashArguments("  /help one two  ")).toEqual(["one", "two"]);
+    expect(slashArguments("plain")).toEqual([]);
   });
 });
