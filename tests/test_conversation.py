@@ -1834,6 +1834,33 @@ def test_recovery_fork_failure_uses_the_existing_error_path(
     assert elapsed < 0.45
 
 
+def test_recovery_fork_does_not_clobber_a_newer_session(quiet_conversation) -> None:
+    """session.new during thread_fork must win over a fork of the wedged thread."""
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+    fresh = FakeThread("thread-FRESH")
+
+    def fork_while_session_new(thread_id, **kwargs):
+        conversation.fake_codex.forked_from = thread_id
+        conversation.fake_codex.fork_kwargs = kwargs
+        conversation.adopt_fresh_thread(
+            (fresh, conversation.model, conversation.reasoning_effort)
+        )
+        return FakeThread("thread-2")
+
+    conversation.fake_codex.thread_fork = fork_while_session_new
+    conversation.thread_poisoned = True
+
+    assert conversation._fork_for_recovery() is True
+    assert conversation.thread.id == "thread-FRESH"
+    assert conversation.thread_poisoned is False
+    assert conversation.fake_codex.forked_from == "thread-1"
+    assert (
+        "set_codex",
+        {"model": "gpt-5.6-luna", "thread": "thread-2"},
+    ) not in conversation.fake_display.calls
+
+
 def test_a_synchronously_failing_stream_surfaces_immediately(
     quiet_conversation,
 ) -> None:

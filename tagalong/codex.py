@@ -740,10 +740,18 @@ class CodexConversation:
         Model-switch forks set ``warmup_pending`` so the slow first turn is
         paid while nobody waits. A recovery fork is the opposite: a user turn
         is already waiting, so warming first would delay the reply further.
+
+        ``thread_fork`` is a network round trip. ``adopt_fresh_thread`` (and a
+        model-switch fork) can install a newer ``self.thread`` from another
+        thread while we wait, so the result is installed only if ``generation``
+        is still the one we forked from.
         """
+        with self.context_lock:
+            generation = self.generation
+            thread_id = self.thread.id
         try:
             forked = self.codex.thread_fork(
-                self.thread.id,
+                thread_id,
                 model=self.model,
                 service_tier=self.service_tier,
                 sandbox=self.sandbox,
@@ -758,6 +766,11 @@ class CodexConversation:
             self.transcript_display.error(f"Could not recover Codex thread: {error}")
             return False
         with self.context_lock:
+            if generation != self.generation:
+                # session.new (or another adopt) won while the fork was in
+                # flight — discard the fork of the wedged thread.
+                self.thread_poisoned = False
+                return True
             self.thread = forked
             self.thread_poisoned = False
         self.transcript_display.set_codex(model=self.model, thread=self.thread.id)
@@ -802,8 +815,9 @@ class CodexConversation:
     def _attempt(self, turn_input, reply_to, generation, speculation=None):
         """Run one turn to completion; report the errors it streamed back."""
         # Poison is checked before any start, including the abandoned early
-        # return: the listener only sets the flag, and the worker is the sole
-        # writer of self.thread.
+        # return: the listener only sets the flag. The worker installs recovery
+        # forks here; adopt_fresh_thread / model-switch are other writers, so
+        # _fork_for_recovery re-checks generation before installing.
         if not self._recover_poisoned_thread():
             return []
         if speculation is not None:
