@@ -12,72 +12,10 @@ import {
   rowLayout,
   sourceClass,
   sourceLabel,
-  type DomDocument,
-  type DomElement,
+  usesMarkdownBody,
 } from "../renderer/transcript_view.js";
 
-type FakeNode = DomElement & {
-  nodeType: number;
-  children: FakeNode[];
-  dataset: Record<string, string>;
-  ownerDocument: FakeDocument;
-};
-
-type FakeDocument = DomDocument & {
-  createElement(tag: string): FakeNode;
-};
-
-function makeDocument(): { document: FakeDocument; root: FakeNode } {
-  const document = {} as FakeDocument;
-  const makeNode = (): FakeNode => {
-    const node: FakeNode = {
-      nodeType: 1,
-      textContent: "",
-      className: "",
-      hidden: false,
-      dataset: {},
-      children: [],
-      ownerDocument: document,
-      appendChild(child: DomElement) {
-        this.children.push(child as FakeNode);
-        return child;
-      },
-      replaceChildren(...nodes: DomElement[]) {
-        this.children = nodes as FakeNode[];
-      },
-      replaceWith(_next: DomElement) {
-        void _next;
-      },
-    };
-    return node;
-  };
-  document.createElement = (_tag: string) => makeNode();
-  const root = makeNode();
-  const patchTree = (parent: FakeNode): void => {
-    for (const child of parent.children) {
-      child.replaceWith = (next: DomElement) => {
-        const index = parent.children.indexOf(child);
-        if (index >= 0) {
-          parent.children[index] = next as FakeNode;
-        }
-        patchTree(parent);
-      };
-      patchTree(child);
-    }
-  };
-  const originalAppend = root.appendChild.bind(root);
-  root.appendChild = (child: DomElement) => {
-    const added = originalAppend(child);
-    patchTree(root);
-    return added;
-  };
-  const originalReplace = root.replaceChildren.bind(root);
-  root.replaceChildren = (...nodes: DomElement[]) => {
-    originalReplace(...nodes);
-    patchTree(root);
-  };
-  return { document, root };
-}
+import { flatText, makeDocument, type FakeNode } from "./fake_dom.js";
 
 /** The message bubble, where every piece of entry text lands. */
 function bubble(row: FakeNode): FakeNode {
@@ -96,11 +34,19 @@ function meta(row: FakeNode): FakeNode {
   return found;
 }
 
-function bodyText(row: FakeNode): string | null {
+function body(row: FakeNode): FakeNode {
   const found = bubble(row).children.find((child) =>
     child.className.startsWith("msg-body"),
   );
-  return found?.textContent ?? null;
+  if (found === undefined) {
+    throw new Error("row has no msg-body");
+  }
+  return found;
+}
+
+/** What the body would put on screen, markdown children included. */
+function bodyText(row: FakeNode): string {
+  return flatText(body(row));
 }
 
 function textsIn(node: FakeNode): string[] {
@@ -248,6 +194,47 @@ describe("transcript_view entry model", () => {
     }) as FakeNode;
     expect(row.className).toBe("msg msg-command source-taga");
     expect(textsIn(meta(row))).toEqual(["command", "exit 0"]);
+  });
+
+  it("reads only a finished Taga answer as Markdown", () => {
+    // Mirrors tui.uses_markdown_body — a streaming turn and anything
+    // transcribed from the room stay literal.
+    expect(usesMarkdownBody({ kind: "speech", source: "Taga", text: "**hi**" })).toBe(
+      true,
+    );
+    expect(
+      usesMarkdownBody({
+        kind: "speech",
+        source: "Taga",
+        text: "**hi**",
+        streaming: true,
+      }),
+    ).toBe(false);
+    expect(usesMarkdownBody({ kind: "speech", source: "Voice", text: "**hi**" })).toBe(
+      false,
+    );
+    expect(usesMarkdownBody({ kind: "reasoning", source: "Taga", text: "x" })).toBe(
+      false,
+    );
+    expect(usesMarkdownBody({ kind: "speech", source: "Taga", text: "" })).toBe(false);
+  });
+
+  it("builds a Taga answer's markdown as elements, and leaves a voice line alone", () => {
+    const { document } = makeDocument();
+    const answer = buildTranscriptRowElement(document, {
+      id: 8,
+      entry: { kind: "speech", source: "Taga", text: "run `ls`\n\n```sh\nls -l\n```" },
+    }) as FakeNode;
+    expect(body(answer).className).toBe("msg-body kind-speech md");
+    const blocks = body(answer).children.map((child) => child.className);
+    expect(blocks).toEqual(["md-paragraph", "md-code"]);
+
+    const spoken = buildTranscriptRowElement(document, {
+      id: 9,
+      entry: { kind: "speech", source: "Voice", text: "run `ls`" },
+    }) as FakeNode;
+    expect(body(spoken).children).toHaveLength(0);
+    expect(body(spoken).textContent).toBe("run `ls`");
   });
 
   it("says why the partial line is quiet instead of hiding it", () => {

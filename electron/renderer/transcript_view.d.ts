@@ -13,6 +13,7 @@ export type TranscriptDomEvent = {
 /** Minimal DOM surface used by the renderer helpers (no DOM lib in tsc). */
 export type DomDocument = {
   createElement(tag: string): DomElement;
+  createTextNode(text: string): DomElement;
 };
 
 export type DomElement = {
@@ -22,6 +23,7 @@ export type DomElement = {
   hidden: boolean;
   dataset: Record<string, string>;
   textContent: string | null;
+  title?: string;
   children: ArrayLike<DomElement>;
   ownerDocument: DomDocument;
   appendChild(child: DomElement): DomElement;
@@ -38,6 +40,8 @@ export function sourceLabel(entry: TranscriptEntryLike): string;
 export function entryBodyText(entry: TranscriptEntryLike): string;
 
 export function entryFootnote(entry: TranscriptEntryLike): string;
+
+export function usesMarkdownBody(entry: TranscriptEntryLike): boolean;
 
 export function rowLayout(
   entry: TranscriptEntryLike,

@@ -182,6 +182,137 @@ body {
   color: var(--danger);
 }
 
+/* -- markdown inside an answer --------------------------------------- */
+
+.msg-body.md {
+  white-space: normal;
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md-paragraph {
+  margin: 0 0 0.7rem;
+  white-space: pre-wrap;
+}
+.md-heading {
+  margin: 1.2rem 0 0.5rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+.md-h1 {
+  font-size: 1.2rem;
+}
+.md-h2 {
+  font-size: 1.1rem;
+}
+.md-h3,
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-size: 1rem;
+}
+.md-list {
+  margin: 0 0 0.7rem;
+  padding-left: 1.35rem;
+}
+.md-item {
+  margin: 0.15rem 0;
+}
+.md-item::marker {
+  color: var(--faint);
+}
+.md-quote {
+  margin: 0 0 0.7rem;
+  padding: 0.1rem 0 0.1rem 0.85rem;
+  border-left: 2px solid var(--surface-3);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.md-rule {
+  margin: 1rem 0;
+  border: none;
+  border-top: 1px solid var(--line);
+}
+.md-code {
+  position: relative;
+  margin: 0 0 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+.md-code code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre;
+}
+.md-code[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0.35rem;
+  right: 0.6rem;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.md-code[data-lang] code {
+  display: block;
+  padding-top: 0.35rem;
+}
+.md-strong {
+  font-weight: 650;
+  color: var(--text);
+}
+.md-em {
+  font-style: italic;
+}
+.md-code-inline {
+  padding: 0.05rem 0.3rem;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+}
+.md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+.md-link-blocked {
+  color: var(--muted);
+  text-decoration: none;
+}
+.md-table {
+  margin: 0 0 0.7rem;
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 13px;
+}
+.md-table th,
+.md-table td {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+.md-table th {
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+}
+
 /* From the room: a sent bubble, right-aligned like a chat client. */
 .msg-inbound {
   align-items: flex-end;
@@ -426,6 +557,56 @@ body {
   color: var(--muted);
   font-size: 12.5px;
 }
+#command-palette {
+  max-width: 46rem;
+  margin: 0.4rem auto 0;
+  padding: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-height: 15rem;
+  overflow-y: auto;
+}
+#command-palette[hidden] {
+  display: none;
+}
+.command-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.command-row.selected {
+  background: var(--surface-2);
+}
+.command-name {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.command-row.selected .command-name {
+  color: var(--accent);
+}
+.command-aliases {
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.command-summary {
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-empty {
+  padding: 0.3rem 0.6rem;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
 #promptfoot {
   display: flex;
   justify-content: space-between;

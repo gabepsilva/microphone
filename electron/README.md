@@ -103,12 +103,30 @@ far-end applications), and Codex credentials as for a normal TUI session.
 7. **Compose**
    - Type text, optionally attach an image (**+** button or paste), press
      **Enter** — or the send button.
-   - Shift+Enter adds a line; Esc clears the draft.
-   - Confirm the TUI shows the message as an **Agent** line (not Human Text).
+   - Shift+Enter adds a line; Esc dismisses the palette, then clears the draft.
+   - Confirm the sent line appears in **both** clients' transcripts as an
+     **Agent** line (not Human Text). Nothing local draws a socket peer's
+     message; `application._show_remote_message` does, so a session started
+     before that fix shows nothing here.
    - Confirm a spoken/model reply still works when Voice reply is on.
 
-8. **Security smoke**
-   - DevTools → console: `window.require` / `process` should be unavailable
-     (`contextIsolation` + no `nodeIntegration`).
-   - Attempting `session.quit` via a forged preload path must fail the
-     allowlist (see `electron/tests/dispatch.test.ts`).
+8. **Slash commands**
+   - Type `/` — the palette lists `commands.list` below the prompt. ↑↓ browse,
+     Tab completes, Enter runs, Esc dismisses. Ranking is ported from
+     `commands.match_commands`; `tests/commands.test.ts` pins the tiers.
+   - `/new` dispatches `session.new`. `/help` names no action — the catalog it
+     would print is the menu already on screen.
+
+9. **Markdown**
+   - A finished Taga answer renders fenced code, headings, lists, quotes,
+     tables, and inline emphasis (`renderer/markdown.js`, mirroring
+     `tui.uses_markdown_body`). Streaming turns and anything transcribed from
+     the room stay literal.
+   - Links are shown but **never** given an `href`: nothing in this window may
+     navigate away from the app, and there is no open-externally channel yet.
+
+10. **Security smoke**
+    - DevTools → console: `window.require` / `process` should be unavailable
+      (`contextIsolation` + no `nodeIntegration`).
+    - Attempting `session.quit` via a forged preload path must fail the
+      allowlist (see `electron/tests/dispatch.test.ts`).

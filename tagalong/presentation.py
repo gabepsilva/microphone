@@ -46,6 +46,18 @@ class TranscriptSink(Protocol):
     def close_speaker(self, speaker: str) -> None: ...
 
 
+class MessageSink(Protocol):
+    """Show a message that arrived already finished, with no live line.
+
+    Separate from :class:`TranscriptSink` because recognition is not
+    involved: speech arrives as revisable text and settles through
+    ``commit``, while a message typed into a socket client is final when it
+    arrives and has no prompt of its own to draw it.
+    """
+
+    def show_message(self, speaker: str, text: str) -> None: ...
+
+
 class SessionStatusSink(Protocol):
     """Report what the session is configured to do right now."""
 

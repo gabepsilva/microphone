@@ -30,7 +30,10 @@ export const SHORTCUTS_PROMPT = [
   { keys: "↵", label: "Send message", id: "prompt.send" },
   { keys: "⇧↵", label: "New line" },
   { keys: "^V", label: "Paste text or image" },
-  { keys: "⎋", label: "Clear input", id: "prompt.clear" },
+  { keys: "/", label: "Open command palette" },
+  { keys: "↑↓", label: "Browse commands" },
+  { keys: "⇥", label: "Complete command" },
+  { keys: "⎋", label: "Dismiss overlay", id: "prompt.clear" },
 ];
 
 /** Bindings that act on the running session. */

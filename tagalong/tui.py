@@ -2772,6 +2772,17 @@ class VoiceCodexTUI:
         self.app.add_entry(entry, record=False)
         self.app._sync_partial()
 
+    def show_message(self, speaker: str, text: str) -> None:
+        """Draw a message a remote client sent; nothing local drew it.
+
+        The prompt draws what is typed here before the action is dispatched,
+        so this path is for socket peers only — see
+        :func:`tagalong.application._show_remote_message`.
+        """
+        self._call(
+            lambda: self.app.add_entry(Entry(kind="speech", source=speaker, text=text))
+        )
+
     def note(self, text: str) -> None:
         """Append a dim system line (policy changes, echo suppression, …)."""
         self._call(lambda: self.app.add_entry(Entry(kind="note", text=text)))

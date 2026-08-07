@@ -12,6 +12,8 @@
  * never innerHTML. Semgrep bans innerHTML under electron/renderer/.
  */
 
+import { renderMarkdownInto } from "./markdown.js";
+
 /** Speakers the transcript colours. Mirrors tui.SOURCE_STYLES. */
 const SOURCE_CLASSES = {
   Voice: "source-voice",
@@ -99,6 +101,25 @@ export function entryBodyText(entry) {
 }
 
 /**
+ * Whether a row's text is read as Markdown. Mirrors tui.uses_markdown_body:
+ * only a finished Taga answer is. A streaming one stays literal so a
+ * half-open fence does not reflow the block under the cursor, and speech
+ * transcribed from a room stays literal so a spoken asterisk cannot restyle
+ * the transcript.
+ * @param {Record<string, unknown>} entry
+ * @returns {boolean}
+ */
+export function usesMarkdownBody(entry) {
+  return (
+    entry.kind === "speech" &&
+    entry.source === "Taga" &&
+    !entry.streaming &&
+    typeof entry.text === "string" &&
+    entry.text !== ""
+  );
+}
+
+/**
  * The small trailing note on a row: how long the thinking took, or how the
  * command ended. Empty when there is nothing to say.
  * @param {Record<string, unknown>} entry
@@ -159,13 +180,15 @@ export function buildTranscriptRowElement(document, row) {
 
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.appendChild(
-    textNode(
-      document,
-      `msg-body kind-${String(entry.kind ?? "")}`,
-      entryBodyText(entry),
-    ),
-  );
+  const bodyClass = `msg-body kind-${String(entry.kind ?? "")}`;
+  if (usesMarkdownBody(entry)) {
+    const body = document.createElement("div");
+    body.className = `${bodyClass} md`;
+    renderMarkdownInto(document, body, entry.text);
+    bubble.appendChild(body);
+  } else {
+    bubble.appendChild(textNode(document, bodyClass, entryBodyText(entry)));
+  }
   for (const line of commandOutputLines(entry)) {
     bubble.appendChild(textNode(document, "msg-output", line, "pre"));
   }

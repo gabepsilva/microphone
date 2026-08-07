@@ -1639,6 +1639,7 @@ def protocol_methods():
     names: set[str] = set()
     for protocol in (
         presentation.TranscriptSink,
+        presentation.MessageSink,
         presentation.SessionStatusSink,
         presentation.CodexStreamSink,
         presentation.ApplicationListSink,

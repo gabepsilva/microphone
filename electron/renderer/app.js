@@ -9,6 +9,12 @@ import {
   commandForEvent,
   nextPolicy,
 } from "./shortcuts.js";
+import {
+  clampIndex,
+  commandQuery,
+  matchCommands,
+  parseCommandList,
+} from "./commands.js";
 
 const NO_MIC = "__none__";
 const NO_AUDIO = "none";
@@ -19,10 +25,15 @@ const partialLine = document.getElementById("partial");
 const emptyScreen = document.getElementById("empty-transcript");
 const transcriptArea = document.getElementById("transcript-area");
 const composeText = document.getElementById("compose-text");
+const palette = document.getElementById("command-palette");
 let applying = false;
 let attachmentIds = [];
 // Last state seen, so a keyboard shortcut can toggle a value it must first read.
 let current = {};
+// The session's slash catalog, and what the open menu is showing of it.
+let catalog = [];
+let paletteRows = [];
+let paletteIndex = 0;
 
 function setBanner(text, isError) {
   banner.textContent = text;
@@ -211,8 +222,32 @@ function markAttached(count) {
   button.title = count > 0 ? `${count} image attached` : "Attach an image";
 }
 
+/** Resolve a typed `/name` against the session catalog. */
+function findCommand(text) {
+  const token = text.slice(1).split(/\s+/)[0].toLowerCase();
+  return (
+    catalog.find(
+      (spec) =>
+        spec.name.toLowerCase() === token ||
+        spec.aliases.some((alias) => alias.toLowerCase() === token),
+    ) ?? null
+  );
+}
+
 async function send() {
   const text = composeText.value;
+  // A slash line is a command, never something Taga is asked to answer.
+  if (text.startsWith("/")) {
+    const spec = findCommand(text.trim());
+    if (spec === null) {
+      setBanner(`unknown command: ${text.trim()}`, true);
+      return;
+    }
+    paletteRows = [spec];
+    paletteIndex = 0;
+    await runSelectedCommand();
+    return;
+  }
   const fileInput = document.getElementById("compose-image");
   const ids = [...attachmentIds];
   if (fileInput.files && fileInput.files[0]) {
@@ -233,6 +268,108 @@ async function send() {
   markAttached(0);
 }
 
+/* -- slash-command palette ------------------------------------------- */
+
+/** Draw the menu for what is typed, and say whether it is open. */
+function syncPalette() {
+  const query = commandQuery(composeText.value);
+  paletteRows = query === null ? [] : matchCommands(catalog, query);
+  if (query === null) {
+    palette.hidden = true;
+    palette.replaceChildren();
+    paletteIndex = 0;
+    return false;
+  }
+  paletteIndex = clampIndex(paletteIndex, paletteRows.length);
+  palette.hidden = false;
+  palette.replaceChildren();
+  if (paletteRows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "command-empty";
+    empty.textContent = "no matching commands";
+    palette.appendChild(empty);
+    return true;
+  }
+  paletteRows.forEach((spec, index) => {
+    const row = document.createElement("div");
+    row.className = index === paletteIndex ? "command-row selected" : "command-row";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === paletteIndex));
+    const name = document.createElement("span");
+    name.className = "command-name";
+    name.textContent = `/${spec.name}`;
+    row.appendChild(name);
+    if (spec.aliases.length > 0) {
+      const aliases = document.createElement("span");
+      aliases.className = "command-aliases";
+      aliases.textContent = spec.aliases.map((alias) => `/${alias}`).join(", ");
+      row.appendChild(aliases);
+    }
+    const summary = document.createElement("span");
+    summary.className = "command-summary";
+    summary.textContent = spec.summary;
+    row.appendChild(summary);
+    row.addEventListener("mousedown", (event) => {
+      // mousedown, not click: the prompt must not lose focus first.
+      event.preventDefault();
+      paletteIndex = index;
+      void runSelectedCommand();
+    });
+    palette.appendChild(row);
+  });
+  return true;
+}
+
+function paletteOpen() {
+  return palette.hidden === false;
+}
+
+function closePalette() {
+  palette.hidden = true;
+  palette.replaceChildren();
+  paletteRows = [];
+  paletteIndex = 0;
+}
+
+function movePaletteSelection(delta) {
+  paletteIndex = clampIndex(paletteIndex + delta, paletteRows.length);
+  syncPalette();
+}
+
+/** Put the highlighted command in the prompt, the way Tab completes it. */
+function completeSelectedCommand() {
+  const spec = paletteRows[paletteIndex];
+  if (spec === undefined) {
+    return;
+  }
+  composeText.value = `/${spec.name}`;
+  autoGrow();
+  syncPalette();
+}
+
+/**
+ * Run the highlighted command.
+ *
+ * A command that names an action dispatches it. `/help` names none — the
+ * catalog it would print is the menu already on screen — so it just leaves
+ * the menu open.
+ */
+async function runSelectedCommand() {
+  const spec = paletteRows[paletteIndex];
+  if (spec === undefined) {
+    return;
+  }
+  if (spec.action_id === null) {
+    completeSelectedCommand();
+    setBanner(`/${spec.name}: ${spec.summary || "listed above"}`);
+    return;
+  }
+  composeText.value = "";
+  autoGrow();
+  closePalette();
+  await dispatch(spec.action_id, {});
+}
+
 /** The prompt grows with the draft, the way the TUI's does. */
 function autoGrow() {
   composeText.style.height = "auto";
@@ -240,8 +377,20 @@ function autoGrow() {
 }
 
 const commands = {
-  "prompt.send": () => void send(),
+  "prompt.send": () => {
+    // Prefer the highlighted row so Enter on `/ne` runs `/new`, not an
+    // unknown partial — same rule as the TUI's prompt.
+    if (paletteOpen() && paletteRows.length > 0) {
+      void runSelectedCommand();
+      return;
+    }
+    void send();
+  },
   "prompt.clear": () => {
+    if (paletteOpen()) {
+      closePalette();
+      return;
+    }
     composeText.value = "";
     autoGrow();
   },
@@ -318,7 +467,26 @@ function bind() {
     commands["session.save_transcript"]();
   });
 
-  composeText.addEventListener("input", autoGrow);
+  composeText.addEventListener("input", () => {
+    autoGrow();
+    syncPalette();
+  });
+  // Browsing and completing the menu happen before the shortcut table sees
+  // the key, so ↑↓ and Tab mean the menu while it is open.
+  composeText.addEventListener("keydown", (event) => {
+    if (!paletteOpen()) {
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      movePaletteSelection(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      completeSelectedCommand();
+    }
+  });
   document.getElementById("send").addEventListener("click", () => {
     commands["prompt.send"]();
   });
@@ -377,10 +545,18 @@ async function boot() {
   renderShortcuts(document.getElementById("shortcuts-session"), SHORTCUTS_SESSION);
   syncEmptyScreen();
   renderPartialLine(partialLine, {});
+  // The prompt has the keyboard from the first frame, as in the TUI.
+  composeText.focus();
   if (!api) {
     return;
   }
   bind();
+  try {
+    catalog = parseCommandList(await api.commandsList());
+  } catch (error) {
+    // A session without a catalog still types; only the menu is missing.
+    setBanner(error.message, true);
+  }
   api.onState((state) => {
     applyState(state);
   });

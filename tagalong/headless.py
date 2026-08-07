@@ -145,6 +145,10 @@ class HeadlessSession:
         self._provisional_turns.setdefault(speaker, []).append(entry)
         self._add_entry(entry, record=False)
 
+    def show_message(self, speaker: str, text: str) -> None:
+        """Draw a message a remote client sent; nothing local drew it."""
+        self._add_entry(Entry(kind="speech", source=speaker, text=text))
+
     def note(self, text: str) -> None:
         self._add_entry(Entry(kind="note", text=text))
 

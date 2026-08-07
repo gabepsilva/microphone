@@ -138,6 +138,19 @@ class TranscriptDisplayPort(Protocol):
     def reset_transcript(self) -> None: ...
 
 
+class MessageDisplayPort(Protocol):
+    """Draw a message that no local interface drew for itself.
+
+    A typist at the TUI sees their line the moment they press enter, because
+    the prompt puts it on screen before the action is dispatched. A socket
+    peer has no such prompt: unless the handler draws it, the message reaches
+    Codex as context and reaches the transcript nowhere, so both clients
+    answer a question neither of them shows being asked.
+    """
+
+    def show_message(self, speaker: str, text: str) -> None: ...
+
+
 class RecorderPort(Protocol):
     """The session-file recorder a new session has to roll."""
 
@@ -215,9 +228,22 @@ def app_state_from_session(state: SessionView) -> AppState:
     )
 
 
+def _show_remote_message(
+    display: MessageDisplayPort | None, request: Request, speaker: str, text: str
+) -> None:
+    """Put a remote actor's message on the transcript.
+
+    Only remote ones: a human typing at the interface has already seen their
+    line appear, and drawing it again here would double every typed message.
+    """
+    if display is not None and request.actor.kind is ActorKind.AGENT:
+        display.show_message(speaker, text)
+
+
 def _send_message(
     conversation: ConversationPort,
     attachments: AttachmentPort | None,
+    display: MessageDisplayPort | None,
     request: Request,
     state: AppState,
 ) -> Effect:
@@ -235,6 +261,8 @@ def _send_message(
         images = ()
     # Agents share message.send with humans; provenance is the speaker label.
     speaker = AGENT if request.actor.kind is ActorKind.AGENT else TEXT
+    # Drawn before ingest so the transcript reads in the order Codex was told.
+    _show_remote_message(display, request, speaker, text)
     conversation.ingest(speaker, text, respond=respond, images=images)
     return Effect.applied(state, image_ids)
 
@@ -245,6 +273,7 @@ def bind_first_slice(
     conversation: ConversationPort,
     tts: SpeechPort,
     attachments: AttachmentPort | None = None,
+    display: MessageDisplayPort | None = None,
 ) -> None:
     """Register the four first-slice handlers on *controller*."""
 
@@ -268,7 +297,7 @@ def bind_first_slice(
         return Effect.pending(state, settle=lambda current, _effective: current)
 
     controller.register(
-        "message.send", partial(_send_message, conversation, attachments)
+        "message.send", partial(_send_message, conversation, attachments, display)
     )
     controller.register("tts.set_enabled", set_tts_enabled)
     controller.register("session.interrupt", interrupt_session)
@@ -431,6 +460,7 @@ def bind_session_transcript_slice(
         ConversationPort, TurnPort, AttachmentPort, TranscriptEntriesPort
     ],
     directory: Path | None = None,
+    display: MessageDisplayPort | None = None,
 ) -> None:
     """Register session and transcript handlers on *controller*.
 
@@ -452,6 +482,7 @@ def bind_session_transcript_slice(
     def append_transcript(request: Request, state: AppState) -> Effect:
         text = str(request.payload["text"])
         speaker = AGENT if request.actor.kind is ActorKind.AGENT else TEXT
+        _show_remote_message(display, request, speaker, text)
         conversation.ingest(speaker, text, respond=False)
         return Effect.applied(state, speaker)
 
