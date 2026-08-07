@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import stat
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,10 +76,13 @@ class Conversation:
 
 
 def wired(
-    tmp_path: Path, *, conversation: Conversation | None = None
+    tmp_path: Path,
+    *,
+    conversation: Conversation | None = None,
+    capacity: int | None = None,
 ) -> tuple[Controller, LocalServer, LocalClient]:
     talk = conversation if conversation is not None else Conversation()
-    controller = Controller()
+    controller = Controller() if capacity is None else Controller(capacity=capacity)
     bind_first_slice(controller, conversation=talk, tts=Speech())
     server = LocalServer(controller, path=tmp_path / "tagalong.sock")
     server.start()
@@ -227,6 +231,7 @@ def test_subscribe_then_poll_sees_state_changed(tmp_path: Path) -> None:
         names = [event["name"] for event in polled["events"]]
         assert "state.changed" in names
         assert "action.applied" in names
+        assert polled["lost"] is False
     finally:
         client.close()
         server.stop()
@@ -238,6 +243,153 @@ def test_poll_without_subscribe_is_an_error(tmp_path: Path) -> None:
         client.call("initialize", {"client": "electron"})
         with pytest.raises(TransportError, match="not subscribed"):
             client.call("poll")
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_reports_lost_after_overflow_and_resubscribe_clears_it(
+    tmp_path: Path,
+) -> None:
+    """lost is terminal per subscription; recovery is subscribe again (#96)."""
+    _, server, client = wired(tmp_path, capacity=2)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        # Each toggle publishes state.changed + action.applied (≥2 events).
+        for enabled in (False, True, False):
+            client.call(
+                "dispatch",
+                {"action": "tts.set_enabled", "payload": {"enabled": enabled}},
+            )
+        polled = client.call("poll")
+        assert polled["lost"] is True
+        assert len(polled["events"]) == 2
+
+        client.call("subscribe")
+        recovered = client.call("poll")
+        assert recovered["lost"] is False
+        assert recovered["events"] == []
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_with_timeout_returns_empty_when_nothing_arrives(tmp_path: Path) -> None:
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        started = time.monotonic()
+        polled = client.call("poll", {"timeout_ms": 150})
+        elapsed = time.monotonic() - started
+        assert polled == {"events": [], "lost": False}
+        assert elapsed >= 0.12
+        assert elapsed < 1.0
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_rejects_invalid_timeout_ms(tmp_path: Path) -> None:
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        with pytest.raises(TransportError, match="timeout_ms must be a number"):
+            client.call("poll", {"timeout_ms": "soon"})
+        with pytest.raises(TransportError, match="timeout_ms must be a number"):
+            client.call("poll", {"timeout_ms": True})
+        with pytest.raises(TransportError, match="timeout_ms must be >= 0"):
+            client.call("poll", {"timeout_ms": -1})
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_with_timeout_returns_when_an_event_arrives(tmp_path: Path) -> None:
+    """Long-poll parks one connection; a second connection must deliver work."""
+    _, server, events = wired(tmp_path)
+    commands = LocalClient(server.path)
+    try:
+        events.call("initialize", {"client": "electron"})
+        events.call("subscribe")
+        commands.call("initialize", {"client": "electron"})
+
+        result: dict[str, object] = {}
+
+        def park() -> None:
+            result["polled"] = events.call("poll", {"timeout_ms": 2000})
+
+        waiter = threading.Thread(target=park)
+        waiter.start()
+        time.sleep(0.05)
+        commands.call(
+            "dispatch", {"action": "tts.set_enabled", "payload": {"enabled": False}}
+        )
+        waiter.join(timeout=2.0)
+        assert not waiter.is_alive()
+        polled = cast(dict[str, object], result["polled"])
+        names = [event["name"] for event in cast(list, polled["events"])]
+        assert "state.changed" in names
+        assert polled["lost"] is False
+    finally:
+        events.close()
+        commands.close()
+        server.stop()
+
+
+def test_devices_list_returns_inputs_and_applications(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tagalong.transport as transport
+
+    monkeypatch.setattr(
+        transport,
+        "input_devices",
+        lambda: [
+            (0, {"name": "Built-in Mic", "max_input_channels": 2}),
+            (3, {"name": "USB Mic", "max_input_channels": 1}),
+        ],
+    )
+    monkeypatch.setattr(transport, "graph", lambda: [{"fake": True}])
+    monkeypatch.setattr(
+        transport,
+        "offered_applications",
+        lambda objects: [("Firefox (playing)", "Firefox")],
+    )
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        listed = client.call("devices.list")
+        assert listed == {
+            "inputs": [
+                {"index": 0, "name": "Built-in Mic", "channels": 2},
+                {"index": 3, "name": "USB Mic", "channels": 1},
+            ],
+            "applications": [{"label": "Firefox (playing)", "name": "Firefox"}],
+        }
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_devices_list_maps_portaudio_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tagalong.transport as transport
+
+    def boom():
+        raise RuntimeError(
+            "Audio device discovery requires the PortAudio system library."
+        )
+
+    monkeypatch.setattr(transport, "input_devices", boom)
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        with pytest.raises(TransportError, match="PortAudio"):
+            client.call("devices.list")
     finally:
         client.close()
         server.stop()
