@@ -189,11 +189,13 @@ class EventLog:
     def publishes_last_second(self) -> int:
         """How many ``publish`` calls landed in the trailing one-second window.
 
-        Read-only: does not prune. ``publish`` is the sole mutator of the
-        deque, under the controller lock that serialises EventLog writes.
+        Read-only: does not prune. Snapshot the deque before iterating —
+        ``publish`` may append/popleft on another thread under the controller
+        lock, and iterating a live deque raises ``RuntimeError``.
         """
         now = self._mono()
-        return sum(1 for stamp in self._publish_times if now - stamp < 1.0)
+        stamps = tuple(self._publish_times)
+        return sum(1 for stamp in stamps if now - stamp < 1.0)
 
     def publish(self, name: str, payload: Mapping[str, object] | None = None) -> Event:
         """Number an event and hand it to every open subscriber."""

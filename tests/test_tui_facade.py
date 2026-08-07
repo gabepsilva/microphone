@@ -165,6 +165,48 @@ def test_partials_mirror_onto_controller_app_state(tui) -> None:
     assert echoed.partial_text == ""
 
 
+def test_partial_publish_stays_leaf_under_controller_lock(tui) -> None:
+    """Recognition and end-turn/commit must not deadlock on lock order (#102).
+
+    ``voice.end_turn`` holds ``Controller._lock`` into ``commit`` →
+    ``_show_partial``. Recognition takes ``_partial_lock`` then publishes.
+    Publishing outside ``_partial_lock`` keeps that lock a leaf.
+    """
+    import threading
+    import time
+
+    from tagalong.control import Controller
+
+    facade = tui.VoiceCodexTUI()
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_partial_publisher(controller.set_partial)
+    ready = threading.Event()
+    done = threading.Event()
+
+    def dispatcher() -> None:
+        with controller._lock:
+            ready.set()
+            time.sleep(0.05)
+            facade._show_partial("", "")
+        done.set()
+
+    def recognizer() -> None:
+        ready.wait(timeout=1.0)
+        facade._show_partial(tui.VOICE, "racing")
+
+    threads = [
+        threading.Thread(target=dispatcher, name="dispatcher"),
+        threading.Thread(target=recognizer, name="recognizer"),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2.0)
+    assert done.is_set()
+    assert all(not thread.is_alive() for thread in threads)
+    assert controller.state.partial_text in {"", "racing"}
+
+
 def test_a_rejected_echo_is_removed_instead_of_recorded(tui) -> None:
     recorded: list = []
     facade = tui.VoiceCodexTUI(on_entry=recorded.append)
