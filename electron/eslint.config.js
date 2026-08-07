@@ -2,7 +2,14 @@ const tseslint = require("typescript-eslint");
 
 module.exports = tseslint.config(
   {
-    ignores: ["dist/**", "node_modules/**", "renderer/**", "eslint.config.js"],
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "renderer/**",
+      "eslint.config.js",
+      // Planted CJS shapes for sandbox-preload gates (intentionally use require).
+      "tests/fixtures/**/*.js",
+    ],
   },
   ...tseslint.configs.recommended,
   {

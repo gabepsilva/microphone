@@ -89,6 +89,11 @@ and prints what to do when it fails. This is the map, not the manual.
   a type error when indexed, but cannot see a map entry that never gets an
   `ipcMain.handle`. The registrar returns the channels it wired; a planted
   fixture adds `tagalong:neverWired` to the map and leaves it unwired.
+- **Electron sandboxed preload bundle** (`electron/tests/preload_bundle.test.ts`):
+  renderer sandbox rejects relative `require` in preload, which leaves
+  `window.tagalong` undefined. `bun run build` overwrites tsc’s
+  `dist/preload.js` with a single-file bundle; the gate asserts that artifact
+  has no relative requires and rejects a planted tsc-shaped fixture.
 - **Electron BrowserWindow prefs** (Semgrep rules
   `electron-no-node-integration`, `electron-no-open-context-isolation`):
   allowlist the safe literals (`nodeIntegration: false`,

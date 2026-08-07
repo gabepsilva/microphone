@@ -232,6 +232,10 @@
         banner.classList.toggle("error", Boolean(isError));
       }
 
+      if (!api) {
+        setBanner("preload bridge missing (window.tagalong undefined)", true);
+      }
+
       function selectionValue(sel) {
         return sel && sel.desired != null ? sel.desired : NO_MIC;
       }
@@ -436,6 +440,9 @@
       }
 
       async function boot() {
+        if (!api) {
+          return;
+        }
         bind();
         api.onState((state) => {
           applyState(state);

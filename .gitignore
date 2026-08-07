@@ -13,9 +13,12 @@ mutants/
 dist/
 *.egg-info/
 
-# Electron client (Bun installs + tsc output)
+# Electron client (Bun installs + tsc/bundle output + packaged downloads)
 electron/node_modules/
 electron/dist/
+electron/release/
+# bun.lock is the lockfile; npm's is accidental local noise
+electron/package-lock.json
 
 # Generated audio and transcription output
 virtual-mic-*.mp3

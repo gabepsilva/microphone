@@ -5,13 +5,13 @@
   "main": "dist/main.js",
   "description": "Electron client for the TagAlong local JSON-RPC socket.",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && bun build src/preload.ts --outfile=dist/preload.js --target=node --format=cjs --external electron",
     "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format-check": "prettier --check .",
     "test": "bun test",
-    "start": "bun run build && electron ."
+    "start": "bun run build && electron --no-sandbox --disable-gpu --disable-gpu-sandbox --in-process-gpu ."
   },
   "devDependencies": {
     "@types/bun": "1.2.20",

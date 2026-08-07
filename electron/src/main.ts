@@ -7,6 +7,14 @@ import { registerIpcHandlers } from "./ipc";
 import { CHANNELS } from "./protocol/channels";
 import type { AppState } from "./state";
 
+// Control surface needs no WebGL. On some Linux GPU/driver stacks the GPU
+// process dies (error_code=1002) and Chromium aborts the whole app. Set these
+// before ready; the start script passes the same flags for earliest effect.
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-sandbox");
+app.commandLine.appendSwitch("in-process-gpu");
+
 /** Command connection — never park a long-poll here (#96 G1). */
 const commands = new TagAlongClient();
 /** Event connection — parked on poll; same actor id as commands. */
