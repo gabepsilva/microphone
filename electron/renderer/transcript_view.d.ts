@@ -27,6 +27,21 @@ export type DomElement = {
   replaceWith(next: DomElement): void;
 };
 
+export const CUT_OFF_LINE: string;
+
+export function sourceClass(source: unknown): string;
+
+export function sourceLabel(entry: TranscriptEntryLike): string;
+
+export function entryBodyText(entry: TranscriptEntryLike): string;
+
+export function commandOutputLines(entry: TranscriptEntryLike): string[];
+
+export function idlePartialText(state: {
+  microphone_muted?: boolean;
+  audio_stream_muted?: boolean;
+}): string;
+
 export function buildTranscriptRowElement(
   document: DomDocument,
   row: TranscriptRowLike,
@@ -46,5 +61,10 @@ export function applyTranscriptDomEvent(
 
 export function renderPartialLine(
   el: DomElement,
-  state: { partial_source?: string; partial_text?: string },
+  state: {
+    partial_source?: string;
+    partial_text?: string;
+    microphone_muted?: boolean;
+    audio_stream_muted?: boolean;
+  },
 ): void;

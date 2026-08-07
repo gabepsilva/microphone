@@ -3,15 +3,26 @@ import {
   renderPartialLine,
   renderTranscriptSnapshot,
 } from "./transcript_view.js";
+import {
+  SHORTCUTS_PROMPT,
+  SHORTCUTS_SESSION,
+  commandForEvent,
+  nextPolicy,
+} from "./shortcuts.js";
 
 const NO_MIC = "__none__";
 const NO_AUDIO = "none";
 const api = window.tagalong;
 const banner = document.getElementById("banner");
 const transcriptList = document.getElementById("transcript-list");
-const partialLine = document.getElementById("partial-line");
+const partialLine = document.getElementById("partial");
+const emptyScreen = document.getElementById("empty-transcript");
+const transcriptArea = document.getElementById("transcript-area");
+const composeText = document.getElementById("compose-text");
 let applying = false;
 let attachmentIds = [];
+// Last state seen, so a keyboard shortcut can toggle a value it must first read.
+let current = {};
 
 function setBanner(text, isError) {
   banner.textContent = text;
@@ -22,8 +33,35 @@ if (!api) {
   setBanner("preload bridge missing (window.tagalong undefined)", true);
 }
 
+/** Draw the splash key reference from the one shortcut table. */
+function renderShortcuts(el, shortcuts) {
+  el.replaceChildren();
+  for (const shortcut of shortcuts) {
+    const row = document.createElement("div");
+    row.className = "shortcut";
+    const keys = document.createElement("span");
+    keys.className = "shortcut-keys";
+    keys.textContent = shortcut.keys;
+    const label = document.createElement("span");
+    label.className = "shortcut-label";
+    label.textContent = shortcut.label;
+    row.appendChild(keys);
+    row.appendChild(label);
+    el.appendChild(row);
+  }
+}
+
+/** The welcome pane shows only until the first entry lands. */
+function syncEmptyScreen() {
+  emptyScreen.hidden = transcriptList.children.length > 0;
+}
+
+function scrollToLatest() {
+  transcriptArea.scrollTop = transcriptArea.scrollHeight;
+}
+
 function fillSelect(select, options, selected) {
-  const current = selected;
+  const wanted = selected;
   select.replaceChildren();
   for (const opt of options) {
     const el = document.createElement("option");
@@ -31,9 +69,30 @@ function fillSelect(select, options, selected) {
     el.textContent = opt.label;
     select.appendChild(el);
   }
-  if ([...select.options].some((o) => o.value === current)) {
-    select.value = current;
+  if ([...select.options].some((o) => o.value === wanted)) {
+    select.value = wanted;
   }
+}
+
+function syncEffective(state) {
+  document.getElementById("microphone-effective").textContent = state.microphone
+    ?.effective
+    ? `effective: ${state.microphone.effective}`
+    : "";
+  document.getElementById("audio-effective").textContent = state.audio_stream?.effective
+    ? `effective: ${state.audio_stream.effective}`
+    : "";
+  // A channel reads as live when something is selected and nothing is muting it.
+  const mic = document.getElementById("mic-dot");
+  const micLive = Boolean(state.microphone?.effective) && !state.microphone_muted;
+  mic.textContent = micLive ? "●" : "○";
+  mic.classList.toggle("live", micLive);
+  const audio = document.getElementById("audio-dot");
+  const audioEffective = state.audio_stream?.effective;
+  const audioLive =
+    Boolean(audioEffective) && audioEffective !== NO_AUDIO && !state.audio_stream_muted;
+  audio.textContent = audioLive ? "●" : "○";
+  audio.classList.toggle("live", audioLive);
 }
 
 async function refreshDevices(state) {
@@ -65,20 +124,16 @@ async function refreshDevices(state) {
     audioOptions,
     state.audio_stream?.desired ?? NO_AUDIO,
   );
-  document.getElementById("microphone-effective").textContent = state.microphone
-    ?.effective
-    ? `effective: ${state.microphone.effective}`
-    : "";
-  document.getElementById("audio-effective").textContent = state.audio_stream?.effective
-    ? `effective: ${state.audio_stream.effective}`
-    : "";
+  syncEffective(state);
 }
 
 function applyState(state) {
   applying = true;
+  current = state;
   document.getElementById("mic-mute").checked = Boolean(state.microphone_muted);
   document.getElementById("audio-mute").checked = Boolean(state.audio_stream_muted);
   document.getElementById("tts-enabled").checked = Boolean(state.tts_enabled);
+  document.getElementById("tts-state").textContent = state.tts_enabled ? "on" : "off";
   document.getElementById("response-policy").value = state.response_policy || "both";
   document.getElementById("tts-provider").value = state.tts_provider || "piper";
   document.getElementById("codex-model").value = state.codex_model || "";
@@ -105,13 +160,7 @@ function applyState(state) {
     audio.appendChild(opt);
   }
   audio.value = wanted;
-  document.getElementById("microphone-effective").textContent = state.microphone
-    ?.effective
-    ? `effective: ${state.microphone.effective}`
-    : "";
-  document.getElementById("audio-effective").textContent = state.audio_stream?.effective
-    ? `effective: ${state.audio_stream.effective}`
-    : "";
+  syncEffective(state);
   renderPartialLine(partialLine, state);
   applying = false;
   setBanner("live · session attached");
@@ -124,6 +173,79 @@ async function dispatch(action, payload) {
     setBanner(error.message, true);
   }
 }
+
+/** Upload an image and return its attachment id, or null when it failed. */
+async function uploadImage(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  try {
+    const outcome = await api.dispatch("attachment.upload", { data: btoa(binary) });
+    return outcome && outcome.effective ? outcome.effective : null;
+  } catch (error) {
+    setBanner(error.message, true);
+    return null;
+  }
+}
+
+function markAttached(count) {
+  const label = document.getElementById("attach-label");
+  label.textContent = count > 0 ? `＋ image (${count})` : "＋ image";
+  label.classList.toggle("has-file", count > 0);
+}
+
+async function send() {
+  const text = composeText.value;
+  const fileInput = document.getElementById("compose-image");
+  const ids = [...attachmentIds];
+  if (fileInput.files && fileInput.files[0]) {
+    const id = await uploadImage(fileInput.files[0]);
+    if (id === null) {
+      return;
+    }
+    ids.push(id);
+  }
+  if (!text.trim() && ids.length === 0) {
+    return;
+  }
+  await dispatch("message.send", { text, images: ids, respond: true });
+  composeText.value = "";
+  autoGrow();
+  fileInput.value = "";
+  attachmentIds = [];
+  markAttached(0);
+}
+
+/** The prompt grows with the draft, the way the TUI's does. */
+function autoGrow() {
+  composeText.style.height = "auto";
+  composeText.style.height = `${composeText.scrollHeight}px`;
+}
+
+const commands = {
+  "prompt.send": () => void send(),
+  "prompt.clear": () => {
+    composeText.value = "";
+    autoGrow();
+  },
+  "session.cycle_policy": () =>
+    void dispatch("response_policy.set", {
+      policy: nextPolicy(current.response_policy),
+    }),
+  "session.toggle_mic_mute": () =>
+    void dispatch("microphone.set_muted", { muted: !current.microphone_muted }),
+  "session.toggle_tts": () =>
+    void dispatch("tts.set_enabled", { enabled: !current.tts_enabled }),
+  "session.interrupt": () => void dispatch("session.interrupt", {}),
+  "session.end_turn": () => void dispatch("voice.end_turn", {}),
+  "session.save_transcript": () => void dispatch("transcript.save", {}),
+  "session.new": () => void dispatch("session.new", {}),
+  "view.toggle_sidebar": () =>
+    document.getElementById("body").classList.toggle("sidebar-hidden"),
+};
 
 function bind() {
   document.getElementById("microphone").addEventListener("change", (e) => {
@@ -166,58 +288,71 @@ function bind() {
   });
   document.getElementById("turn-silence").addEventListener("change", (e) => {
     if (applying) return;
-    void dispatch("turn_silence.set", {
-      seconds: Number(e.target.value),
-    });
+    void dispatch("turn_silence.set", { seconds: Number(e.target.value) });
   });
 
   document.getElementById("interrupt").addEventListener("click", () => {
-    void dispatch("session.interrupt", {});
+    commands["session.interrupt"]();
   });
   document.getElementById("end-turn").addEventListener("click", () => {
-    void dispatch("voice.end_turn", {});
+    commands["session.end_turn"]();
   });
   document.getElementById("new-session").addEventListener("click", () => {
-    void dispatch("session.new", {});
+    commands["session.new"]();
   });
   document.getElementById("save-transcript").addEventListener("click", () => {
-    void dispatch("transcript.save", {});
+    commands["session.save_transcript"]();
   });
 
-  document.getElementById("send").addEventListener("click", async () => {
-    const text = document.getElementById("compose-text").value;
-    const fileInput = document.getElementById("compose-image");
-    attachmentIds = [];
-    if (fileInput.files && fileInput.files[0]) {
-      const buffer = await fileInput.files[0].arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 1) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const data = btoa(binary);
-      try {
-        const outcome = await api.dispatch("attachment.upload", { data });
-        if (outcome && outcome.effective) {
-          attachmentIds = [outcome.effective];
-        }
-      } catch (error) {
-        setBanner(error.message, true);
-        return;
-      }
+  composeText.addEventListener("input", autoGrow);
+  document.getElementById("compose-image").addEventListener("change", (e) => {
+    markAttached(e.target.files && e.target.files.length ? 1 : 0);
+  });
+  // ^V of an image lands here rather than in the file picker.
+  composeText.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    const image = files.find((file) => file.type.startsWith("image/"));
+    if (image === undefined) {
+      return;
     }
-    await dispatch("message.send", {
-      text,
-      images: attachmentIds,
-      respond: true,
+    event.preventDefault();
+    void uploadImage(image).then((id) => {
+      if (id !== null) {
+        attachmentIds.push(id);
+        markAttached(attachmentIds.length);
+      }
     });
-    document.getElementById("compose-text").value = "";
-    fileInput.value = "";
-    attachmentIds = [];
+  });
+
+  // One handler for every binding: the shortcut table decides what a key is.
+  window.addEventListener("keydown", (event) => {
+    const command = commandForEvent(event);
+    if (command === null) {
+      return;
+    }
+    // Enter belongs to the prompt; a select or a text field keeps its own.
+    const target = event.target;
+    if (
+      command === "prompt.send" &&
+      target !== composeText &&
+      target?.tagName !== "BODY"
+    ) {
+      return;
+    }
+    const run = commands[command];
+    if (run === undefined) {
+      return;
+    }
+    event.preventDefault();
+    run();
   });
 }
 
 async function boot() {
+  renderShortcuts(document.getElementById("shortcuts-prompt"), SHORTCUTS_PROMPT);
+  renderShortcuts(document.getElementById("shortcuts-session"), SHORTCUTS_SESSION);
+  syncEmptyScreen();
+  renderPartialLine(partialLine, {});
   if (!api) {
     return;
   }
@@ -230,12 +365,16 @@ async function boot() {
       return;
     }
     renderTranscriptSnapshot(transcriptList, document, rows);
+    syncEmptyScreen();
+    scrollToLatest();
   });
   api.onTranscriptEvent((event) => {
     if (event === null || typeof event !== "object") {
       return;
     }
     applyTranscriptDomEvent(transcriptList, document, event);
+    syncEmptyScreen();
+    scrollToLatest();
   });
   try {
     const snapshot = await api.snapshot();
@@ -243,6 +382,8 @@ async function boot() {
     applyState(snapshot.state);
     if (Array.isArray(snapshot.transcript)) {
       renderTranscriptSnapshot(transcriptList, document, snapshot.transcript);
+      syncEmptyScreen();
+      scrollToLatest();
     }
   } catch (error) {
     setBanner(error.message, true);

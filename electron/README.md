@@ -76,8 +76,9 @@ far-end applications), and Codex credentials as for a normal TUI session.
 3. **Live settings sync**
    - In Electron, toggle **Voice reply**. Confirm the TUI sidebar TTS control
      updates without refreshing Electron.
-   - In the TUI, change response policy. Confirm Electron’s **Respond after**
-     select updates via long-poll (`state.changed`) without clicking Refresh.
+   - In the TUI, change response policy. Confirm Electron’s **Taga agent
+     responds to:** select updates via long-poll (`state.changed`) without
+     clicking Refresh.
 
 4. **Overflow recovery** (optional / automated elsewhere)
    - Covered by
@@ -87,7 +88,7 @@ far-end applications), and Codex credentials as for a normal TUI session.
      the sidebar catches up after resubscribe (status returns to `live`).
 
 5. **Device pickers**
-   - Open **Microphone** / **Far end** selects — options come from
+   - Open **Microphone** / **Audio Stream** selects — options come from
      `devices.list` (inputs via PortAudio, applications via PipeWire graph).
    - Choose a mic; confirm TUI effective/desired update. Toggle mute both ways.
 
@@ -95,9 +96,13 @@ far-end applications), and Codex credentials as for a normal TUI session.
    - **Interrupt**, **End voice turn**, **New session**, **Save transcript**
      each invoke the matching allowlisted action. Confirm TUI behaviour
      matches. Confirm there is **no Quit** control in Electron.
+   - The same actions answer to the keys the empty screen lists (`^X`, `^D`,
+     `^N`, `^S`, plus `^P`, `^K`, `^T`, `^B`). `renderer/shortcuts.js` is the
+     one table both the splash and the key handler read.
 
 7. **Compose**
-   - Type text, optionally attach an image, **Send**.
+   - Type text, optionally attach an image (picker or paste), press **Enter**.
+   - Shift+Enter adds a line; Esc clears the draft.
    - Confirm the TUI shows the message as an **Agent** line (not Human Text).
    - Confirm a spoken/model reply still works when Voice reply is on.
 

@@ -10,49 +10,64 @@
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <main>
-      <h1>TagAlong</h1>
-      <p class="sub">Control surface for the running session · attach-only</p>
-      <p id="banner" class="status">connecting…</p>
+    <div id="body">
+      <div id="left">
+        <div id="transcript-label">TRANSCRIPT</div>
+        <div id="transcript-area">
+          <!-- Shown only until the first entry lands; app.js fills it from the
+               shortcut table so the splash cannot drift from the bindings. -->
+          <div id="empty-transcript">
+            <div class="splash-head">
+              <div class="brand-mark">
+                <span class="brand-t">T</span><span class="brand-chevron">»</span>
+              </div>
+              <div>
+                <div class="splash-title">TagAlong</div>
+                <div class="splash-sub">
+                  Mic + meeting audio, with Taga in the room.
+                </div>
+              </div>
+            </div>
+            <div class="splash-shortcuts">
+              <div>
+                <div class="splash-col-head">PROMPT</div>
+                <div id="shortcuts-prompt"></div>
+              </div>
+              <div>
+                <div class="splash-col-head">SESSION</div>
+                <div id="shortcuts-session"></div>
+              </div>
+            </div>
+          </div>
+          <div id="transcript-list" aria-live="polite"></div>
+        </div>
+        <div id="partial"></div>
+        <div id="promptbar">
+          <span id="prompt-mark">›</span>
+          <textarea
+            id="compose-text"
+            rows="1"
+            placeholder="Message Taga…"
+            aria-label="Message Taga"
+          ></textarea>
+          <label id="attach-label" for="compose-image" title="Attach an image"
+            >＋ image</label
+          >
+          <input id="compose-image" type="file" accept="image/*" />
+          <span id="input-hint">Text always gets a reply</span>
+        </div>
+        <div id="banner" class="status">connecting…</div>
+      </div>
 
-      <section>
-        <h2>Transcript</h2>
-        <div id="transcript-list" aria-live="polite"></div>
-        <div id="partial-line" hidden></div>
-      </section>
+      <aside id="sidebar">
+        <div id="panel-clock">
+          <span class="brand-t">T</span><span class="brand-chevron">»</span>
+        </div>
 
-      <section>
-        <h2>Devices</h2>
-        <div class="row">
-          <label for="microphone">Microphone</label>
-          <select id="microphone"></select>
-        </div>
-        <div class="row">
-          <span></span>
-          <span class="eff" id="microphone-effective"></span>
-        </div>
-        <div class="row">
-          <label for="mic-mute">Mute microphone</label>
-          <input id="mic-mute" type="checkbox" />
-        </div>
-        <div class="row">
-          <label for="audio-stream">Far end</label>
-          <select id="audio-stream"></select>
-        </div>
-        <div class="row">
-          <span></span>
-          <span class="eff" id="audio-effective"></span>
-        </div>
-        <div class="row">
-          <label for="audio-mute">Mute far end</label>
-          <input id="audio-mute" type="checkbox" />
-        </div>
-      </section>
-
-      <section>
-        <h2>Settings</h2>
-        <div class="row">
-          <label for="response-policy">Respond after</label>
+        <div class="panel-row">
+          <label class="panel-label" for="response-policy"
+            >Taga agent responds to:</label
+          >
           <select id="response-policy">
             <option value="audio">Audio</option>
             <option value="both">Voice + Audio</option>
@@ -60,56 +75,90 @@
             <option value="quiet">Stay silent</option>
           </select>
         </div>
-        <div class="row">
-          <label for="tts-enabled">Voice reply</label>
-          <input id="tts-enabled" type="checkbox" />
+
+        <hr class="panel-rule" />
+        <div class="panel-head">AUDIO</div>
+        <div class="panel-row">
+          <div class="channel-name">
+            <span id="mic-dot" class="dot dot-mic">○</span>
+            <span class="channel-mic">Microphone</span>
+          </div>
+          <select id="microphone"></select>
+          <label class="mute-box"
+            ><input id="mic-mute" type="checkbox" /><span>mute</span></label
+          >
+          <div class="eff" id="microphone-effective"></div>
         </div>
-        <div class="row">
-          <label for="tts-provider">TTS engine</label>
+        <div class="panel-row">
+          <div class="channel-name">
+            <span id="audio-dot" class="dot dot-audio">○</span>
+            <span class="channel-audio">Audio Stream</span>
+          </div>
+          <select id="audio-stream"></select>
+          <label class="mute-box"
+            ><input id="audio-mute" type="checkbox" /><span>mute</span></label
+          >
+          <div class="eff" id="audio-effective"></div>
+        </div>
+        <div id="silence-row">
+          <label id="silence-label" for="turn-silence">Silence Turn</label>
+          <input id="turn-silence" type="number" min="0" step="0.5" />
+          <span id="silence-unit">sec</span>
+        </div>
+
+        <hr class="panel-rule" />
+        <div class="panel-head">CODEX</div>
+        <div class="panel-row">
+          <input
+            id="codex-model"
+            type="text"
+            placeholder="model id"
+            aria-label="Codex model"
+          />
+        </div>
+        <div class="panel-row">
+          <div class="panel-label">reasoning effort</div>
+          <input
+            id="codex-reasoning"
+            type="text"
+            placeholder="effort"
+            aria-label="Reasoning effort"
+          />
+        </div>
+
+        <hr class="panel-rule" />
+        <div class="panel-head">TTS QUEUE</div>
+        <div class="panel-row">
+          <div class="panel-label">speech engine</div>
           <select id="tts-provider">
             <option value="piper">Piper (local)</option>
             <option value="edge">Edge (cloud)</option>
           </select>
         </div>
-        <div class="row">
-          <label for="codex-model">Codex model</label>
-          <input id="codex-model" type="text" placeholder="model id" />
+        <div class="kv">
+          <span class="kv-key">voice reply</span>
+          <label class="mute-box kv-value"
+            ><input id="tts-enabled" type="checkbox" /><span id="tts-state"
+              >off</span
+            ></label
+          >
         </div>
-        <div class="row">
-          <label for="codex-reasoning">Reasoning effort</label>
-          <input id="codex-reasoning" type="text" placeholder="effort" />
-        </div>
-        <div class="row">
-          <label for="turn-silence">Turn silence (s)</label>
-          <input id="turn-silence" type="number" min="0" step="0.5" />
-        </div>
-      </section>
 
-      <section>
-        <h2>Session</h2>
+        <hr class="panel-rule" />
+        <div class="panel-head">SESSION</div>
         <div class="actions">
           <button type="button" id="interrupt">Interrupt</button>
           <button type="button" id="end-turn">End voice turn</button>
           <button type="button" id="new-session">New session</button>
           <button type="button" id="save-transcript">Save transcript</button>
         </div>
-      </section>
-
-      <section>
-        <h2>Compose</h2>
-        <textarea id="compose-text" placeholder="Message Taga…"></textarea>
-        <div class="row row-spaced">
-          <input id="compose-image" type="file" accept="image/*" />
-          <button type="button" class="primary" id="send">Send</button>
-        </div>
         <p class="note">
           Compose is labelled <strong>Agent</strong> under today’s socket policy
-          (Electron peers are <code>ActorKind.AGENT</code>). Human
-          <code>Text</code> provenance is #94 — out of scope here. There is no Quit
-          control; the TUI owns process lifecycle.
+          (Electron peers are <code>ActorKind.AGENT</code>). There is no Quit control;
+          the TUI owns process lifecycle.
         </p>
-      </section>
-    </main>
+      </aside>
+    </div>
     <script type="module" src="./app.js"></script>
   </body>
 </html>
