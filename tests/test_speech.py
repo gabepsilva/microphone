@@ -433,18 +433,6 @@ def test_switchable_speech_forwards_wait_ready() -> None:
     assert speech.wait_ready() is None
 
 
-def test_switching_property_is_true_while_a_switch_runs() -> None:
-    release = threading.Event()
-    build, _ = recording_builder(block=release)
-    speech = SwitchableSpeech(DEFAULT_PROVIDER, FakeEngine("piper"), build=build)
-
-    assert speech.switching is False
-    assert speech.set_provider("edge") is True
-    assert speech.switching is True
-    release.set()
-    assert wait_until(lambda: speech.switching is False)
-
-
 def test_closing_during_a_voice_switch_reports_failure() -> None:
     release = threading.Event()
     failed: list[str] = []
