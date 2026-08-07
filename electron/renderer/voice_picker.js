@@ -9,7 +9,7 @@
  * @typedef {import("./speech_catalog.js").SpeechVoice} SpeechVoice
  * @typedef {{ desired?: string | null, effective?: string | null }} Selection
  * @typedef {{
- *   tts_provider?: string,
+ *   tts_provider?: Selection | string,
  *   tts_voice?: Selection,
  *   piper_voice?: string,
  * }} VoicePickerState
@@ -41,12 +41,25 @@ export function voiceEffectiveText(state) {
 }
 
 /**
+ * Running / requested engine id from a Selection or legacy string.
+ * @param {VoicePickerState} state
+ * @returns {string}
+ */
+export function selectedProviderId(state) {
+  const provider = state.tts_provider;
+  if (provider && typeof provider === "object") {
+    return provider.desired ?? provider.effective ?? "piper";
+  }
+  return provider || "piper";
+}
+
+/**
  * Whether the Piper voice field should be interactive.
  * @param {VoicePickerState} state
  * @returns {boolean}
  */
 export function voicePickerActive(state) {
-  return (state.tts_provider || "piper") === "piper";
+  return selectedProviderId(state) === "piper";
 }
 
 /**

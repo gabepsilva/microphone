@@ -4,7 +4,7 @@ export type SelectionLike = {
 };
 
 export type VoicePickerState = {
-  tts_provider?: string;
+  tts_provider?: SelectionLike | string;
   tts_voice?: SelectionLike;
   piper_voice?: string;
 };
@@ -18,6 +18,8 @@ export type SpeechVoice = {
 export function selectedVoiceId(state: VoicePickerState): string;
 
 export function voiceEffectiveText(state: VoicePickerState): string;
+
+export function selectedProviderId(state: VoicePickerState): string;
 
 export function voicePickerActive(state: VoicePickerState): boolean;
 

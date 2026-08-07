@@ -83,10 +83,20 @@ describe("voiceEffectiveText", () => {
 });
 
 describe("voicePickerActive", () => {
-  it("is on for Piper and off for Edge", () => {
+  it("is on for Piper and off for Edge, including Selection shape", () => {
     expect(voicePickerActive({ tts_provider: "piper" })).toBe(true);
     expect(voicePickerActive({})).toBe(true);
     expect(voicePickerActive({ tts_provider: "edge" })).toBe(false);
+    expect(
+      voicePickerActive({
+        tts_provider: { desired: "edge", effective: "piper" },
+      }),
+    ).toBe(false);
+    expect(
+      voicePickerActive({
+        tts_provider: { desired: "piper", effective: "piper" },
+      }),
+    ).toBe(true);
   });
 });
 
