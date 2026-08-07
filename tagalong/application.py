@@ -101,9 +101,24 @@ class SpeechPort(Protocol):
 
 
 class SettingsSpeechPort(Protocol):
-    """The speech engine surface a provider switch needs."""
+    """The speech engine surface a provider or voice switch needs."""
 
-    def set_provider(self, provider: str) -> bool | None: ...
+    def set_provider(
+        self,
+        provider: str,
+        voice: str | None = None,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None: ...
+
+    def set_voice(
+        self,
+        voice: str,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None: ...
 
 
 class PolicyPort(Protocol):
@@ -204,6 +219,9 @@ class SessionView(Protocol):
     policy: str
     tts_enabled: bool
     tts_provider: str
+    tts_voice: str
+    piper_voice: str
+    edge_voice: str
     codex_model: str
     codex_effort: str
     turn_silence: float
@@ -219,8 +237,10 @@ def app_state_from_session(state: SessionView) -> AppState:
     """Seed every field a registered handler will keep true.
 
     Desired selections come from the session; effective ones stay empty until
-    a reconciler reports what actually opened. Mute, policy, speech, model,
-    and silence are synchronous, so the session value is already effective.
+    a reconciler reports what actually opened — except the active TTS voice,
+    which is already speaking when the session starts, so both sides of the
+    Selection carry the startup voice. Mute, policy, speech, model, and
+    silence are synchronous, so the session value is already effective.
     """
     return AppState(
         microphone=Selection(desired=state.microphone),
@@ -230,6 +250,9 @@ def app_state_from_session(state: SessionView) -> AppState:
         response_policy=state.policy,
         tts_enabled=state.tts_enabled,
         tts_provider=state.tts_provider,
+        tts_voice=Selection(desired=state.tts_voice, effective=state.tts_voice),
+        piper_voice=state.piper_voice,
+        edge_voice=state.edge_voice,
         codex_model=state.codex_model,
         codex_reasoning=state.codex_effort,
         turn_silence=state.turn_silence,
@@ -333,10 +356,45 @@ def _set_tts_provider(
     tts: SettingsSpeechPort, persist: Persist, request: Request, state: AppState
 ) -> Effect:
     provider = str(request.payload["provider"])
-    if tts.set_provider(provider) is False:
+    voice = state.piper_voice if provider == "piper" else state.edge_voice
+    if tts.set_provider(provider, voice) is False:
         raise EffectFailed("tts provider could not be changed")
     _record(persist, "tts_provider", provider)
-    return Effect.applied(replace(state, tts_provider=provider), provider)
+    return Effect.applied(
+        replace(
+            state,
+            tts_provider=provider,
+            tts_voice=Selection(desired=voice, effective=voice),
+        ),
+        provider,
+    )
+
+
+def _set_tts_voice(
+    tts: SettingsSpeechPort,
+    controller: Controller,
+    on_voice_applied: Callable[[str | None], object] | None,
+    request: Request,
+    state: AppState,
+) -> Effect:
+    voice = str(request.payload["voice"])
+    remember = "piper_voice" if state.tts_provider == "piper" else "edge_voice"
+
+    def settle(current: AppState, effective: object) -> AppState:
+        applied = str(effective)
+        updated = with_effective(current, "tts_voice", applied)
+        return replace(updated, **{remember: applied})
+
+    if (
+        tts.set_voice(
+            voice,
+            on_applied=_completer(controller, request.id, on_voice_applied),
+            on_failed=lambda detail: controller.fail(request.id, detail),
+        )
+        is False
+    ):
+        raise EffectFailed("tts voice could not be changed")
+    return Effect.pending(with_desired(state, "tts_voice", voice), settle=settle)
 
 
 def _set_codex_model(
@@ -379,18 +437,25 @@ def bind_settings_slice(
         SettingsConversationPort, SettingsSpeechPort, PolicyPort, SilencePort
     ],
     persist: Persist = None,
+    on_voice_applied: Callable[[str | None], object] | None = None,
 ) -> None:
-    """Register the synchronous settings handlers on *controller*.
+    """Register the settings handlers on *controller*.
 
     Persistence belongs to the action, not to a TUI hook wrapper. A socket
     caller that sets the model must leave the same startup file a sidebar
     pick would, or the next session starts somewhere only one client went.
+    Voice switches settle asynchronously and persist only on success, the
+    same shape as microphone selection (#124 D14).
     """
     conversation, tts, gate, turn_silence = collaborators
     controller.register(
         "response_policy.set", partial(_set_response_policy, gate, persist)
     )
     controller.register("tts.set_provider", partial(_set_tts_provider, tts, persist))
+    controller.register(
+        "tts.set_voice",
+        partial(_set_tts_voice, tts, controller, on_voice_applied),
+    )
     controller.register(
         "codex.set_model", partial(_set_codex_model, conversation, persist)
     )

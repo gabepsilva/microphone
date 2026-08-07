@@ -304,6 +304,12 @@ CATALOG: tuple[ActionSpec, ...] = (
         (Parameter("provider", Kind.NAME, choices=PROVIDERS),),
     ),
     ActionSpec(
+        "tts.set_voice",
+        "Choose the speech voice for the current engine",
+        Scope.SETTINGS,
+        (Parameter("voice", Kind.NAME),),
+    ),
+    ActionSpec(
         "codex.set_model",
         "Choose the Codex model",
         Scope.SETTINGS,

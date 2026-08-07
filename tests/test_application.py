@@ -90,10 +90,19 @@ class FakeSpeech:
     def __init__(self, *, accept: bool = True, provider: str = "piper") -> None:
         self.enabled = True
         self.provider = provider
+        self.voice = (
+            "en_US-lessac-medium" if provider == "piper" else "en-US-AndrewNeural"
+        )
         self.accept = accept
         self.calls: list[bool] = []
         self.providers: list[str] = []
+        self.voices: list[str] = []
         self.provider_ok = True
+        self.voice_ok = True
+        self.voice_fail: str | None = None
+        self._pending_voice: str | None = None
+        self._voice_applied: Callable[[str], object] | None = None
+        self._voice_failed: Callable[[str], object] | None = None
 
     def set_enabled(self, enabled: bool) -> bool | None:
         self.calls.append(enabled)
@@ -102,12 +111,49 @@ class FakeSpeech:
         self.enabled = enabled
         return True
 
-    def set_provider(self, provider: str) -> bool | None:
+    def set_provider(
+        self,
+        provider: str,
+        voice: str | None = None,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None:
+        del on_applied, on_failed
         self.providers.append(provider)
         if not self.provider_ok or provider == self.provider:
             return False
         self.provider = provider
+        if voice is not None:
+            self.voice = voice
         return True
+
+    def set_voice(
+        self,
+        voice: str,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None:
+        self.voices.append(voice)
+        if not self.voice_ok or voice == self.voice:
+            return False
+        self._pending_voice = voice
+        self._voice_applied = on_applied
+        self._voice_failed = on_failed
+        return True
+
+    def complete_voice(self) -> None:
+        """Settle a pending voice switch the way the real switch thread would."""
+        voice = self._pending_voice
+        assert voice is not None
+        if self.voice_fail is not None:
+            if self._voice_failed is not None:
+                self._voice_failed(self.voice_fail)
+            return
+        self.voice = voice
+        if self._voice_applied is not None:
+            self._voice_applied(voice)
 
 
 class FakeDisplay:
@@ -231,6 +277,9 @@ def test_app_state_seeds_every_field_this_slice_maintains() -> None:
         response_policy="audio",
         tts_enabled=False,
         tts_provider="edge",
+        tts_voice=Selection(desired=state.tts_voice, effective=state.tts_voice),
+        piper_voice=state.piper_voice,
+        edge_voice=state.edge_voice,
         codex_model="gpt-5.6-sol",
         codex_reasoning="high",
         turn_silence=4.5,
@@ -659,6 +708,18 @@ def settings_bound(
             if recorded is not None
             else None
         ),
+        on_voice_applied=(
+            (
+                lambda voice: recorded.append(
+                    (
+                        "piper_voice" if tts.provider == "piper" else "edge_voice",
+                        voice,
+                    )
+                )
+            )
+            if recorded is not None
+            else None
+        ),
     )
     return controller, conversation, tts, gate, silence
 
@@ -701,6 +762,66 @@ def test_settings_actions_update_canonical_state() -> None:
     assert controller.state.codex_model == "gpt-5.6-sol"
     assert controller.state.codex_reasoning == "high"
     assert controller.state.turn_silence == 0.25
+
+
+def test_provider_switch_restores_the_remembered_voice() -> None:
+    state = SessionState(edge_voice="en-US-JennyNeural")
+    controller = Controller(app_state_from_session(state))
+    tts = FakeSpeech()
+    bind_first_slice(controller, conversation=FakeConversation(), tts=tts)
+    bind_settings_slice(
+        controller, (FakeConversation(), tts, FakeGate(), FakeSilence())
+    )
+
+    assert controller.dispatch(
+        "tts.set_provider", {"provider": "edge"}, actor=OWNER
+    ) == Applied("req-1", "edge")
+    assert tts.voice == "en-US-JennyNeural"
+    assert controller.state.tts_voice == Selection(
+        desired="en-US-JennyNeural", effective="en-US-JennyNeural"
+    )
+
+
+def test_tts_set_voice_persists_only_after_success() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+    prior = controller.state.tts_voice.effective
+
+    outcome = controller.dispatch(
+        "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+    )
+    assert isinstance(outcome, Accepted)
+    assert recorded == []
+    assert controller.state.tts_voice.desired == "en_US-amy-medium"
+    assert controller.state.tts_voice.effective == prior
+
+    tts.complete_voice()
+    assert controller.state.tts_voice == Selection(
+        desired="en_US-amy-medium", effective="en_US-amy-medium"
+    )
+    assert controller.state.piper_voice == "en_US-amy-medium"
+    assert recorded == [("piper_voice", "en_US-amy-medium")]
+
+
+def test_tts_set_voice_failure_does_not_persist() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    tts.voice_fail = "download failed"
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+    before_voice = controller.state.piper_voice
+    before_effective = controller.state.tts_voice.effective
+
+    assert isinstance(
+        controller.dispatch(
+            "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+        ),
+        Accepted,
+    )
+    tts.complete_voice()
+    assert recorded == []
+    assert controller.state.piper_voice == before_voice
+    assert controller.state.tts_voice.effective == before_effective
 
 
 def test_setting_the_provider_does_not_unmute_speech() -> None:
@@ -1166,3 +1287,20 @@ def test_session_transcript_hooks_dispatch(tmp_path) -> None:
     install_session_transcript_hooks(tui, controller, agent("bot", {Scope.SESSION}))
     assert tui.hooks.on_quit is not None
     assert tui.hooks.on_quit() is False
+
+
+def test_a_refused_voice_change_fails_without_persisting() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    tts.voice_ok = False
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+    before = controller.state
+
+    assert isinstance(
+        controller.dispatch(
+            "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+        ),
+        Failed,
+    )
+    assert recorded == []
+    assert controller.state == before

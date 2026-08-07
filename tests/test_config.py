@@ -16,6 +16,8 @@ def test_startup_config_round_trip(tmp_path) -> None:
     settings = {
         "microphone": "USB microphone",
         "tts_provider": "piper",
+        "piper_voice": "en_US-lessac-medium",
+        "edge_voice": "en-US-AndrewNeural",
         "audio_stream": "ZOOM VoiceEngine",
         "tts_output": None,
         "taga_after": "both",
@@ -102,6 +104,8 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
     settings = {
         "microphone": "Blue Yeti",
         "tts_provider": "edge",
+        "piper_voice": "en_US-amy-medium",
+        "edge_voice": "en-US-JennyNeural",
         "audio_stream": "none",
         "tts_output": None,
         "taga_after": "both",

@@ -153,6 +153,8 @@ def build_parser():
         "--tts-voice",
         help="Voice name; defaults to the chosen provider's own default voice",
     )
+    # Config-only remembered voices (#124 D5); no dedicated CLI flags.
+    parser.set_defaults(piper_voice=None, edge_voice=None)
     parser.add_argument(
         "--headless",
         action="store_true",
@@ -201,6 +203,8 @@ def _resolve_defaults(args):
         ("audio_stream", DEFAULT_AUDIO_STREAM),
         ("taga_after", DEFAULT_TAGA_AFTER),
         ("tts_provider", DEFAULT_PROVIDER),
+        ("piper_voice", default_voice(DEFAULT_PROVIDER)),
+        ("edge_voice", default_voice("edge")),
         ("turn_silence", DEFAULT_TURN_SILENCE),
         ("codex_model", DEFAULT_CODEX_MODEL),
         ("codex_reasoning", DEFAULT_CODEX_EFFORT),
@@ -210,7 +214,15 @@ def _resolve_defaults(args):
         if getattr(args, option) is None:
             setattr(args, option, fallback)
     if args.tts_voice is None:
-        args.tts_voice = default_voice(args.tts_provider)
+        args.tts_voice = (
+            args.piper_voice
+            if args.tts_provider == DEFAULT_PROVIDER
+            else args.edge_voice
+        )
+    elif args.tts_provider == DEFAULT_PROVIDER:
+        args.piper_voice = args.tts_voice
+    else:
+        args.edge_voice = args.tts_voice
 
 
 def _validate_startup_args(parser, args):
@@ -377,6 +389,8 @@ def build_session_state(args, selection, models: list[CodexModelOption] | None =
         policy=selection.policy.name,
         tts_provider=selection.tts_provider,
         tts_voice=args.tts_voice,
+        piper_voice=args.piper_voice,
+        edge_voice=args.edge_voice,
         turn_silence=args.turn_silence,
         confidence=args.confidence,
         language=args.language,

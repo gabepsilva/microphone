@@ -13,6 +13,7 @@ import type { IpcMainInvokeEvent } from "electron";
 describe("DISPATCH_ALLOWLIST", () => {
   it("includes settings and session actions but never session.quit", () => {
     expect(DISPATCH_ALLOWLIST).toContain(ACTIONS.tts_set_enabled);
+    expect(DISPATCH_ALLOWLIST).toContain(ACTIONS.tts_set_voice);
     expect(DISPATCH_ALLOWLIST).toContain(ACTIONS.session_interrupt);
     expect(DISPATCH_ALLOWLIST).toContain(ACTIONS.message_send);
     expect(isAllowedAction(ACTIONS.session_quit)).toBe(false);
@@ -84,6 +85,16 @@ describe("DISPATCH_ALLOWLIST", () => {
     expect(() =>
       validateDispatch(ACTIONS.tts_set_provider, { provider: null }),
     ).toThrow("provider must be a string");
+
+    expect(
+      validateDispatch(ACTIONS.tts_set_voice, { voice: "en_US-amy-medium" }),
+    ).toEqual({
+      action: ACTIONS.tts_set_voice,
+      payload: { voice: "en_US-amy-medium" },
+    });
+    expect(() => validateDispatch(ACTIONS.tts_set_voice, { voice: 1 })).toThrow(
+      "voice must be a string",
+    );
 
     expect(validateDispatch(ACTIONS.codex_set_model, { model: "o3" })).toEqual({
       action: ACTIONS.codex_set_model,

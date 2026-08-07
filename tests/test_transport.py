@@ -845,6 +845,10 @@ def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
         {
             "tts_enabled": False,
             "tts_provider": "edge",
+            "tts_voice": Selection(
+                desired="en-US-AndrewNeural", effective="en-US-AndrewNeural"
+            ),
+            "edge_voice": "en-US-AndrewNeural",
             "response_policy": "voice",
             "microphone_muted": True,
             "audio_stream_muted": True,
@@ -859,6 +863,7 @@ def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
     assert state.tts_enabled is False
     assert state.tts_provider == "edge"
     assert state.tts_voice == "en-US-AndrewNeural"
+    assert state.edge_voice == "en-US-AndrewNeural"
     assert state.policy == "voice"
     assert state.mic.muted is True
     assert state.audio.muted is True
@@ -872,13 +877,43 @@ def test_apply_state_fragment_copies_every_controller_owned_field() -> None:
 
 def test_applying_a_provider_change_does_not_unmute() -> None:
     """A remote provider event is not the sidebar's unmute composition."""
-    state = SessionState(tts_provider="piper", tts_enabled=False)
+    state = SessionState(
+        tts_provider="piper",
+        tts_enabled=False,
+        tts_voice="en_US-lessac-medium",
+        edge_voice="en-US-AndrewNeural",
+    )
 
-    apply_state_fragment(state, {"tts_provider": "edge"})
+    apply_state_fragment(
+        state,
+        {
+            "tts_provider": "edge",
+            "tts_voice": Selection(
+                desired="en-US-AndrewNeural", effective="en-US-AndrewNeural"
+            ),
+        },
+    )
 
     assert state.tts_enabled is False
     assert state.tts_provider == "edge"
     assert state.tts_voice == "en-US-AndrewNeural"
+
+
+def test_apply_state_fragment_accepts_voice_mappings_and_remembered_ids() -> None:
+    state = SessionState()
+    apply_state_fragment(
+        state,
+        {
+            "tts_voice": {"desired": "en_US-amy-medium", "effective": None},
+            "piper_voice": "en_US-amy-medium",
+            "edge_voice": "en-US-JennyNeural",
+        },
+    )
+    assert state.tts_voice == "en_US-amy-medium"
+    assert state.piper_voice == "en_US-amy-medium"
+    assert state.edge_voice == "en-US-JennyNeural"
+    apply_state_fragment(state, {"tts_voice": "en_US-joe-medium"})
+    assert state.tts_voice == "en_US-joe-medium"
 
 
 def test_json_ready_turns_selection_values_into_dicts() -> None:

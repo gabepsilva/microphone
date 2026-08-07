@@ -198,10 +198,20 @@ class FakeTTS:
     def set_enabled(self, enabled):
         self.enabled = enabled
 
-    def set_provider(self, provider):
+    def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
+        del on_applied, on_failed
         if self.switching or provider == self.provider:
             return False
         self.provider = provider
+        if voice is not None:
+            self.voice = voice
+        return True
+
+    def set_voice(self, voice, *, on_applied=None, on_failed=None):
+        del on_applied, on_failed
+        if self.switching or voice == self.voice:
+            return False
+        self.voice = voice
         return True
 
     def is_speaking(self):

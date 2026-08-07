@@ -918,6 +918,9 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
         controller,
         (conversation, tts, parts.gate, turn_silence),
         persist=parts.config.record,
+        on_voice_applied=lambda voice: parts.config.record(
+            "piper_voice" if tts.provider == "piper" else "edge_voice", voice
+        ),
     )
     install_settings_hooks(host, controller, actor)
     wire_transcript_recording(host, conversation, recorder, controller, actor)

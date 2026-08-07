@@ -54,6 +54,62 @@ def test_mcp_tools_can_be_limited_to_allowed_ids() -> None:
     ]
 
 
+class _McpTurns:
+    def end_turn(self) -> None:
+        return None
+
+
+class _McpRows:
+    def transcript_entries(self):
+        return []
+
+
+class _McpPolicy:
+    def set_policy(self, policy: str) -> None:
+        del policy
+
+
+class _McpSilence:
+    def set(self, seconds: float) -> float:
+        return seconds
+
+
+class _McpCapture:
+    def select(self, name, *, on_applied=None, on_failed=None) -> bool:
+        del name, on_applied, on_failed
+        return True
+
+    def set_muted(self, muted: bool) -> None:
+        del muted
+
+
+class _McpSettingsSpeech(Speech):
+    def set_provider(
+        self,
+        provider: str,
+        voice: str | None = None,
+        *,
+        on_applied=None,
+        on_failed=None,
+    ) -> bool:
+        del provider, voice, on_applied, on_failed
+        return True
+
+    def set_voice(self, voice: str, *, on_applied=None, on_failed=None) -> bool:
+        del voice, on_applied, on_failed
+        return True
+
+
+class _McpSettingsTalk(Conversation):
+    def request_model(self, model: str) -> bool:
+        del model
+        return True
+
+    def request_reasoning_effort(self, effort: str) -> bool:
+        del effort
+        return True
+
+
 def test_mcp_bridge_omits_tools_capability_policy_denies(tmp_path: Path) -> None:
     from tagalong.application import (
         bind_audio_slice,
@@ -62,53 +118,15 @@ def test_mcp_bridge_omits_tools_capability_policy_denies(tmp_path: Path) -> None
     )
     from tagalong.attachments import AttachmentRegistry, AttachmentStore
 
-    class Turns:
-        def end_turn(self) -> None:
-            return None
-
-    class Rows:
-        def transcript_entries(self):
-            return []
-
-    class Policy:
-        def set_policy(self, policy: str) -> None:
-            del policy
-
-    class Silence:
-        def set(self, seconds: float) -> float:
-            return seconds
-
-    class Capture:
-        def select(self, name, *, on_applied=None, on_failed=None) -> bool:
-            del name, on_applied, on_failed
-            return True
-
-        def set_muted(self, muted: bool) -> None:
-            del muted
-
-    class SettingsSpeech(Speech):
-        def set_provider(self, provider: str) -> bool:
-            del provider
-            return True
-
-    class SettingsTalk(Conversation):
-        def request_model(self, model: str) -> bool:
-            del model
-            return True
-
-        def request_reasoning_effort(self, effort: str) -> bool:
-            del effort
-            return True
-
-    talk = SettingsTalk()
-    speech = SettingsSpeech()
+    talk = _McpSettingsTalk()
+    speech = _McpSettingsSpeech()
     attachments = AttachmentRegistry(store=AttachmentStore(directory=tmp_path / "a"))
     controller = Controller()
     bind_first_slice(controller, conversation=talk, tts=speech, attachments=attachments)
-    bind_settings_slice(controller, (talk, speech, Policy(), Silence()))
-    bind_audio_slice(controller, microphone=Capture(), audio=Capture())
+    bind_settings_slice(controller, (talk, speech, _McpPolicy(), _McpSilence()))
+    bind_audio_slice(controller, microphone=_McpCapture(), audio=_McpCapture())
     bind_session_transcript_slice(
-        controller, (talk, Turns(), attachments, Rows()), directory=tmp_path
+        controller, (talk, _McpTurns(), attachments, _McpRows()), directory=tmp_path
     )
     server = LocalServer(controller, path=tmp_path / "tagalong.sock")
     server.start()
