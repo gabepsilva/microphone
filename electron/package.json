@@ -21,7 +21,7 @@
     "electron": "43.2.0",
     "eslint": "10.8.0",
     "prettier": "3.9.6",
-    "typescript": "7.0.2",
+    "typescript": "6.0.3",
     "typescript-eslint": "8.66.0"
   }
 }
