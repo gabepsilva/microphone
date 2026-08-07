@@ -154,3 +154,27 @@ rules:
       exclude:
         - /electron/src/ipc.ts
     pattern: $IPC.handle(...)
+
+  # D3c: one dispatch channel is not enough — the allowlist table in
+  # dispatch_allowlist.ts must be the only path that reaches socket dispatch.
+  # A bare client.call("dispatch", ...) outside ipc.ts retires that table.
+  # pattern-either with $F(...) catches a bound alias (const call = client.call.bind(...))
+  # the same way electron-ipc-handle-only-via-registrar survives a renamed receiver.
+  - id: electron-dispatch-only-via-allowlist
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Socket dispatch must go through validateDispatch / DISPATCH_ALLOWLIST in
+      electron/src/ipc.ts. A bare call("dispatch", ...) bypasses the action table.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+      exclude:
+        - /electron/src/ipc.ts
+    patterns:
+      - pattern-either:
+          - pattern: $CLIENT.call("dispatch", ...)
+          - pattern: $F("dispatch", ...)

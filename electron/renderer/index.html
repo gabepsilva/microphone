@@ -30,7 +30,9 @@
 
       toggle.addEventListener("click", async () => {
         const snapshot = await window.tagalong.snapshot();
-        await window.tagalong.setTts(!snapshot.state.tts_enabled);
+        await window.tagalong.dispatch("tts.set_enabled", {
+          enabled: !snapshot.state.tts_enabled,
+        });
         await refresh();
       });
 
