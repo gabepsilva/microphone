@@ -334,7 +334,12 @@ WARMUP_PROMPT = "Warm-up ping. Reply with exactly: ready."
 # this long for the next stream event; silence is the evidence, so recovery
 # forks unconditionally rather than asking Thread.read whether the turn looks
 # free (a zombie reports completed and would pass that gate).
-STREAM_SILENCE_SECONDS = 25.0
+#
+# 30s is the high end of the #116 ~20-30s band, chosen without measurement:
+# under Q7=(a) a false trip silently drops a healthy reply, while a late trip
+# only adds dead air to a turn that is already broken. openai-codex 0.144.4
+# has no heartbeat/keepalive frames, so the gap is real turn activity only.
+STREAM_SILENCE_SECONDS = 30.0
 
 
 @dataclass
