@@ -43,6 +43,108 @@ describe("DISPATCH_ALLOWLIST", () => {
       action: ACTIONS.microphone_select,
       payload: { name: null },
     });
+    expect(() => validateDispatch(ACTIONS.tts_set_enabled, null)).toThrow(
+      "payload must be an object",
+    );
+    expect(() => validateDispatch(ACTIONS.tts_set_enabled, [])).toThrow(
+      "payload must be an object",
+    );
+
+    expect(validateDispatch(ACTIONS.microphone_set_muted, { muted: true })).toEqual({
+      action: ACTIONS.microphone_set_muted,
+      payload: { muted: true },
+    });
+    expect(validateDispatch(ACTIONS.audio_stream_set_muted, { muted: false })).toEqual({
+      action: ACTIONS.audio_stream_set_muted,
+      payload: { muted: false },
+    });
+    expect(() =>
+      validateDispatch(ACTIONS.audio_stream_set_muted, { muted: "no" }),
+    ).toThrow("muted must be a boolean");
+
+    expect(validateDispatch(ACTIONS.audio_stream_select, { name: "Zoom" })).toEqual({
+      action: ACTIONS.audio_stream_select,
+      payload: { name: "Zoom" },
+    });
+
+    expect(validateDispatch(ACTIONS.response_policy_set, { policy: "always" })).toEqual(
+      {
+        action: ACTIONS.response_policy_set,
+        payload: { policy: "always" },
+      },
+    );
+    expect(() => validateDispatch(ACTIONS.response_policy_set, { policy: 1 })).toThrow(
+      "policy must be a string",
+    );
+
+    expect(validateDispatch(ACTIONS.tts_set_provider, { provider: "edge" })).toEqual({
+      action: ACTIONS.tts_set_provider,
+      payload: { provider: "edge" },
+    });
+    expect(() =>
+      validateDispatch(ACTIONS.tts_set_provider, { provider: null }),
+    ).toThrow("provider must be a string");
+
+    expect(validateDispatch(ACTIONS.codex_set_model, { model: "o3" })).toEqual({
+      action: ACTIONS.codex_set_model,
+      payload: { model: "o3" },
+    });
+    expect(() => validateDispatch(ACTIONS.codex_set_model, { model: 3 })).toThrow(
+      "model must be a string",
+    );
+
+    expect(validateDispatch(ACTIONS.codex_set_reasoning, { effort: "high" })).toEqual({
+      action: ACTIONS.codex_set_reasoning,
+      payload: { effort: "high" },
+    });
+    expect(() =>
+      validateDispatch(ACTIONS.codex_set_reasoning, { effort: false }),
+    ).toThrow("effort must be a string");
+
+    expect(validateDispatch(ACTIONS.turn_silence_set, { seconds: 1.5 })).toEqual({
+      action: ACTIONS.turn_silence_set,
+      payload: { seconds: 1.5 },
+    });
+    expect(() =>
+      validateDispatch(ACTIONS.turn_silence_set, { seconds: Number.NaN }),
+    ).toThrow("seconds must be a number");
+    expect(() => validateDispatch(ACTIONS.turn_silence_set, { seconds: "1" })).toThrow(
+      "seconds must be a number",
+    );
+
+    expect(validateDispatch(ACTIONS.message_send, { text: "hello" })).toEqual({
+      action: ACTIONS.message_send,
+      payload: { text: "hello" },
+    });
+    expect(() => validateDispatch(ACTIONS.message_send, { text: 1 })).toThrow(
+      "text must be a string",
+    );
+
+    expect(validateDispatch(ACTIONS.attachment_upload, { data: "abc" })).toEqual({
+      action: ACTIONS.attachment_upload,
+      payload: { data: "abc" },
+    });
+    expect(() => validateDispatch(ACTIONS.attachment_upload, { data: null })).toThrow(
+      "data must be a string",
+    );
+
+    // No required payload fields — exercise the default arm.
+    expect(validateDispatch(ACTIONS.session_new, {})).toEqual({
+      action: ACTIONS.session_new,
+      payload: {},
+    });
+    expect(validateDispatch(ACTIONS.session_interrupt, {})).toEqual({
+      action: ACTIONS.session_interrupt,
+      payload: {},
+    });
+    expect(validateDispatch(ACTIONS.voice_end_turn, {})).toEqual({
+      action: ACTIONS.voice_end_turn,
+      payload: {},
+    });
+    expect(validateDispatch(ACTIONS.transcript_save, {})).toEqual({
+      action: ACTIONS.transcript_save,
+      payload: {},
+    });
   });
 });
 
