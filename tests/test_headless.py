@@ -310,6 +310,15 @@ def _recorded_view(entries: list[Entry]) -> list[tuple[object, ...]]:
     ]
 
 
+def _capture_at_record_time(sink: list[tuple[object, ...]]):
+    """on_entry hook that freezes fields at the moment of recording."""
+
+    def capture(entry: Entry) -> None:
+        sink.append(_recorded_view([entry])[0])
+
+    return capture
+
+
 def _command_and_stream_script(host: HeadlessSession | object) -> None:
     """Shared presentation script for headless/TUI recorder parity."""
     cast_host = cast(HeadlessSession, host)
@@ -324,14 +333,19 @@ def _command_and_stream_script(host: HeadlessSession | object) -> None:
 
 
 def test_headless_and_tui_record_the_same_command_and_stream_script() -> None:
-    """Parity pin: same presentation script → same recorder payload (#102)."""
+    """Parity pin: same script → same *record-time* payloads (#102).
+
+    Must snapshot at ``on_entry`` time. Appending live ``Entry`` references
+    and reading them later is blind to early-vs-late recording drift — the
+    objects converge after ``command_completed`` either way.
+    """
     from tagalong import tui as tui_mod
     from tests.test_tui_facade import drive
 
-    headless_recorded: list[Entry] = []
-    tui_recorded: list[Entry] = []
-    headless = HeadlessSession(on_entry=headless_recorded.append)
-    facade = tui_mod.VoiceCodexTUI(on_entry=tui_recorded.append)
+    headless_recorded: list[tuple[object, ...]] = []
+    tui_recorded: list[tuple[object, ...]] = []
+    headless = HeadlessSession(on_entry=_capture_at_record_time(headless_recorded))
+    facade = tui_mod.VoiceCodexTUI(on_entry=_capture_at_record_time(tui_recorded))
 
     _command_and_stream_script(headless)
 
@@ -341,6 +355,8 @@ def test_headless_and_tui_record_the_same_command_and_stream_script() -> None:
 
     drive(facade, body)
 
-    assert _recorded_view(headless_recorded) == _recorded_view(tui_recorded)
-    assert headless_recorded[-1].output == ["total 0\n"]
-    assert headless_recorded[-1].exit_code == 0
+    assert headless_recorded == tui_recorded
+    command = headless_recorded[-1]
+    assert command[0] == "command"
+    assert command[3] == ["total 0\n"]
+    assert command[4] == 0
