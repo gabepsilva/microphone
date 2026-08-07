@@ -17,6 +17,7 @@ dist/
 electron/node_modules/
 electron/dist/
 electron/release/
+electron/coverage/
 # bun.lock is the lockfile; npm's is accidental local noise
 electron/package-lock.json
 

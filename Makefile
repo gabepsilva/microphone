@@ -20,7 +20,7 @@ MAKEFLAGS += -j$(CI_JOBS)
 VERIFY_QUICK := format-check lint types test-integrity context-budget worker-threads ratchet shellcheck workflows orchestration catalog electron-actions
 VERIFY_COVERAGE := test-coverage
 VERIFY_MUTATION := mutation
-VERIFY_ELECTRON := electron-typecheck electron-lint electron-format-check electron-test
+VERIFY_ELECTRON := electron-typecheck electron-lint electron-format-check electron-coverage
 VERIFY_SECURITY := security-static
 
 # Lines this change touches must be tested even where the file's own floor is
@@ -37,7 +37,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test electron-coverage verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real
 
 format:
 	uv run ruff format .
@@ -140,6 +140,12 @@ electron-format-check: electron-install
 
 electron-test: electron-install
 	cd electron && bun test
+
+# Per-file floors under electron/src (bun lcov + tools/coverage_gate.ts).
+# Replaces plain electron-test in VERIFY_ELECTRON — the suite still runs.
+electron-coverage: electron-install
+	cd electron && bun run test-coverage
+	cd electron && bun run coverage-gate
 
 verify-quick: $(VERIFY_QUICK)
 

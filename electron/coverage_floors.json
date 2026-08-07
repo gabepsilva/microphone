@@ -1,0 +1,27 @@
+{
+  "new_file_floor": 60.0,
+  "new_file_func_floor": 60.0,
+  "floors": {
+    "src/client.ts": 99.0,
+    "src/ipc.ts": 100.0,
+    "src/preload.ts": 93.0,
+    "src/protocol/actions.ts": 100.0,
+    "src/protocol/channels.ts": 100.0,
+    "src/protocol/dispatch_allowlist.ts": 100.0,
+    "src/state.ts": 98.0,
+    "tools/coverage_gate.ts": 91.0
+  },
+  "func_floors": {
+    "src/client.ts": 87.0,
+    "src/ipc.ts": 100.0,
+    "src/preload.ts": 37.0,
+    "src/protocol/actions.ts": 100.0,
+    "src/protocol/channels.ts": 100.0,
+    "src/protocol/dispatch_allowlist.ts": 100.0,
+    "src/state.ts": 100.0,
+    "tools/coverage_gate.ts": 72.0
+  },
+  "unmeasured_entrypoints": {
+    "src/main.ts": "Electron BrowserWindow process entry. Unit tests and CI must not launch a window (#97); coverage floors apply to the extracted client/protocol surface instead."
+  }
+}

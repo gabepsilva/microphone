@@ -907,6 +907,17 @@ source_paths = ["tagalong/domain.py"]
 """
 BASE_SEMGREP = "rules:\n  - id: python-subprocess-shell-true\n"
 BASE_MAKEFILE = "DIFF_BASE ?= origin/master\nDIFF_COVERAGE_MIN ?= 90\n"
+BASE_ELECTRON_FLOORS = (
+    "{\n"
+    '  "new_file_floor": 60.0,\n'
+    '  "new_file_func_floor": 60.0,\n'
+    '  "floors": {"src/client.ts": 90.0},\n'
+    '  "func_floors": {"src/client.ts": 80.0},\n'
+    '  "unmeasured_entrypoints": {\n'
+    '    "src/main.ts": "process entry (#97)"\n'
+    "  }\n"
+    "}\n"
+)
 
 BASE_FILES = {
     "tools/coverage_gate.py": BASE_COVERAGE_GATE,
@@ -915,10 +926,13 @@ BASE_FILES = {
     "pyproject.toml": BASE_PYPROJECT,
     "semgrep.yml": BASE_SEMGREP,
     "Makefile": BASE_MAKEFILE,
+    "electron/coverage_floors.json": BASE_ELECTRON_FLOORS,
     # The module the coverage floor and the mutmut scope both name. It has to
     # exist for "dropped while the file is still there" to be the thing under
     # test; when it is missing, dropping it is legitimate and allowed.
     "tagalong/domain.py": 'VOICE = "Voice"\n',
+    "electron/src/client.ts": "export {}\n",
+    "electron/src/main.ts": "export {}\n",
 }
 
 
@@ -996,6 +1010,53 @@ BASE_FILES = {
             "Makefile",
             "DIFF_BASE ?= origin/master\n",
         ),
+        (
+            "lowered Electron per-file coverage floor",
+            "electron/coverage_floors.json",
+            "{\n"
+            '  "new_file_floor": 60.0,\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 40.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+            "}\n",
+        ),
+        (
+            "lowered Electron func floor",
+            "electron/coverage_floors.json",
+            "{\n"
+            '  "new_file_floor": 60.0,\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 10.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+            "}\n",
+        ),
+        (
+            "lowered Electron new-file floor",
+            "electron/coverage_floors.json",
+            "{\n"
+            '  "new_file_floor": 10.0,\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
+            '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+            "}\n",
+        ),
+        (
+            "grew Electron unmeasured_entrypoints",
+            "electron/coverage_floors.json",
+            "{\n"
+            '  "new_file_floor": 60.0,\n'
+            '  "new_file_func_floor": 60.0,\n'
+            '  "floors": {"src/client.ts": 90.0},\n'
+            '  "func_floors": {"src/client.ts": 80.0},\n'
+            '  "unmeasured_entrypoints": {\n'
+            '    "src/main.ts": "process entry (#97)",\n'
+            '    "src/client.ts": "quietly exempted"\n'
+            "  }\n"
+            "}\n",
+        ),
     ],
 )
 def test_ratchet_rejects_a_weakened_threshold(
@@ -1007,6 +1068,76 @@ def test_ratchet_rejects_a_weakened_threshold(
     monkeypatch.chdir(repo)
 
     assert gate.main(["ratchet_gate.py", "HEAD"]) == 1, f"ratchet allowed a {label}"
+
+
+def test_ratchet_rejects_removing_electron_coverage_floors(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "electron/coverage_floors.json").unlink()
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 1
+
+
+def test_ratchet_rejects_removing_an_electron_floor_while_file_exists(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "electron/coverage_floors.json").write_text(
+        "{\n"
+        '  "new_file_floor": 60.0,\n'
+        '  "new_file_func_floor": 60.0,\n'
+        '  "floors": {},\n'
+        '  "func_floors": {},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 1
+
+
+def test_ratchet_allows_dropping_an_electron_floor_when_file_is_gone(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "electron/src/client.ts").unlink()
+    (repo / "electron/coverage_floors.json").write_text(
+        "{\n"
+        '  "new_file_floor": 60.0,\n'
+        '  "new_file_func_floor": 60.0,\n'
+        '  "floors": {},\n'
+        '  "func_floors": {},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
+
+
+def test_ratchet_allows_a_raised_electron_floor(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("ratchet_gate")
+    repo = _fake_repo(tmp_path, BASE_FILES)
+    (repo / "electron/coverage_floors.json").write_text(
+        "{\n"
+        '  "new_file_floor": 80.0,\n'
+        '  "new_file_func_floor": 80.0,\n'
+        '  "floors": {"src/client.ts": 99.0},\n'
+        '  "func_floors": {"src/client.ts": 95.0},\n'
+        '  "unmeasured_entrypoints": {"src/main.ts": "process entry (#97)"}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    assert gate.main(["ratchet_gate.py", "HEAD"]) == 0
 
 
 def test_ratchet_allows_a_raised_floor(tmp_path, monkeypatch) -> None:

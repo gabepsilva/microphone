@@ -60,7 +60,7 @@ REQUIRED_TARGETS = {
         "electron-typecheck",
         "electron-lint",
         "electron-format-check",
-        "electron-test",
+        "electron-coverage",
     },
     "VERIFY_SECURITY": {"security-static"},
 }

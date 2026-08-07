@@ -12,8 +12,9 @@ Raising a floor is always allowed. Lowering one fails. A floor may be dropped
 only when its source file is genuinely gone.
 
 A threshold is only guarded if this file knows where it lives, so every new
-one needs an entry here. They currently sit in four places: the gate scripts,
-`pyproject.toml`, `semgrep.yml`, and the Makefile.
+one needs an entry here. They currently sit in five places: the gate scripts,
+`pyproject.toml`, `semgrep.yml`, the Makefile, and
+`electron/coverage_floors.json`.
 
 Suppression counts are deliberately not ratcheted: AGENTS.md permits a
 `# noqa` or `# nosec` that carries a finding ID and a justification, so a
@@ -23,6 +24,7 @@ count-based gate would fire on legitimate use and be silenced.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -36,6 +38,7 @@ CONTEXT_BUDGET = "tools/context_budget.py"
 PYPROJECT = "pyproject.toml"
 SEMGREP_RULES = "semgrep.yml"
 MAKEFILE = "Makefile"
+ELECTRON_COVERAGE_FLOORS = "electron/coverage_floors.json"
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -111,6 +114,82 @@ def _check_coverage_floors(base: str, failures: list[str]) -> None:
     )
     if base_new is not None and now_new is not None and now_new < base_new:
         failures.append(f"NEW_FILE_FLOOR lowered {base_new:g} -> {now_new:g}.")
+
+
+def _electron_floors_payload(source: str) -> dict:
+    return json.loads(source)
+
+
+def _check_electron_floor_map(
+    label: str,
+    was_floors: dict,
+    now_floors: dict,
+    failures: list[str],
+) -> None:
+    for path, floor in was_floors.items():
+        if path not in now_floors:
+            if Path(f"electron/{path}").exists():
+                failures.append(
+                    f"electron/{path}: {label} floor removed while the file "
+                    "still exists."
+                )
+            continue
+        if now_floors[path] < floor:
+            failures.append(
+                f"electron/{path}: {label} floor lowered "
+                f"{floor:g} -> {now_floors[path]:g}."
+            )
+
+
+def _check_electron_coverage_floors(base: str, failures: list[str]) -> None:
+    """Electron floors live in JSON so the Bun gate and this ratchet share them.
+
+    Weakening means a lowered per-file line/func floor, a lowered new-file
+    floor, a removed floor while ``electron/<path>`` still exists, or a newly
+    added ``unmeasured_entrypoints`` key (that shrinks what the gate measures,
+    the same way narrowing mutmut ``source_paths`` does).
+    """
+    base_source = _read_base(base, ELECTRON_COVERAGE_FLOORS)
+    if base_source is None:
+        return
+    if not Path(ELECTRON_COVERAGE_FLOORS).exists():
+        failures.append(
+            f"{ELECTRON_COVERAGE_FLOORS}: removed; Electron coverage floors "
+            "would no longer be enforced."
+        )
+        return
+
+    was = _electron_floors_payload(base_source)
+    now = _electron_floors_payload(
+        Path(ELECTRON_COVERAGE_FLOORS).read_text(encoding="utf-8")
+    )
+    _check_electron_floor_map(
+        "line", was.get("floors") or {}, now.get("floors") or {}, failures
+    )
+    _check_electron_floor_map(
+        "func",
+        was.get("func_floors") or {},
+        now.get("func_floors") or {},
+        failures,
+    )
+
+    for key in ("new_file_floor", "new_file_func_floor"):
+        was_new = was.get(key)
+        now_new = now.get(key)
+        if (
+            was_new is not None
+            and now_new is not None
+            and float(now_new) < float(was_new)
+        ):
+            failures.append(f"electron {key} lowered {was_new:g} -> {now_new:g}.")
+
+    was_exempt = set((was.get("unmeasured_entrypoints") or {}).keys())
+    now_exempt = set((now.get("unmeasured_entrypoints") or {}).keys())
+    added_exempt = sorted(now_exempt - was_exempt)
+    if added_exempt:
+        failures.append(
+            f"electron unmeasured_entrypoints grew; no longer measured: {added_exempt}."
+        )
 
 
 def _check_mutation_floor(base: str, failures: list[str]) -> None:
@@ -260,6 +339,7 @@ def main(argv: list[str]) -> int:
 
     failures: list[str] = []
     _check_coverage_floors(base, failures)
+    _check_electron_coverage_floors(base, failures)
     _check_mutation_floor(base, failures)
     _check_context_budget(base, failures)
     _check_pyproject(base, failures)

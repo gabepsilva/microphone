@@ -21,7 +21,9 @@ will fail with `command not found`). On Linux the start script passes
 process cannot abort the window.
 
 Make targets from the repo root: `electron-typecheck`, `electron-lint`,
-`electron-format-check`, `electron-test` (all use the skip-download install).
+`electron-format-check`, `electron-test`, `electron-coverage` (all use the
+skip-download install). `VERIFY_ELECTRON` runs `electron-coverage`, which is
+`bun test` with lcov plus per-file floors in `coverage_floors.json`.
 `make electron-actions` (in `VERIFY_QUICK`) checks that
 `src/protocol/actions.ts` matches the Python `CATALOG`; regenerate with
 `make electron-actions-write` after a catalog change.

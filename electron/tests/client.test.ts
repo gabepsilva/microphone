@@ -120,6 +120,15 @@ describe("parseAppState", () => {
     expect(parsed.turn_silence).toBe(3.0);
     expect(parsed.response_policy).toBe("both");
   });
+
+  it("ignores selection objects whose desired/effective are not string|null", () => {
+    const parsed = parseAppState({
+      microphone: { desired: 1, effective: "ok" },
+      audio_stream: { desired: "Zoom", effective: false },
+    });
+    expect(parsed.microphone).toEqual({ desired: null, effective: null });
+    expect(parsed.audio_stream).toEqual({ desired: null, effective: null });
+  });
 });
 
 describe("TagAlongClient", () => {
@@ -157,6 +166,17 @@ describe("TagAlongClient", () => {
     fake.emit("close");
 
     await expect(callPromise).rejects.toThrow("connection closed");
+  });
+
+  it("rejects the handshake when the socket errors before connect", async () => {
+    const fake = new FakeSocket();
+    const client = connectOnce(fake);
+
+    queueMicrotask(() => {
+      fake.emit("error", new Error("ECONNREFUSED"));
+    });
+
+    await expect(client.call("snapshot")).rejects.toThrow("ECONNREFUSED");
   });
 
   it("resolves responses by id even if a stray method field is present", async () => {
@@ -251,6 +271,9 @@ describe("SessionEvents", () => {
     });
     await started;
     expect(states.at(-1)?.tts_enabled).toBe(true);
+    // Default onError (omitted above) plus public getters used by main.ts.
+    expect(session.hasSnapshot).toBe(true);
+    expect(session.state.tts_enabled).toBe(true);
 
     await waitForMethodCount(fake, "poll", 1);
     fake.respondTo("poll", {

@@ -11,6 +11,8 @@
     "format": "prettier --write .",
     "format-check": "prettier --check .",
     "test": "bun test",
+    "test-coverage": "bun test --coverage --coverage-reporter=lcov --coverage-reporter=text --coverage-dir=coverage",
+    "coverage-gate": "bun run tools/coverage_gate.ts",
     "start": "bun run build && electron --no-sandbox --disable-gpu --disable-gpu-sandbox --in-process-gpu ."
   },
   "devDependencies": {
