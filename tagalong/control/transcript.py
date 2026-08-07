@@ -14,6 +14,7 @@ updates without a Textual repaint timer.
 
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -78,11 +79,16 @@ class TranscriptStore:
             self._publish = publish
 
     def start_coalesce_pump(self) -> None:
-        """Drain dirty rows on ``flush_interval`` without a Textual timer."""
+        """Drain dirty rows on ``flush_interval`` without a Textual timer.
+
+        Idempotent while a pump is alive. A dead thread (exception exit or a
+        timed-out stop) is replaced rather than leaving ``entry_updated`` stuck.
+        """
         with self._lock:
-            if self._pump_thread is not None:
+            if self._pump_thread is not None and self._pump_thread.is_alive():
                 return
-            self._pump_stop.clear()
+            # Fresh event so a timed-out stop cannot revive a lingering thread.
+            self._pump_stop = threading.Event()
             thread = threading.Thread(
                 target=self._coalesce_loop,
                 name="transcript-coalesce",
@@ -92,7 +98,7 @@ class TranscriptStore:
         thread.start()
 
     def stop_coalesce_pump(self) -> None:
-        """Stop the coalesce pump (tests / shutdown)."""
+        """Stop the coalesce pump (tests / session shutdown)."""
         self._pump_stop.set()
         with self._lock:
             thread = self._pump_thread
@@ -166,7 +172,9 @@ class TranscriptStore:
 
         Accepted rows move to the end of the store so store order matches
         publish / append-blind client order (a note may have landed while the
-        speech was still provisional).
+        speech was still provisional). That reorder is load-bearing for F5:
+        save, the session recorder, and the wire all read this accepted order,
+        so a cosmetic "restore insertion order" change would re-diverge them.
         """
         with self._lock:
             for entry in entries:
@@ -262,7 +270,14 @@ class TranscriptStore:
 
     def _coalesce_loop(self) -> None:
         while not self._pump_stop.wait(self._flush_interval):
-            self.flush_updates()
+            try:
+                self.flush_updates()
+            except Exception as error:
+                # One bad subscriber must not freeze entry_updated for everyone.
+                print(
+                    f"transcript coalesce flush failed: {error}",
+                    file=sys.stderr,
+                )
 
     def _flush_updates_unlocked(self) -> None:
         dirty = sorted(self._dirty)

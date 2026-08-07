@@ -726,6 +726,7 @@ def attach_conversation_hooks(tui, conversation, tts, attachments):
         app_state_from_session(tui.state),
         transcript=tui.transcript,
     )
+    controller.transcript.start_coalesce_pump()
     bind_first_slice(
         controller, conversation=conversation, tts=tts, attachments=attachments
     )
@@ -1015,6 +1016,7 @@ def run_attached_session(controller, tui, conversation, microphone, audio) -> No
         pump.stop()
         if server is not None:
             server.stop()
+        controller.close()
 
 
 def run_entrypoint():

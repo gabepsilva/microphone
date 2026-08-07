@@ -214,7 +214,8 @@ class Controller:
         self._by_id = {action.id: action for action in catalog}
         self._events = EventLog(capacity, clock)
         self._transcript.set_publisher(self._events.publish)
-        self._transcript.start_coalesce_pump()
+        # Coalesce pump is started by the session host (cli), not here — so
+        # short-lived Controllers in tests never spawn a 20 Hz thread.
         self._handlers: dict[str, Handler] = {}
         self._requests = _Requests()
         self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
@@ -228,6 +229,10 @@ class Controller:
     def transcript(self) -> TranscriptStore:
         """The ordered live transcript rows for this session."""
         return self._transcript
+
+    def close(self) -> None:
+        """Stop background resources owned by this controller."""
+        self._transcript.stop_coalesce_pump()
 
     # -- wiring ---------------------------------------------------------
 

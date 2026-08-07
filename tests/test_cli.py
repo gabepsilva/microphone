@@ -1167,6 +1167,11 @@ def test_run_attached_session_stops_the_socket_when_the_tui_exits(
     server = seen["server"]
     assert isinstance(server, LocalServer)
     assert not server.path.exists()
+    # Session teardown stops the coalesce pump (Controller.close).
+    assert (
+        controller.transcript._pump_thread is None
+        or not controller.transcript._pump_thread.is_alive()
+    )
 
 
 def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:

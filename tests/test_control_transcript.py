@@ -271,10 +271,49 @@ def test_ids_keep_climbing_across_clear() -> None:
     assert store.append(Entry(kind="note", text="b")) == 2
 
 
-def test_controller_starts_coalesce_pump() -> None:
+def test_controller_does_not_auto_start_coalesce_pump() -> None:
     controller = Controller()
+    assert controller.transcript._pump_thread is None
+    controller.transcript.start_coalesce_pump()
     assert controller.transcript._pump_thread is not None
-    controller.transcript.stop_coalesce_pump()
+    assert controller.transcript._pump_thread.is_alive()
+    controller.close()
+    assert (
+        controller.transcript._pump_thread is None
+        or not controller.transcript._pump_thread.is_alive()
+    )
+
+
+def test_coalesce_pump_survives_publisher_errors() -> None:
+    calls = {"n": 0}
+
+    def boom(name: str, _payload: object) -> None:
+        if name != "transcript.entry_updated":
+            return
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("subscriber died")
+
+    store = TranscriptStore(publish=boom, flush_interval=0.02)
+    entry = Entry(kind="speech", source="Taga", text="", streaming=True)
+    store.append(entry)
+    store.append_text(entry, "a")
+    store.start_coalesce_pump()
+    try:
+        deadline = time.monotonic() + 1.0
+        while calls["n"] < 1:
+            if time.monotonic() > deadline:
+                raise AssertionError("pump never attempted first flush")
+            time.sleep(0.01)
+        store.append_text(entry, "b")
+        deadline = time.monotonic() + 1.0
+        while calls["n"] < 2:
+            if time.monotonic() > deadline:
+                raise AssertionError("pump did not continue after publisher error")
+            time.sleep(0.01)
+    finally:
+        store.stop_coalesce_pump()
+    assert calls["n"] >= 2
 
 
 def test_lookup_by_entry_identity() -> None:
