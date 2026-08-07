@@ -55,6 +55,7 @@ from .control import (
 from .domain import AGENT, TEXT, UserTextMessage
 from .presentation import Entry
 from .recording import default_transcript_dir, write_transcript_export
+from .speech import PIPER
 
 
 class ConversationPort(Protocol):
@@ -353,42 +354,67 @@ def _set_response_policy(
 
 
 def _set_tts_provider(
-    tts: SettingsSpeechPort, persist: Persist, request: Request, state: AppState
+    tts: SettingsSpeechPort,
+    persist: Persist,
+    controller: Controller,
+    request: Request,
+    state: AppState,
 ) -> Effect:
     provider = str(request.payload["provider"])
-    voice = state.piper_voice if provider == "piper" else state.edge_voice
-    if tts.set_provider(provider, voice) is False:
-        raise EffectFailed("tts provider could not be changed")
-    _record(persist, "tts_provider", provider)
-    return Effect.applied(
-        replace(
-            state,
+    voice = state.piper_voice if provider == PIPER else state.edge_voice
+
+    def settle(current: AppState, effective: object) -> AppState:
+        applied_voice = str(effective)
+        return replace(
+            current,
             tts_provider=provider,
-            tts_voice=Selection(desired=voice, effective=voice),
-        ),
-        provider,
-    )
+            tts_voice=Selection(desired=voice, effective=applied_voice),
+        )
+
+    def on_applied(effective: str) -> object:
+        settled = controller.settle(request.id, effective)
+        if isinstance(settled, Applied):
+            _record(persist, "tts_provider", provider)
+        return settled
+
+    if (
+        tts.set_provider(
+            provider,
+            voice,
+            on_applied=on_applied,
+            on_failed=lambda detail: controller.fail(request.id, detail),
+        )
+        is False
+    ):
+        raise EffectFailed("tts provider could not be changed")
+    return Effect.pending(with_desired(state, "tts_voice", voice), settle=settle)
 
 
 def _set_tts_voice(
     tts: SettingsSpeechPort,
+    persist: Persist,
     controller: Controller,
-    on_voice_applied: Callable[[str | None], object] | None,
     request: Request,
     state: AppState,
 ) -> Effect:
     voice = str(request.payload["voice"])
-    remember = "piper_voice" if state.tts_provider == "piper" else "edge_voice"
+    remember = "piper_voice" if state.tts_provider == PIPER else "edge_voice"
 
     def settle(current: AppState, effective: object) -> AppState:
         applied = str(effective)
         updated = with_effective(current, "tts_voice", applied)
         return replace(updated, **{remember: applied})
 
+    def on_applied(effective: str) -> object:
+        settled = controller.settle(request.id, effective)
+        if isinstance(settled, Applied):
+            _record(persist, remember, effective)
+        return settled
+
     if (
         tts.set_voice(
             voice,
-            on_applied=_completer(controller, request.id, on_voice_applied),
+            on_applied=on_applied,
             on_failed=lambda detail: controller.fail(request.id, detail),
         )
         is False
@@ -437,24 +463,25 @@ def bind_settings_slice(
         SettingsConversationPort, SettingsSpeechPort, PolicyPort, SilencePort
     ],
     persist: Persist = None,
-    on_voice_applied: Callable[[str | None], object] | None = None,
 ) -> None:
     """Register the settings handlers on *controller*.
 
     Persistence belongs to the action, not to a TUI hook wrapper. A socket
     caller that sets the model must leave the same startup file a sidebar
     pick would, or the next session starts somewhere only one client went.
-    Voice switches settle asynchronously and persist only on success, the
-    same shape as microphone selection (#124 D14).
+    Provider and voice switches settle asynchronously and persist only on
+    success, the same shape as microphone selection (#124 D14).
     """
     conversation, tts, gate, turn_silence = collaborators
     controller.register(
         "response_policy.set", partial(_set_response_policy, gate, persist)
     )
-    controller.register("tts.set_provider", partial(_set_tts_provider, tts, persist))
+    controller.register(
+        "tts.set_provider", partial(_set_tts_provider, tts, persist, controller)
+    )
     controller.register(
         "tts.set_voice",
-        partial(_set_tts_voice, tts, controller, on_voice_applied),
+        partial(_set_tts_voice, tts, persist, controller),
     )
     controller.register(
         "codex.set_model", partial(_set_codex_model, conversation, persist)

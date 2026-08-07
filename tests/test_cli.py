@@ -199,19 +199,32 @@ class FakeTTS:
         self.enabled = enabled
 
     def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
-        del on_applied, on_failed
+        del on_failed
         if self.switching or provider == self.provider:
             return False
         self.provider = provider
         if voice is not None:
             self.voice = voice
+        # Defer the settle callback so Effect.pending is registered first.
+        if on_applied is not None:
+            applied = self.voice
+            threading.Thread(
+                target=on_applied, args=(applied,), name="FakeTTSApplied", daemon=True
+            ).start()
         return True
 
     def set_voice(self, voice, *, on_applied=None, on_failed=None):
-        del on_applied, on_failed
+        del on_failed
         if self.switching or voice == self.voice:
             return False
         self.voice = voice
+        if on_applied is not None:
+            threading.Thread(
+                target=on_applied,
+                args=(voice,),
+                name="FakeTTSVoiceApplied",
+                daemon=True,
+            ).start()
         return True
 
     def is_speaking(self):
@@ -1418,6 +1431,12 @@ def test_a_controller_settings_change_is_remembered(wiring, tmp_path) -> None:
     controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=actor)
     controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=actor)
 
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        saved = saved_config(tmp_path)
+        if saved.get("tts_provider") == "edge":
+            break
+        time.sleep(0.01)
     saved = saved_config(tmp_path)
     assert saved["codex_model"] == "gpt-5.6-sol"
     assert saved["taga_after"] == "voice"
@@ -1436,6 +1455,12 @@ def test_every_sidebar_control_is_remembered(wiring, tmp_path) -> None:
     tui.hooks.on_turn_silence(1.25)
     tui.hooks.on_tts_provider("edge")
 
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        saved = saved_config(tmp_path)
+        if saved.get("tts_provider") == "edge":
+            break
+        time.sleep(0.01)
     saved = saved_config(tmp_path)
     assert saved["taga_after"] == "audio"
     assert saved["codex_model"] == "gpt-5.6-sol"
@@ -1483,6 +1508,12 @@ def test_a_refused_change_is_not_remembered(wiring, tmp_path) -> None:
     tui, _, conversation = wiring["session"]
 
     assert tui.hooks.on_tts_provider("edge") is True
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if saved_config(tmp_path).get("tts_provider") == "edge":
+            break
+        time.sleep(0.01)
+    assert saved_config(tmp_path)["tts_provider"] == "edge"
     # The engine is still building the engine it just accepted, so the next
     # request is refused rather than queued behind it.
     conversation.tts.switching = True

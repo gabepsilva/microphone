@@ -100,7 +100,10 @@ class FakeSpeech:
         self.provider_ok = True
         self.voice_ok = True
         self.voice_fail: str | None = None
+        self._pending_provider: str | None = None
         self._pending_voice: str | None = None
+        self._provider_applied: Callable[[str], object] | None = None
+        self._provider_failed: Callable[[str], object] | None = None
         self._voice_applied: Callable[[str], object] | None = None
         self._voice_failed: Callable[[str], object] | None = None
 
@@ -119,14 +122,24 @@ class FakeSpeech:
         on_applied: Callable[[str], object] | None = None,
         on_failed: Callable[[str], object] | None = None,
     ) -> bool | None:
-        del on_applied, on_failed
         self.providers.append(provider)
         if not self.provider_ok or provider == self.provider:
             return False
-        self.provider = provider
-        if voice is not None:
-            self.voice = voice
+        self._pending_provider = provider
+        self._pending_voice = self.voice if voice is None else voice
+        self._provider_applied = on_applied
+        self._provider_failed = on_failed
         return True
+
+    def complete_provider(self) -> None:
+        provider = self._pending_provider
+        voice = self._pending_voice
+        assert provider is not None
+        assert voice is not None
+        self.provider = provider
+        self.voice = voice
+        if self._provider_applied is not None:
+            self._provider_applied(voice)
 
     def set_voice(
         self,
@@ -708,18 +721,6 @@ def settings_bound(
             if recorded is not None
             else None
         ),
-        on_voice_applied=(
-            (
-                lambda voice: recorded.append(
-                    (
-                        "piper_voice" if tts.provider == "piper" else "edge_voice",
-                        voice,
-                    )
-                )
-            )
-            if recorded is not None
-            else None
-        ),
     )
     return controller, conversation, tts, gate, silence
 
@@ -739,9 +740,11 @@ def test_settings_actions_update_canonical_state() -> None:
     assert controller.dispatch(
         "response_policy.set", {"policy": "voice"}, actor=OWNER
     ) == Applied("req-1", "voice")
-    assert controller.dispatch(
-        "tts.set_provider", {"provider": "edge"}, actor=OWNER
-    ) == Applied("req-2", "edge")
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Accepted,
+    )
+    tts.complete_provider()
     assert controller.dispatch(
         "codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER
     ) == Applied("req-3", "gpt-5.6-sol")
@@ -773,10 +776,13 @@ def test_provider_switch_restores_the_remembered_voice() -> None:
         controller, (FakeConversation(), tts, FakeGate(), FakeSilence())
     )
 
-    assert controller.dispatch(
-        "tts.set_provider", {"provider": "edge"}, actor=OWNER
-    ) == Applied("req-1", "edge")
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Accepted,
+    )
+    tts.complete_provider()
     assert tts.voice == "en-US-JennyNeural"
+    assert controller.state.tts_provider == "edge"
     assert controller.state.tts_voice == Selection(
         desired="en-US-JennyNeural", effective="en-US-JennyNeural"
     )
@@ -824,24 +830,61 @@ def test_tts_set_voice_failure_does_not_persist() -> None:
     assert controller.state.tts_voice.effective == before_effective
 
 
+def test_a_late_tts_provider_applied_callback_does_not_persist() -> None:
+    """Only Applied settle outcomes write the engine; a retired request must not."""
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+
+    outcome = controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER)
+    assert isinstance(outcome, Accepted)
+    assert controller.fail(outcome.request_id, "cancelled") is not None
+    tts.complete_provider()
+    assert recorded == []
+    assert controller.state.tts_provider == "piper"
+
+
+def test_a_late_tts_voice_applied_callback_does_not_persist() -> None:
+    recorded: list[tuple[str, object]] = []
+    tts = FakeSpeech()
+    controller, *_rest = settings_bound(tts=tts, recorded=recorded)
+    before = controller.state.piper_voice
+
+    outcome = controller.dispatch(
+        "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+    )
+    assert isinstance(outcome, Accepted)
+    assert controller.fail(outcome.request_id, "cancelled") is not None
+    tts.complete_voice()
+    assert recorded == []
+    assert controller.state.piper_voice == before
+
+
 def test_setting_the_provider_does_not_unmute_speech() -> None:
     """Unmute is a TUI picker composition, not part of ``tts.set_provider``."""
-    controller, *_rest = settings_bound()
+    controller, _conversation, tts, _gate, _silence = settings_bound()
     controller.dispatch("tts.set_enabled", {"enabled": False}, actor=OWNER)
 
-    assert controller.dispatch(
-        "tts.set_provider", {"provider": "edge"}, actor=OWNER
-    ) == Applied("req-2", "edge")
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Accepted,
+    )
+    tts.complete_provider()
     assert controller.state.tts_enabled is False
     assert controller.state.tts_provider == "edge"
 
 
 def test_settings_persistence_runs_from_the_handler_not_the_hook() -> None:
     recorded: list[tuple[str, object]] = []
-    controller, *_rest = settings_bound(recorded=recorded)
+    controller, _conversation, tts, _gate, _silence = settings_bound(recorded=recorded)
 
     controller.dispatch("response_policy.set", {"policy": "voice"}, actor=OWNER)
-    controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER)
+    assert isinstance(
+        controller.dispatch("tts.set_provider", {"provider": "edge"}, actor=OWNER),
+        Accepted,
+    )
+    assert recorded == [("taga_after", "voice")]
+    tts.complete_provider()
     controller.dispatch("codex.set_model", {"model": "gpt-5.6-sol"}, actor=OWNER)
     controller.dispatch("codex.set_reasoning", {"effort": "high"}, actor=OWNER)
     controller.dispatch("turn_silence.set", {"seconds": 0.01}, actor=OWNER)
@@ -906,6 +949,7 @@ def test_the_tui_hooks_dispatch_settings() -> None:
     assert tui.hooks.on_codex_model("gpt-5.6-sol") is True
     assert tui.hooks.on_codex_effort("high") is True
     assert tui.hooks.on_tts_provider("edge") is True
+    tts.complete_provider()
     assert tui.hooks.on_turn_silence(1.25) == 1.25
 
     assert gate.policies == ["quiet"]

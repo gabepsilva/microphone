@@ -32,6 +32,7 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from ..domain import POLICY_NAMES
+from ..piper_voices import PIPER_VOICE_IDS
 from ..speech import PROVIDERS
 
 # Bumped when an existing action's meaning or payload changes incompatibly.
@@ -307,7 +308,7 @@ CATALOG: tuple[ActionSpec, ...] = (
         "tts.set_voice",
         "Choose the speech voice for the current engine",
         Scope.SETTINGS,
-        (Parameter("voice", Kind.NAME),),
+        (Parameter("voice", Kind.NAME, choices=PIPER_VOICE_IDS),),
     ),
     ActionSpec(
         "codex.set_model",
