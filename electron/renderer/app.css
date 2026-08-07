@@ -35,6 +35,11 @@
 html,
 body {
   height: 100%;
+  /* The window is the viewport and nothing else scrolls: the only scroller is
+     #transcript-area. Without this a stray wide or tall child would scroll the
+     document itself, and the prompt dock — pinned to the 100vh grid, not to
+     the window — would ride out of view with it. */
+  overflow: hidden;
 }
 body {
   margin: 0;
@@ -76,10 +81,16 @@ body {
 
 /* -- chat column ----------------------------------------------------- */
 
+/* Three rows: the transcript takes what is left, the partial line and the
+   prompt dock take what they need and stay on screen always. The transcript
+   scrolls inside its own row, so it runs from the top of the window down to
+   the top of the partial line and no further — it never slides under the
+   dock, and the dock never scrolls with it. */
 #left {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
   min-width: 0;
+  min-height: 0;
 }
 
 /* The panel names the app; the chat column is all transcript. */
@@ -570,9 +581,10 @@ body {
   color: var(--muted);
   font-size: 16px;
 }
+/* Above the prompt: the list opens upward, so the gap belongs underneath it. */
 #command-palette {
   max-width: 46rem;
-  margin: 0.4rem auto 0;
+  margin: 0 auto 0.4rem;
   padding: 0.3rem;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -871,18 +883,4 @@ button:hover {
 }
 #body.sidebar-hidden #sidebar-restore {
   display: grid;
-}
-.note {
-  margin: 0.9rem 0 0;
-  color: var(--faint);
-  font-size: 15px;
-  line-height: 1.5;
-}
-.note code {
-  font-family: var(--mono);
-  font-size: 14px;
-}
-.note strong {
-  color: var(--muted);
-  font-weight: 600;
 }

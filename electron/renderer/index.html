@@ -36,6 +36,10 @@
         <div id="partial"></div>
 
         <div id="promptbar">
+          <!-- Slash-command menu; app.js fills it from commands.list. It sits
+               above the input so the list grows away from the prompt rather
+               than over the hint line. -->
+          <div id="command-palette" role="listbox" aria-label="Commands" hidden></div>
           <div id="prompt-shell">
             <button type="button" id="attach-button" title="Attach an image">+</button>
             <input id="compose-image" type="file" accept="image/*" />
@@ -48,8 +52,6 @@
             <span id="prompt-model" title="Codex model"></span>
             <button type="button" id="send" title="Send (Enter)">↑</button>
           </div>
-          <!-- Slash-command menu; app.js fills it from commands.list. -->
-          <div id="command-palette" role="listbox" aria-label="Commands" hidden></div>
           <div id="promptfoot">
             <span id="input-hint">Text always gets a reply</span>
             <span id="policy-chip"></span>
@@ -177,12 +179,8 @@
         </section>
 
         <!-- Session actions live on the keyboard (^X ^D ^N ^S) and in the
-             slash palette; the empty screen is their reference. -->
-        <p class="note">
-          Messages sent here arrive as <strong>Agent</strong> — Electron peers are
-          <code>ActorKind.AGENT</code>. There is no Quit; the TUI owns process
-          lifecycle.
-        </p>
+             slash palette; the empty screen is their reference. Provenance and
+             lifecycle are documented in electron/README.md, not on screen. -->
       </aside>
     </div>
     <script type="module" src="./app.js"></script>

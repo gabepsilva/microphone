@@ -375,7 +375,9 @@ function completeSelectedCommand() {
  *
  * A command that names an action dispatches it. `/help` names none — the
  * catalog it would print is the menu already on screen — so it just leaves
- * the menu open.
+ * the menu open. It says nothing in the banner either: the banner reports
+ * connection state, and echoing a summary there only restates a row the
+ * user is already looking at.
  */
 async function runSelectedCommand() {
   const spec = paletteRows[paletteIndex];
@@ -384,7 +386,6 @@ async function runSelectedCommand() {
   }
   if (spec.action_id === null) {
     completeSelectedCommand();
-    setBanner(`/${spec.name}: ${spec.summary || "listed above"}`);
     return;
   }
   composeText.value = "";
