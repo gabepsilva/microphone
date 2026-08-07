@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from .control.transcript import TranscriptStore
 from .domain import TAGA, VOICE
 from .presentation import Entry
-from .tui import OrderedDeltaBuffer, SessionState, TuiHooks
+from .tui import OrderedDeltaBuffer, SessionState, TuiHooks, entry_is_open
 
 
 class HeadlessSession:
@@ -86,7 +86,9 @@ class HeadlessSession:
         entry.stamp = entry.stamp or self._stamp()
         self.transcript.append(entry, provisional=not record)
         self._entries.append(entry)
-        if record and not entry.streaming:
+        # Same gate as VoiceCodexApp.add_entry — commands stay open until
+        # exit_code is set, so output/status reach the session file.
+        if record and not entry_is_open(entry):
             self._record(entry)
         return entry
 

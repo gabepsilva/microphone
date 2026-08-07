@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import signal
 from types import SimpleNamespace
+from typing import cast
 
 from tagalong.control import Controller
 from tagalong.domain import TAGA, VOICE
@@ -100,12 +101,20 @@ def test_headless_reasoning_and_command_stream() -> None:
     host.reasoning_delta("hard")
     host.reasoning_completed()
 
+    before_command = len(recorded)
     host.command_started("ls")
     host.command_output("a\n")
+    # Must stay unrecorded until command_completed (parity with VoiceCodexApp).
+    assert len(recorded) == before_command
     host.command_completed(0)
 
     assert _kinds(host) == ["reasoning", "command"]
     assert any(entry.kind == "reasoning" and entry.recorded for entry in recorded)
+    commands = [entry for entry in recorded if entry.kind == "command"]
+    assert len(commands) == 1
+    assert commands[0].output == ["a\n"]
+    assert commands[0].exit_code == 0
+    assert commands[0].recorded is True
 
 
 def test_headless_reasoning_delta_starts_row_when_missing() -> None:
@@ -283,3 +292,55 @@ def test_build_session_host_picks_headless_or_tui(monkeypatch) -> None:
         SimpleNamespace(headless=False), SimpleNamespace(), [], None, None
     )
     assert tui_host.kind == "tui"
+
+
+def _recorded_view(entries: list[Entry]) -> list[tuple[object, ...]]:
+    """Comparable recorder view — stamps excluded (clock-dependent)."""
+    return [
+        (
+            entry.kind,
+            entry.source,
+            entry.text,
+            list(entry.output),
+            entry.exit_code,
+            entry.streaming,
+            entry.interrupted,
+        )
+        for entry in entries
+    ]
+
+
+def _command_and_stream_script(host: HeadlessSession | object) -> None:
+    """Shared presentation script for headless/TUI recorder parity."""
+    cast_host = cast(HeadlessSession, host)
+    cast_host.begin_codex()
+    cast_host.codex_message_open("Voice")
+    cast_host.codex_delta("hi ")
+    cast_host.codex_delta("there")
+    cast_host.end_codex()
+    cast_host.command_started("ls -la")
+    cast_host.command_output("total 0\n")
+    cast_host.command_completed(0)
+
+
+def test_headless_and_tui_record_the_same_command_and_stream_script() -> None:
+    """Parity pin: same presentation script → same recorder payload (#102)."""
+    from tagalong import tui as tui_mod
+    from tests.test_tui_facade import drive
+
+    headless_recorded: list[Entry] = []
+    tui_recorded: list[Entry] = []
+    headless = HeadlessSession(on_entry=headless_recorded.append)
+    facade = tui_mod.VoiceCodexTUI(on_entry=tui_recorded.append)
+
+    _command_and_stream_script(headless)
+
+    async def body(pilot):
+        _command_and_stream_script(facade)
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert _recorded_view(headless_recorded) == _recorded_view(tui_recorded)
+    assert headless_recorded[-1].output == ["total 0\n"]
+    assert headless_recorded[-1].exit_code == 0
