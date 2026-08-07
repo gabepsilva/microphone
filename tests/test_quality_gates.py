@@ -1283,6 +1283,52 @@ def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+def test_semgrep_forbids_raw_tagalong_channel_literals() -> None:
+    """Raw \"tagalong:…\" in send/on/invoke outside channels.ts must fail (#96)."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-ipc-channel-literals-via-table" in rules
+
+    image = _semgrep_image()
+    backdoor = (
+        "export function plant(window: { webContents: { send: Function } }): void {\n"
+        '  window.webContents.send("tagalong:stateChanged", {});\n'
+        "}\n"
+    )
+    allowed = (
+        'import { CHANNELS } from "./protocol/channels";\n'
+        "export function broadcast(window: { webContents: { send: Function } }): void {\n"
+        "  window.webContents.send(CHANNELS.stateChanged, {});\n"
+        "}\n"
+    )
+    channels = (
+        "export const CHANNELS = {\n"
+        '  stateChanged: "tagalong:stateChanged",\n'
+        "} as const;\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        protocol = src / "protocol"
+        protocol.mkdir(parents=True)
+        (src / "main.ts").write_text(backdoor, encoding="utf-8")
+        (src / "broadcaster.ts").write_text(allowed, encoding="utf-8")
+        (protocol / "channels.ts").write_text(channels, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, "Semgrep accepted a raw tagalong: channel literal"
+        assert "electron-ipc-channel-literals-via-table" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-ipc-channel-literals-via-table"
+        }
+        assert any(path.endswith("main.ts") for path in paths)
+        assert not any(path.endswith("channels.ts") for path in paths)
+
+
 def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
     """A call(\"dispatch\") outside ipc.ts must fail — D3c table gate for #96."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")

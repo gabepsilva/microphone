@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain } from "electron";
 
 import { SessionEvents, TagAlongClient } from "./client";
 import { registerIpcHandlers } from "./ipc";
+import { CHANNELS } from "./protocol/channels";
 import type { AppState } from "./state";
 
 /** Command connection — never park a long-poll here (#96 G1). */
@@ -15,7 +16,7 @@ let mainWindow: BrowserWindow | null = null;
 
 function broadcastState(state: AppState): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("tagalong:stateChanged", state);
+    mainWindow.webContents.send(CHANNELS.stateChanged, state);
   }
 }
 
@@ -40,8 +41,8 @@ async function createWindow(): Promise<void> {
     mainWindow = null;
   });
   await mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-  // Push the already-subscribed snapshot once the page can listen.
-  if (sessionEvents.state) {
+  // Push a real subscribe snapshot once the page can listen — never empty defaults.
+  if (sessionEvents.hasSnapshot) {
     broadcastState(sessionEvents.state);
   }
 }

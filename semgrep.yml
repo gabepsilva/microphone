@@ -178,3 +178,29 @@ rules:
       - pattern-either:
           - pattern: $CLIENT.call("dispatch", ...)
           - pattern: $F("dispatch", ...)
+
+  # Push/invoke channel names must use CHANNELS.* — a raw "tagalong:…" literal
+  # in send/on/invoke bypasses the one-spelling table.
+  - id: electron-ipc-channel-literals-via-table
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      IPC channel string literals must come from CHANNELS in
+      electron/src/protocol/channels.ts (one spelling, type-checked).
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+      exclude:
+        - /electron/src/protocol/channels.ts
+    patterns:
+      - pattern-either:
+          - pattern: $X.send($CHANNEL, ...)
+          - pattern: $X.on($CHANNEL, ...)
+          - pattern: $X.removeListener($CHANNEL, ...)
+          - pattern: $X.invoke($CHANNEL, ...)
+      - metavariable-regex:
+          metavariable: $CHANNEL
+          regex: "^[\"']tagalong:"

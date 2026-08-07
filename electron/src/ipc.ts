@@ -1,7 +1,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 
 import type { TagAlongClient } from "./client";
-import { CHANNELS, type ChannelName } from "./protocol/channels";
+import { CHANNELS, INVOKE_CHANNELS, type InvokeChannelName } from "./protocol/channels";
 import { validateDispatch } from "./protocol/dispatch_allowlist";
 
 type IpcHandle = {
@@ -11,15 +11,15 @@ type IpcHandle = {
   ) => void;
 };
 
-/** Register every CHANNELS entry on ipcMain. Returns the channels that got handlers. */
+/** Register every invoke CHANNELS entry on ipcMain. Returns those channels. */
 export function registerIpcHandlers(
   ipcMain: IpcHandle | Pick<IpcMain, "handle">,
   client: Pick<TagAlongClient, "call">,
-): ChannelName[] {
-  const registered: ChannelName[] = [];
+): InvokeChannelName[] {
+  const registered: InvokeChannelName[] = [];
 
   const handle = (
-    channel: ChannelName,
+    channel: InvokeChannelName,
     listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown,
   ): void => {
     ipcMain.handle(channel, listener);
@@ -50,12 +50,12 @@ export function registerIpcHandlers(
   return registered;
 }
 
-/** True when registered channels are exactly the CHANNELS map values. */
+/** True when registered channels are exactly the invoke CHANNELS set. */
 export function ipcChannelsMatch(
   registered: readonly string[],
-  channels: Readonly<Record<string, string>> = CHANNELS,
+  channels: readonly string[] = INVOKE_CHANNELS,
 ): boolean {
-  const expected = Object.values(channels).slice().sort();
+  const expected = [...channels].sort();
   const actual = registered.slice().sort();
   return (
     actual.length === expected.length &&
