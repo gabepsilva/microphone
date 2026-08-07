@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import { voiceOptionsIncluding } from "../renderer/speech_catalog.js";
 import {
+  effectiveProviderId,
+  selectedProviderId,
   selectedVoiceId,
+  selectionEffectiveText,
   syncVoicePicker,
   voiceChangePayload,
   voiceEffectiveText,
@@ -83,20 +86,36 @@ describe("voiceEffectiveText", () => {
 });
 
 describe("voicePickerActive", () => {
-  it("is on for Piper and off for Edge, including Selection shape", () => {
+  it("follows the installed engine, not a failed desired pick", () => {
     expect(voicePickerActive({ tts_provider: "piper" })).toBe(true);
     expect(voicePickerActive({})).toBe(true);
     expect(voicePickerActive({ tts_provider: "edge" })).toBe(false);
+    // Failed Edge switch: desired stays edge, Piper is still speaking.
     expect(
       voicePickerActive({
         tts_provider: { desired: "edge", effective: "piper" },
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       voicePickerActive({
         tts_provider: { desired: "piper", effective: "piper" },
       }),
     ).toBe(true);
+    expect(
+      voicePickerActive({
+        tts_provider: { desired: "edge", effective: "edge" },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("provider selection helpers", () => {
+  it("keeps the Engine select on desired while visibility uses effective", () => {
+    const mid = { tts_provider: { desired: "edge", effective: "piper" } };
+    expect(selectedProviderId(mid)).toBe("edge");
+    expect(effectiveProviderId(mid)).toBe("piper");
+    expect(selectionEffectiveText(mid.tts_provider)).toBe("effective: piper");
+    expect(selectionEffectiveText({ desired: "edge", effective: "edge" })).toBe("");
   });
 });
 

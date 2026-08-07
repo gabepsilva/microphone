@@ -16,6 +16,20 @@
  */
 
 /**
+ * Footnote when a Selection's effective value diverges from desired.
+ * @param {Selection | undefined} selection
+ * @returns {string}
+ */
+export function selectionEffectiveText(selection) {
+  const desired = selection?.desired ?? "";
+  const effective = selection?.effective ?? "";
+  if (!effective || effective === desired) {
+    return "";
+  }
+  return `effective: ${effective}`;
+}
+
+/**
  * Which id the picker should show as selected.
  * @param {VoicePickerState} state
  * @returns {string}
@@ -32,16 +46,11 @@ export function selectedVoiceId(state) {
  * @returns {string}
  */
 export function voiceEffectiveText(state) {
-  const desired = state.tts_voice?.desired ?? "";
-  const effective = state.tts_voice?.effective ?? "";
-  if (!effective || effective === desired) {
-    return "";
-  }
-  return `effective: ${effective}`;
+  return selectionEffectiveText(state.tts_voice);
 }
 
 /**
- * Running / requested engine id from a Selection or legacy string.
+ * Engine id shown in the Engine `<select>` (what was asked for).
  * @param {VoicePickerState} state
  * @returns {string}
  */
@@ -54,12 +63,25 @@ export function selectedProviderId(state) {
 }
 
 /**
+ * Engine that is actually installed — visibility follows this, not desired.
+ * @param {VoicePickerState} state
+ * @returns {string}
+ */
+export function effectiveProviderId(state) {
+  const provider = state.tts_provider;
+  if (provider && typeof provider === "object") {
+    return provider.effective ?? provider.desired ?? "piper";
+  }
+  return provider || "piper";
+}
+
+/**
  * Whether the Piper voice field should be interactive.
  * @param {VoicePickerState} state
  * @returns {boolean}
  */
 export function voicePickerActive(state) {
-  return selectedProviderId(state) === "piper";
+  return effectiveProviderId(state) === "piper";
 }
 
 /**

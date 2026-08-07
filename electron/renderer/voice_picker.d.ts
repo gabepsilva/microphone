@@ -15,11 +15,15 @@ export type SpeechVoice = {
   downloaded: boolean;
 };
 
+export function selectionEffectiveText(selection: SelectionLike | undefined): string;
+
 export function selectedVoiceId(state: VoicePickerState): string;
 
 export function voiceEffectiveText(state: VoicePickerState): string;
 
 export function selectedProviderId(state: VoicePickerState): string;
+
+export function effectiveProviderId(state: VoicePickerState): string;
 
 export function voicePickerActive(state: VoicePickerState): boolean;
 

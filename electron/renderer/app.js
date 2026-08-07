@@ -27,6 +27,7 @@ import {
 import { parseSpeechCatalog, voiceOptionsIncluding } from "./speech_catalog.js";
 import {
   selectedProviderId,
+  selectionEffectiveText,
   syncVoicePicker as drawVoicePicker,
   voiceChangePayload,
   voiceEffectiveText,
@@ -145,6 +146,12 @@ function syncEffective(state) {
     : "";
   document.getElementById("tts-voice-effective").textContent =
     voiceEffectiveText(state);
+  document.getElementById("tts-provider-effective").textContent =
+    selectionEffectiveText(
+      state.tts_provider && typeof state.tts_provider === "object"
+        ? state.tts_provider
+        : undefined,
+    );
   // A channel reads as live when something is selected and nothing is muting
   // it. The dot is drawn in CSS — giving it a glyph too would show two marks.
   const micLive = Boolean(state.microphone?.effective) && !state.microphone_muted;
