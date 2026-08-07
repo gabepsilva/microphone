@@ -100,6 +100,8 @@ class Snapshot:
     instance: str
     sequence: int
     state: AppState
+    # Accepted transcript rows (issue #102 B1); provisionals stay off the wire.
+    transcript: tuple[Mapping[str, object], ...] = ()
     protocol_version: int = PROTOCOL_VERSION
 
 
@@ -224,6 +226,8 @@ class Controller:
         self._unpublished: OrderedDict[str, _Unpublished] = OrderedDict()
         self._announced: OrderedDict[str, Applied] = OrderedDict()
         self._counter = 0
+        # Last applied TUI partial stamp; drops superseded publishes (#102).
+        self._partial_seq = 0
 
     @property
     def transcript(self) -> TranscriptStore:
@@ -282,7 +286,26 @@ class Controller:
         )
 
     def _snapshot(self) -> Snapshot:
-        return Snapshot(self._events.instance, self._events.sequence, self._state)
+        return Snapshot(
+            self._events.instance,
+            self._events.sequence,
+            self._state,
+            self._transcript.snapshot_rows(),
+        )
+
+    def set_partial(self, source: str, text: str, seq: int = 0) -> None:
+        """Publish the live recognition line onto ``AppState`` (#102 Q3a).
+
+        ``seq`` is the TUI's monotonic partial stamp. A superseded publish
+        (``seq`` older than the last applied) is dropped so AppState matches
+        SessionState's last-write-wins line. That is not D6 "drop-stale" —
+        D6 forbids discarding a partial that is still the newest on screen.
+        """
+        with self._lock:
+            if seq < self._partial_seq:
+                return
+            self._partial_seq = seq
+            self._commit(replace(self._state, partial_source=source, partial_text=text))
 
     # -- writing --------------------------------------------------------
 

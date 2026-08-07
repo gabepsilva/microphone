@@ -257,6 +257,15 @@ class TranscriptStore:
         with self._lock:
             return self._payload_unlocked(self._by_id[row_id])
 
+    def snapshot_rows(self) -> tuple[Mapping[str, object], ...]:
+        """Accepted rows as ``{id, entry}`` dicts for a subscribe snapshot."""
+        with self._lock:
+            return tuple(
+                {"id": row.id, "entry": self._payload_unlocked(row)}
+                for row in self._rows
+                if not row.provisional and row.id is not None
+            )
+
     def _allocate_id_unlocked(self) -> int:
         row_id = self._next_id
         self._next_id += 1

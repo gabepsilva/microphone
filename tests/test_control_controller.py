@@ -1258,3 +1258,12 @@ def test_a_handler_cannot_edit_the_payload_it_was_given() -> None:
 
     with pytest.raises(TypeError, match="does not support item assignment"):
         cast(dict, payloads[0])["enabled"] = True
+
+
+def test_set_partial_drops_superseded_stamps() -> None:
+    """Older partial publishes must not overwrite a newer AppState line (#102)."""
+    controller = Controller()
+    controller.set_partial("Voice", "newest", seq=2)
+    controller.set_partial("Voice", "stale", seq=1)
+    assert controller.state.partial_source == "Voice"
+    assert controller.state.partial_text == "newest"

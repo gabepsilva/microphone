@@ -131,6 +131,7 @@ def snapshot_payload(snapshot: Snapshot) -> dict[str, object]:
         "sequence": snapshot.sequence,
         "protocol_version": snapshot.protocol_version,
         "state": asdict(snapshot.state),
+        "transcript": [dict(row) for row in snapshot.transcript],
     }
 
 

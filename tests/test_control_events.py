@@ -7,12 +7,16 @@ from typing import cast
 import pytest
 
 from tagalong.control.events import (
+    PUBLISH_RATE_TRIPWIRE_PER_SECOND,
     Event,
     EventLog,
     Subscription,
     frozen,
     utc_now,
 )
+from tagalong.control.transcript import TranscriptStore
+from tagalong.presentation import Entry
+from tagalong.tui import VoiceCodexApp
 
 STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
@@ -242,3 +246,51 @@ def test_an_event_racing_a_close_is_dropped_rather_than_queued() -> None:
     subscription.deliver(Event(1, "action.applied"))
 
     assert subscription.drain() == ()
+
+
+def test_publish_rate_meter_counts_the_trailing_second() -> None:
+    now = {"t": 0.0}
+
+    def mono() -> float:
+        return now["t"]
+
+    log = EventLog(mono=mono)
+    log.publish("a")
+    now["t"] = 0.1
+    log.publish("b")
+    assert log.publishes_last_second == 2
+    # Advance past the window — the meter is read-only; publish prunes.
+    now["t"] = 1.2
+    assert log.publishes_last_second == 0
+    log.publish("c")
+    assert log.publishes_last_second == 1
+    now["t"] = 2.5
+    log.publish("d")
+    assert log.publishes_last_second == 1
+
+
+def test_coalesced_stream_stays_under_publish_tripwire() -> None:
+    """#102 D4: Q5 coalescing keeps the delta path under the trip-wire.
+
+    Load-bearing half: real ``TranscriptStore`` + flush at
+    ``STREAM_FLUSH_INTERVAL_SECONDS`` (≤20 ``entry_updated``/s per open row).
+    Uncoalesced token publishes would blow past 50/s.
+
+    Partial-rate budget (~capture chunk rate, both channels) is an assumption
+    calibrated against ``capture.py`` blocksize/samplerate, not measured here —
+    each recognizer partial is one ``state.changed`` with no throttle.
+    """
+    log = EventLog()
+    store = TranscriptStore(publish=log.publish)
+    entry = Entry(kind="speech", source="Taga", text="", streaming=True)
+    store.append(entry)
+
+    flushes_per_second = int(1 / VoiceCodexApp.STREAM_FLUSH_INTERVAL_SECONDS)
+    for _ in range(flushes_per_second):
+        for _ in range(10):
+            store.append_text(entry, "x")
+        store.flush_updates()
+
+    # entry_added + one entry_updated per paint flush.
+    assert log.publishes_last_second == flushes_per_second + 1
+    assert log.publishes_last_second <= PUBLISH_RATE_TRIPWIRE_PER_SECOND

@@ -281,6 +281,9 @@ _STATE_SETTERS = {
     "codex_model": _set_codex_model,
     "codex_reasoning": _set_codex_reasoning,
     "turn_silence": _set_turn_silence,
+    # partial_source / partial_text intentionally absent: the TUI originates
+    # them via set_partial. Echoing through EventPump would race _partial_lock
+    # and could resurrect a cleared live line (#102 / PR #110).
 }
 
 
@@ -2619,6 +2622,15 @@ class VoiceCodexTUI:
         # Interrupt runs on the app thread and must see text that is still
         # sitting in the buffer, so the cut-off mark lands on the full answer.
         self.app.apply_pending_stream_text = self._apply_pending_stream_text
+        # Installed once the controller exists so partials reach AppState (#102).
+        self._publish_partial: Callable[[str, str, int], None] | None = None
+        # Monotonic stamp so AppState can drop superseded publishes without
+        # holding `_partial_lock` across `Controller._lock` (lock-order leaf).
+        self._partial_seq = 0
+
+    def bind_partial_publisher(self, publish: Callable[[str, str, int], None]) -> None:
+        """Mirror SessionState partials onto controller ``AppState`` (Q3a)."""
+        self._publish_partial = publish
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
@@ -2688,10 +2700,20 @@ class VoiceCodexTUI:
         Partials arrive from recognition threads much faster than the display
         needs them. State always holds the newest text; at most one repaint is
         queued, and it is posted so the recognizer never waits on layout.
+        The same values are mirrored onto controller ``AppState`` for the wire.
+
+        Stamp a sequence under ``_partial_lock``, then publish *outside* it.
+        ``Controller.set_partial`` drops superseded stamps so AppState
+        converges to the same last-writer SessionState already keeps. That
+        keeps ``_partial_lock`` a leaf (never nested under ``Controller._lock``):
+        ``voice.end_turn`` → ``commit`` → ``_show_partial`` can take the
+        controller lock first without deadlocking the recognition path.
         """
         with self._partial_lock:
             self.state.partial_source = source
             self.state.partial_text = text
+            self._partial_seq += 1
+            seq = self._partial_seq
             # Only claim the pending bit when a flush can actually be posted.
             # Setting it while the app is still mounting would stick forever:
             # later partials would see pending and never schedule, and the
@@ -2699,6 +2721,9 @@ class VoiceCodexTUI:
             schedule = not self._partial_pending and self._ready.is_set()
             if schedule:
                 self._partial_pending = True
+            publish = self._publish_partial
+        if publish is not None:
+            publish(source, text, seq)
         if schedule:
             self._post(self._flush_partial)
 
@@ -2738,9 +2763,7 @@ class VoiceCodexTUI:
 
     def commit(self, speaker: str, text: str) -> None:
         """Show a finished recognition line provisionally and clear the live line."""
-        with self._partial_lock:
-            self.state.partial_source = ""
-            self.state.partial_text = ""
+        self._show_partial("", "")
         self._call(self._commit_impl, speaker, text)
 
     def _commit_impl(self, speaker: str, text: str) -> None:
@@ -2755,9 +2778,7 @@ class VoiceCodexTUI:
 
     def reset_transcript(self) -> None:
         """Clear the transcript without changing the session's controls."""
-        with self._partial_lock:
-            self.state.partial_source = ""
-            self.state.partial_text = ""
+        self._show_partial("", "")
         self._provisional_turns.clear()
         self._call(self.app.clear_transcript)
 

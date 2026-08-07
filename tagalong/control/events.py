@@ -25,6 +25,7 @@ than no event at all. Draining is safe from any thread.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -35,6 +36,11 @@ from types import MappingProxyType
 # Room for a client that stops reading for a moment without losing anything,
 # and small enough that a client that stopped for good is not a memory leak.
 DEFAULT_CAPACITY = 512
+
+# Issue #102 D4: stay on one EventLog while steady-state publish stays at or
+# below this rate during streaming Codex + both capture channels. Above it,
+# split transcript to its own log. Measured via ``publishes_last_second``.
+PUBLISH_RATE_TRIPWIRE_PER_SECOND = 50
 
 _NOTHING: Mapping[str, object] = MappingProxyType({})
 
@@ -158,12 +164,16 @@ class EventLog:
         self,
         capacity: int = DEFAULT_CAPACITY,
         clock: Callable[[], datetime] = utc_now,
+        *,
+        mono: Callable[[], float] = time.monotonic,
     ) -> None:
         self.instance = uuid.uuid4().hex
         self.capacity = capacity
         self._clock = clock
+        self._mono = mono
         self._sequence = 0
         self._subscribers: list[Subscription] = []
+        self._publish_times: deque[float] = deque()
 
     @property
     def sequence(self) -> int:
@@ -175,8 +185,24 @@ class EventLog:
         """How many subscriptions still receive; closed ones are swept on publish."""
         return len(self._subscribers)
 
+    @property
+    def publishes_last_second(self) -> int:
+        """How many ``publish`` calls landed in the trailing one-second window.
+
+        Read-only: does not prune. Snapshot the deque before iterating —
+        ``publish`` may append/popleft on another thread under the controller
+        lock, and iterating a live deque raises ``RuntimeError``.
+        """
+        now = self._mono()
+        stamps = tuple(self._publish_times)
+        return sum(1 for stamp in stamps if now - stamp < 1.0)
+
     def publish(self, name: str, payload: Mapping[str, object] | None = None) -> Event:
         """Number an event and hand it to every open subscriber."""
+        now = self._mono()
+        self._publish_times.append(now)
+        while self._publish_times and now - self._publish_times[0] >= 1.0:
+            self._publish_times.popleft()
         self._sequence += 1
         # Copied, then frozen: the caller keeps its own dict, and no consumer
         # can reach into what every other consumer is holding.

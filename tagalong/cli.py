@@ -920,6 +920,7 @@ def main():
     )
 
     controller, actor = attach_conversation_hooks(tui, conversation, tts, attachments)
+    tui.bind_partial_publisher(controller.set_partial)
     bind_settings_slice(
         controller,
         (conversation, tts, gate, turn_silence),
