@@ -47,6 +47,11 @@ class AppState:
     codex_model: str = ""
     codex_reasoning: str = ""
     turn_silence: float = 3.0
+    # Live recognition line (promoted from SessionState; issue #102 D6 / Q3a).
+    # Single-valued, not an ordered transcript row — clients render via
+    # ``state.changed``, while accepted rows travel on the transcript store.
+    partial_source: str = ""
+    partial_text: str = ""
 
     def changed_from(self, older: AppState) -> dict[str, object]:
         """Return the fields that differ, for a ``state.changed`` payload.

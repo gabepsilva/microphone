@@ -7,12 +7,16 @@ from typing import cast
 import pytest
 
 from tagalong.control.events import (
+    PUBLISH_RATE_TRIPWIRE_PER_SECOND,
     Event,
     EventLog,
     Subscription,
     frozen,
     utc_now,
 )
+from tagalong.control.transcript import TranscriptStore
+from tagalong.presentation import Entry
+from tagalong.tui import VoiceCodexApp
 
 STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
@@ -242,3 +246,54 @@ def test_an_event_racing_a_close_is_dropped_rather_than_queued() -> None:
     subscription.deliver(Event(1, "action.applied"))
 
     assert subscription.drain() == ()
+
+
+def test_publish_rate_meter_counts_the_trailing_second() -> None:
+    now = {"t": 0.0}
+
+    def mono() -> float:
+        return now["t"]
+
+    log = EventLog(mono=mono)
+    log.publish("a")
+    now["t"] = 0.1
+    log.publish("b")
+    assert log.publishes_last_second == 2
+    # Advance past the window without publishing — the meter prunes on read.
+    now["t"] = 1.2
+    assert log.publishes_last_second == 0
+    log.publish("c")
+    assert log.publishes_last_second == 1
+    # Publish again after another gap so ``publish`` itself prunes the deque.
+    now["t"] = 2.5
+    log.publish("d")
+    assert log.publishes_last_second == 1
+
+
+def test_coalesced_stream_plus_partials_stay_under_publish_tripwire() -> None:
+    """#102 D4: one EventLog while steady-state publish stays ≤ ~50/s.
+
+    Paint flushes at ``STREAM_FLUSH_INTERVAL_SECONDS`` (0.05 → ≤20/s per open
+    row) plus ~8/s capture partials stays well under the trip-wire. Uncoalesced
+    token publishes would blow past it; this pins that Q5 is what holds.
+    """
+    log = EventLog()
+    store = TranscriptStore(publish=log.publish)
+    entry = Entry(kind="speech", source="Taga", text="", streaming=True)
+    store.append(entry)
+
+    # Many token deltas, flushed at the TUI paint cadence (20 Hz).
+    flushes_per_second = int(1 / VoiceCodexApp.STREAM_FLUSH_INTERVAL_SECONDS)
+    for _ in range(flushes_per_second):
+        for _ in range(10):
+            store.append_text(entry, "x")
+        store.flush_updates()
+    for index in range(8):
+        log.publish(
+            "state.changed",
+            {"partial_source": "Voice", "partial_text": f"p{index}"},
+        )
+
+    # entry_added + 20 entry_updated + 8 partial state.changed ≈ 29.
+    assert log.publishes_last_second <= PUBLISH_RATE_TRIPWIRE_PER_SECOND
+    assert log.publishes_last_second == flushes_per_second + 8 + 1

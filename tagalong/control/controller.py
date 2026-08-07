@@ -100,6 +100,8 @@ class Snapshot:
     instance: str
     sequence: int
     state: AppState
+    # Accepted transcript rows (issue #102 B1); provisionals stay off the wire.
+    transcript: tuple[Mapping[str, object], ...] = ()
     protocol_version: int = PROTOCOL_VERSION
 
 
@@ -282,7 +284,17 @@ class Controller:
         )
 
     def _snapshot(self) -> Snapshot:
-        return Snapshot(self._events.instance, self._events.sequence, self._state)
+        return Snapshot(
+            self._events.instance,
+            self._events.sequence,
+            self._state,
+            self._transcript.snapshot_rows(),
+        )
+
+    def set_partial(self, source: str, text: str) -> None:
+        """Publish the live recognition line onto ``AppState`` (#102 Q3a)."""
+        with self._lock:
+            self._commit(replace(self._state, partial_source=source, partial_text=text))
 
     # -- writing --------------------------------------------------------
 

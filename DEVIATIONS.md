@@ -168,9 +168,11 @@ shared-workspace model under same-uid (see below).
 
 **Copying selected transcript rows to the seat clipboard is presentation.**
 ``action_copy_selected_transcript`` reads session data and writes the local
-terminal’s clipboard. An agent that wants transcript text uses a transcript
-query (or the socket event stream), not the operator’s pasteboard. Electron
-will have its own seat-local copy path. Not a catalog action.
+terminal’s clipboard. An agent that wants transcript text uses the socket
+``subscribe`` snapshot’s ``transcript`` rows plus ``transcript.*`` /
+``state.changed`` (partials) events — there is no separate transcript-query
+RPC (#102 B1). Electron will have its own seat-local copy path. Not a catalog
+action.
 
 **Quitting is a session action, refused for agents.** ``session.quit`` is
 registered and the TUI dispatches it before exiting. Milestone 8 moves the

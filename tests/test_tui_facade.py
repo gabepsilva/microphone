@@ -137,6 +137,33 @@ def test_controller_adopts_tui_store_and_publishes_accept(tui) -> None:
     assert names == ["transcript.entry_added"]
 
 
+def test_partials_mirror_onto_controller_app_state(tui) -> None:
+    from tagalong.control import Controller
+    from tagalong.tui import SessionState, apply_state_fragment
+
+    facade = tui.VoiceCodexTUI()
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_partial_publisher(controller.set_partial)
+    _snapshot, subscription = controller.subscribe()
+
+    async def body(pilot):
+        facade.update(tui.VOICE, "hello partial")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert controller.state.partial_source == tui.VOICE
+    assert controller.state.partial_text == "hello partial"
+    changed = [event for event in subscription.drain() if event.name == "state.changed"]
+    assert changed
+    assert changed[-1].payload["partial_text"] == "hello partial"
+
+    echoed = SessionState()
+    apply_state_fragment(echoed, dict(changed[-1].payload))
+    assert echoed.partial_source == tui.VOICE
+    assert echoed.partial_text == "hello partial"
+
+
 def test_a_rejected_echo_is_removed_instead_of_recorded(tui) -> None:
     recorded: list = []
     facade = tui.VoiceCodexTUI(on_entry=recorded.append)
@@ -1551,6 +1578,8 @@ HOST_ONLY_METHODS = frozenset(
         "finish_recording",
         # Snapshot of live rows for transcript.save — application, not paint.
         "transcript_entries",
+        # Wire SessionState partials onto controller AppState (#102 Q3a).
+        "bind_partial_publisher",
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",

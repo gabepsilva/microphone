@@ -270,6 +270,14 @@ def _set_turn_silence(state: Any, value: object) -> None:
     state.turn_silence = float(cast(float, value))
 
 
+def _set_partial_source(state: Any, value: object) -> None:
+    state.partial_source = str(value)
+
+
+def _set_partial_text(state: Any, value: object) -> None:
+    state.partial_text = str(value)
+
+
 _STATE_SETTERS = {
     "tts_enabled": _set_tts_enabled,
     "tts_provider": _set_tts_provider,
@@ -281,6 +289,8 @@ _STATE_SETTERS = {
     "codex_model": _set_codex_model,
     "codex_reasoning": _set_codex_reasoning,
     "turn_silence": _set_turn_silence,
+    "partial_source": _set_partial_source,
+    "partial_text": _set_partial_text,
 }
 
 
@@ -2619,6 +2629,12 @@ class VoiceCodexTUI:
         # Interrupt runs on the app thread and must see text that is still
         # sitting in the buffer, so the cut-off mark lands on the full answer.
         self.app.apply_pending_stream_text = self._apply_pending_stream_text
+        # Installed once the controller exists so partials reach AppState (#102).
+        self._publish_partial: Callable[[str, str], None] | None = None
+
+    def bind_partial_publisher(self, publish: Callable[[str, str], None]) -> None:
+        """Mirror SessionState partials onto controller ``AppState`` (Q3a)."""
+        self._publish_partial = publish
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
@@ -2688,6 +2704,7 @@ class VoiceCodexTUI:
         Partials arrive from recognition threads much faster than the display
         needs them. State always holds the newest text; at most one repaint is
         queued, and it is posted so the recognizer never waits on layout.
+        The same values are mirrored onto controller ``AppState`` for the wire.
         """
         with self._partial_lock:
             self.state.partial_source = source
@@ -2699,6 +2716,9 @@ class VoiceCodexTUI:
             schedule = not self._partial_pending and self._ready.is_set()
             if schedule:
                 self._partial_pending = True
+        publish = self._publish_partial
+        if publish is not None:
+            publish(source, text)
         if schedule:
             self._post(self._flush_partial)
 
@@ -2738,9 +2758,7 @@ class VoiceCodexTUI:
 
     def commit(self, speaker: str, text: str) -> None:
         """Show a finished recognition line provisionally and clear the live line."""
-        with self._partial_lock:
-            self.state.partial_source = ""
-            self.state.partial_text = ""
+        self._show_partial("", "")
         self._call(self._commit_impl, speaker, text)
 
     def _commit_impl(self, speaker: str, text: str) -> None:
@@ -2755,9 +2773,7 @@ class VoiceCodexTUI:
 
     def reset_transcript(self) -> None:
         """Clear the transcript without changing the session's controls."""
-        with self._partial_lock:
-            self.state.partial_source = ""
-            self.state.partial_text = ""
+        self._show_partial("", "")
         self._provisional_turns.clear()
         self._call(self.app.clear_transcript)
 

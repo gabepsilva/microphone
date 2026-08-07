@@ -891,7 +891,120 @@ def test_snapshot_payload_includes_protocol_cursor() -> None:
     assert payload["protocol_version"] == PROTOCOL_VERSION
     assert payload["sequence"] == 0
     assert state["tts_enabled"] is True
+    assert state["partial_source"] == ""
+    assert state["partial_text"] == ""
+    assert payload["transcript"] == []
     assert payload["instance"]
+
+
+def test_subscribe_snapshot_includes_accepted_transcript_rows(tmp_path: Path) -> None:
+    from tagalong.presentation import Entry
+
+    controller, server, client = wired(tmp_path)
+    try:
+        store = controller.transcript
+        store.append(Entry(kind="note", text="kept", stamp="12:00"))
+        store.append(
+            Entry(kind="speech", source="Voice", text="pending", stamp="12:01"),
+            provisional=True,
+        )
+        client.call("initialize", {"client": "electron"})
+        subscribed = client.call("subscribe")
+        rows = cast(list[object], subscribed["transcript"])
+        assert len(rows) == 1
+        row = cast(dict[str, object], rows[0])
+        entry = cast(dict[str, object], row["entry"])
+        assert row["id"] == 1
+        assert entry["text"] == "kept"
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_delivers_transcript_events_in_order(tmp_path: Path) -> None:
+    from tagalong.presentation import Entry
+
+    controller, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        entry = Entry(kind="speech", source="Taga", text="", streaming=True)
+        controller.transcript.append(entry)
+        controller.transcript.append_text(entry, "Hi")
+        controller.transcript.append_text(entry, "!")
+        controller.transcript.flush_updates()
+        controller.transcript.clear()
+
+        polled = client.call("poll")
+        names = [event["name"] for event in polled["events"]]
+        assert names == [
+            "transcript.entry_added",
+            "transcript.entry_updated",
+            "transcript.cleared",
+        ]
+        updated = next(
+            event
+            for event in polled["events"]
+            if event["name"] == "transcript.entry_updated"
+        )
+        payload = cast(dict[str, object], updated["payload"])
+        entry_payload = cast(dict[str, object], payload["entry"])
+        assert entry_payload["text"] == "Hi!"
+        assert polled["lost"] is False
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_lost_resubscribe_restores_transcript_via_snapshot(tmp_path: Path) -> None:
+    from tagalong.presentation import Entry
+
+    controller, server, client = wired(tmp_path, capacity=2)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        for enabled in (False, True, False):
+            client.call(
+                "dispatch",
+                {"action": "tts.set_enabled", "payload": {"enabled": enabled}},
+            )
+        assert client.call("poll")["lost"] is True
+
+        controller.transcript.append(
+            Entry(kind="note", text="after overflow", stamp="1")
+        )
+        recovered = client.call("subscribe")
+        rows = cast(list[object], recovered["transcript"])
+        assert len(rows) == 1
+        entry = cast(dict[str, object], cast(dict[str, object], rows[0])["entry"])
+        assert entry["text"] == "after overflow"
+        assert client.call("poll")["lost"] is False
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_partials_arrive_as_state_changed_on_the_wire(tmp_path: Path) -> None:
+    controller, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        controller.set_partial("Voice", "hello there")
+        polled = client.call("poll")
+        changed = [
+            event for event in polled["events"] if event["name"] == "state.changed"
+        ]
+        assert changed
+        payload = cast(dict[str, object], changed[0]["payload"])
+        assert payload["partial_source"] == "Voice"
+        assert payload["partial_text"] == "hello there"
+        snap = client.call("snapshot")
+        state = cast(dict[str, object], snap["state"])
+        assert state["partial_source"] == "Voice"
+        assert state["partial_text"] == "hello there"
+    finally:
+        client.close()
+        server.stop()
 
 
 def test_client_skips_event_notifications_and_reports_a_closed_socket(

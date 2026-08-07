@@ -67,9 +67,13 @@ class FakeTUI:
         self.app = SimpleNamespace()
         self._call: object | None = None
         self.transcript = TranscriptStore()
+        self.partial_publisher = None
 
     def transcript_entries(self):
         return list(self.transcript.transcript_entries())
+
+    def bind_partial_publisher(self, publish):
+        self.partial_publisher = publish
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)
