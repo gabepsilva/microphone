@@ -75,16 +75,16 @@ body {
 
 #left {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   min-width: 0;
 }
 
-#topbar {
+/* The panel names the app; the chat column is all transcript. */
+.sidebar-head {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.65rem 1.25rem;
-  border-bottom: 1px solid var(--line);
+  gap: 0.6rem;
+  padding: 0.35rem 0 0.15rem;
 }
 .brand {
   display: flex;
@@ -108,9 +108,10 @@ body {
   white-space: nowrap;
 }
 .status {
-  flex: 1;
   color: var(--faint);
   font-size: 13.5px;
+  padding-bottom: 0.35rem;
+  overflow-wrap: anywhere;
 }
 .status.error {
   color: var(--danger);
@@ -839,8 +840,30 @@ button:hover {
   color: var(--text);
   border-color: var(--surface-3);
 }
-#sidebar-toggle {
+/* The two halves of one control: a corner button while the panel is open,
+   and the only thing left on screen once it is closed. */
+#sidebar-toggle,
+#sidebar-restore {
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 15px;
+  line-height: 1;
+}
+#sidebar-restore {
+  position: fixed;
+  top: 0.85rem;
+  right: 0.85rem;
+  z-index: 2;
+  background: var(--surface);
+  display: none;
+}
+#body.sidebar-hidden #sidebar-restore {
+  display: grid;
 }
 .note {
   margin: 0.9rem 0 0;

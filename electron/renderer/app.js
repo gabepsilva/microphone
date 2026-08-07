@@ -526,9 +526,11 @@ function bind() {
   document.getElementById("send").addEventListener("click", () => {
     commands["prompt.send"]();
   });
-  document.getElementById("sidebar-toggle").addEventListener("click", () => {
-    commands["view.toggle_sidebar"]();
-  });
+  for (const id of ["sidebar-toggle", "sidebar-restore"]) {
+    document.getElementById(id).addEventListener("click", () => {
+      commands["view.toggle_sidebar"]();
+    });
+  }
   const fileInput = document.getElementById("compose-image");
   document.getElementById("attach-button").addEventListener("click", () => {
     fileInput.click();
