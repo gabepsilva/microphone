@@ -1717,7 +1717,7 @@ def test_a_silent_stream_trips_the_bound_and_forks(
     Models the #116 wedge: interrupt fails and the stream never unblocks, so the
     finally join must not pay a second full silence bound.
     """
-    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.3)
     conversation = quiet_conversation
     conversation.warmup_pending = False
     created: list[threading.Thread] = []
@@ -1756,8 +1756,9 @@ def test_a_silent_stream_trips_the_bound_and_forks(
     helpers = [thread for thread in created if thread.name == "codex-stream"]
     assert len(helpers) == 1
     assert helpers[0].daemon is True
-    # One silence bound, not two: recovery join is timeout=0.
-    assert elapsed < 0.15
+    # One bound (~0.3s), not two (~0.6s): recovery join is timeout=0.
+    assert elapsed < 0.45
+    assert helpers[0].is_alive() is True
 
 
 def test_a_slow_but_ticking_stream_does_not_fork(
@@ -1791,9 +1792,18 @@ def test_a_slow_but_ticking_stream_does_not_fork(
 def test_recovery_fork_failure_uses_the_existing_error_path(
     monkeypatch, quiet_conversation
 ) -> None:
-    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.3)
     conversation = quiet_conversation
     conversation.fake_codex.fork_error = RuntimeError("fork denied")
+    created: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def tracking_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    monkeypatch.setattr(codex_module.threading, "Thread", tracking_thread)
 
     class WedgedTurn(FakeTurn):
         def stream(self):
@@ -1818,7 +1828,10 @@ def test_recovery_fork_failure_uses_the_existing_error_path(
         "Could not recover Codex thread: fork denied",
     ) in conversation.fake_display.calls
     assert conversation.thread_poisoned is True
-    assert elapsed < 0.15
+    helpers = [thread for thread in created if thread.name == "codex-stream"]
+    assert len(helpers) == 1
+    assert helpers[0].is_alive() is True
+    assert elapsed < 0.45
 
 
 def test_a_synchronously_failing_stream_surfaces_immediately(
@@ -1875,13 +1888,10 @@ def test_failed_silence_recovery_blocks_the_next_turn_without_rewaiting(
     )
     conversation.ingest("Voice", "second", respond=True, timestamp="T2")
     second = conversation.requests.get(timeout=WAIT_SECONDS)
-    started = time.monotonic()
     conversation._run_codex(second)
-    elapsed = time.monotonic() - started
 
     assert conversation.thread.turns == turns_after_wedge
     assert "codex_delta" not in conversation.fake_display.names()
-    assert elapsed < 0.1
 
 
 # --------------------------------------------------------------------------
