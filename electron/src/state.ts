@@ -37,6 +37,12 @@ export const APP_STATE_KEYS = [
   "partial_text",
 ] as const satisfies ReadonlyArray<keyof AppState>;
 
+// Compile-time exhaustiveness: every AppState key must appear in APP_STATE_KEYS
+// so applyStateFragment's key-coverage test cannot miss a new field (#102).
+type MissingAppStateKeys = Exclude<keyof AppState, (typeof APP_STATE_KEYS)[number]>;
+const _appStateKeysExhaustive: MissingAppStateKeys extends never ? true : never = true;
+void _appStateKeysExhaustive;
+
 export type TranscriptEntry = {
   kind: string;
   source: string;

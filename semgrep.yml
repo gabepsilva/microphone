@@ -205,14 +205,15 @@ rules:
           metavariable: $CHANNEL
           regex: "^[\"']tagalong:"
 
-  # #102 XSS: transcript and device labels are untrusted. Ban innerHTML under
-  # the renderer so text must go through textContent / createElement /
-  # replaceChildren.
+  # #102 XSS: transcript and device labels are untrusted. Ban HTML-injection
+  # sinks under the renderer so text must go through textContent /
+  # createElement / replaceChildren.
   - id: electron-renderer-no-innerhtml
     languages: [javascript, typescript]
     severity: ERROR
     message: >-
-      Do not assign innerHTML in electron/renderer/; use textContent,
+      Do not use HTML-injection sinks in electron/renderer/ (innerHTML,
+      outerHTML, insertAdjacentHTML, document.write); use textContent,
       createElement, and replaceChildren so hostile transcript text cannot
       inject HTML.
     metadata:
@@ -221,4 +222,10 @@ rules:
     paths:
       include:
         - /electron/renderer/
-    pattern: $EL.innerHTML = ...
+    pattern-either:
+      - pattern: $EL.innerHTML = ...
+      - pattern: $EL.outerHTML = ...
+      - pattern: $EL["innerHTML"] = ...
+      - pattern: $EL["outerHTML"] = ...
+      - pattern: $EL.insertAdjacentHTML(...)
+      - pattern: $DOC.write(...)
