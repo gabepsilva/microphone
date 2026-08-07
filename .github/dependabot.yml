@@ -1,10 +1,12 @@
 # Everything in this repository is pinned: action revisions by SHA, the Python
-# and uv versions, dependency versions in uv.lock. Pinning without an updater
-# drifts into stale-and-vulnerable, and pip-audit eventually fails with no
-# automated path to a fix. These updates supply that path.
+# and uv versions, dependency versions in uv.lock, and Electron deps in
+# electron/bun.lock. Pinning without an updater drifts into stale-and-vulnerable,
+# and pip-audit eventually fails with no automated path to a fix. These updates
+# supply that path.
 #
 # Not covered: the Semgrep image is digest-pinned inside the Makefile, which
 # Dependabot cannot see. Review it by hand when the scheduled audit flags it.
+# Dependabot bun version updates are GA; bun security updates are not yet.
 version: 2
 
 updates:
@@ -29,6 +31,19 @@ updates:
       day: "monday"
     groups:
       python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 3
+
+  # Canonical lockfile is electron/bun.lock (package-lock.json is gitignored).
+  - package-ecosystem: "bun"
+    directory: "/electron"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      electron:
         patterns: ["*"]
     commit-message:
       prefix: "deps"
