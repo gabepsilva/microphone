@@ -20,4 +20,8 @@ export const INVOKE_CHANNELS = [
   CHANNELS.capabilities,
 ] as const;
 
+/** Main → renderer push channels (webContents.send / ipcRenderer.on). */
+export const PUSH_CHANNELS = [CHANNELS.stateChanged] as const;
+
 export type InvokeChannelName = (typeof INVOKE_CHANNELS)[number];
+export type PushChannelName = (typeof PUSH_CHANNELS)[number];

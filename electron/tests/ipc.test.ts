@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { IpcMainInvokeEvent } from "electron";
 
 import { ipcChannelsMatch, registerIpcHandlers } from "../src/ipc";
-import { CHANNELS, INVOKE_CHANNELS } from "../src/protocol/channels";
+import { CHANNELS, INVOKE_CHANNELS, PUSH_CHANNELS } from "../src/protocol/channels";
 import { ORPHAN_CHANNELS } from "./fixtures/ipc_orphan_channel";
 
 function fakeIpcMain(): {
@@ -32,8 +32,10 @@ describe("IPC channel registration", () => {
     expect([...registered].sort()).toEqual([...INVOKE_CHANNELS].sort());
     expect(ipcChannelsMatch(registered)).toBe(true);
     expect(ipc.channels.sort()).toEqual([...INVOKE_CHANNELS].sort());
-    // Push channel lives in the table but is not an ipcMain.handle.
-    expect(CHANNELS.stateChanged).toBe("tagalong:stateChanged");
+    // Every CHANNELS entry is either invoke or push — no silent orphans.
+    expect([...INVOKE_CHANNELS, ...PUSH_CHANNELS].sort()).toEqual(
+      Object.values(CHANNELS).sort(),
+    );
     expect(registered).not.toContain(CHANNELS.stateChanged);
   });
 
