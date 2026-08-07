@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import type net from "node:net";
 
 import { SessionEvents, TagAlongClient, socketPath } from "../src/client";
-import { applyStateFragment, emptyAppState } from "../src/state";
+import { applyStateFragment, emptyAppState, parseAppState } from "../src/state";
 
 class FakeSocket extends EventEmitter {
   destroyed = false;
@@ -104,6 +104,21 @@ describe("applyStateFragment", () => {
     expect(before.tts_enabled).toBe(true);
     expect(after.tts_enabled).toBe(false);
     expect(after.microphone).toEqual({ desired: "Yeti", effective: null });
+  });
+});
+
+describe("parseAppState", () => {
+  it("falls back per field when the snapshot is malformed", () => {
+    const parsed = parseAppState({
+      tts_enabled: false,
+      microphone: null,
+      turn_silence: Number.NaN,
+      response_policy: 12,
+    });
+    expect(parsed.tts_enabled).toBe(false);
+    expect(parsed.microphone).toEqual({ desired: null, effective: null });
+    expect(parsed.turn_silence).toBe(3.0);
+    expect(parsed.response_policy).toBe("both");
   });
 });
 
@@ -262,6 +277,60 @@ describe("SessionEvents", () => {
     });
     await waitForMethodCount(fake, "poll", 3);
     expect(states.at(-1)?.tts_enabled).toBe(true);
+
+    session.stop();
+  });
+
+  it("stop then start leaves only one poll loop", async () => {
+    const sockets: FakeSocket[] = [];
+    const events = new TagAlongClient(
+      () => {
+        const fake = new FakeSocket();
+        sockets.push(fake);
+        return fake as unknown as net.Socket;
+      },
+      () => "/run/user/1000/tagalong/tagalong.sock",
+    );
+    const session = new SessionEvents(events, {
+      timeoutMs: 50,
+      onState: () => undefined,
+    });
+
+    const first = session.start();
+    await Promise.resolve();
+    sockets[0]!.emit("connect");
+    await waitForMethodCount(sockets[0]!, "initialize", 1);
+    sockets[0]!.respondTo("initialize", {});
+    await waitForMethodCount(sockets[0]!, "subscribe", 1);
+    sockets[0]!.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 0,
+      protocol_version: 1,
+      state: emptyAppState(),
+    });
+    await first;
+    await waitForMethodCount(sockets[0]!, "poll", 1);
+
+    session.stop();
+    const second = session.start();
+    await Promise.resolve();
+    sockets[1]!.emit("connect");
+    await waitForMethodCount(sockets[1]!, "initialize", 1);
+    sockets[1]!.respondTo("initialize", {});
+    await waitForMethodCount(sockets[1]!, "subscribe", 1);
+    sockets[1]!.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 1,
+      protocol_version: 1,
+      state: emptyAppState(),
+    });
+    await second;
+    await waitForMethodCount(sockets[1]!, "poll", 1);
+
+    // Old loop must not keep polling the first socket after stop.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(countMethod(sockets[0]!, "poll")).toBe(1);
+    expect(countMethod(sockets[1]!, "poll")).toBe(1);
 
     session.stop();
   });

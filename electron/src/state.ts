@@ -99,3 +99,17 @@ export function applyStateFragment(
   }
   return next;
 }
+
+/**
+ * Validate a whole snapshot ``state`` object.
+ *
+ * Missing or invalid fields fall back to {@link emptyAppState} defaults so a
+ * bad subscribe result cannot poison later ``applyStateFragment`` merges.
+ */
+export function parseAppState(value: unknown): AppState {
+  const base = emptyAppState();
+  if (value === null || typeof value !== "object") {
+    return base;
+  }
+  return applyStateFragment(base, value as Record<string, unknown>);
+}

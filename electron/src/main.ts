@@ -36,13 +36,13 @@ async function createWindow(): Promise<void> {
 registerIpcHandlers(ipcMain, commands);
 
 void app.whenReady().then(async () => {
-  try {
-    await sessionEvents.start();
-  } catch (error) {
+  // Show the window even when the TUI/socket is unhealthy — attach-only means
+  // that case is expected, and an unbounded handshake must not hide the UI.
+  await createWindow();
+  void sessionEvents.start().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error("tagalong subscribe failed:", message);
-  }
-  await createWindow();
+  });
 });
 
 app.on("window-all-closed", () => {
