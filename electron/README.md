@@ -13,6 +13,13 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 bun install --frozen-lockfile
 bun run start
 ```
 
+`bun run start` puts `node_modules/.bin` on `PATH` (a bare `electron` in the shell
+will fail with `command not found`). On Linux the start script passes
+`--no-sandbox` so Chromium does not require a root-owned `chrome-sandbox`, and
+`--disable-gpu --disable-gpu-sandbox --in-process-gpu` (mirrored in main via
+`disableHardwareAcceleration()` / `commandLine.appendSwitch`) so a flaky GPU
+process cannot abort the window.
+
 Make targets from the repo root: `electron-typecheck`, `electron-lint`,
 `electron-format-check`, `electron-test` (all use the skip-download install).
 `make electron-actions` (in `VERIFY_QUICK`) checks that
@@ -21,23 +28,26 @@ Make targets from the repo root: `electron-typecheck`, `electron-lint`,
 
 ## Architecture (issue #96)
 
-| Piece           | Role                                                                  |
-| --------------- | --------------------------------------------------------------------- |
-| Command socket  | `snapshot`, `dispatch`, `devices.list`, …                             |
-| Event socket    | parked `poll` with `timeout_ms`; applies `state.changed`              |
-| On `lost: true` | resubscribe (terminal per subscription)                               |
-| Preload         | allowlisted bridge only — see `tests/preload_allowlist.ts`            |
-| Dispatch        | main-process `DISPATCH_ALLOWLIST` + payload checks; no `session.quit` |
+| Piece           | Role                                                                          |
+| --------------- | ----------------------------------------------------------------------------- |
+| Command socket  | `snapshot`, `dispatch`, `devices.list`, …                                     |
+| Event socket    | parked `poll` with `timeout_ms`; applies `state.changed`                      |
+| On `lost: true` | resubscribe (terminal per subscription)                                       |
+| Preload         | bundled allowlisted bridge (`bun build`) — sandbox forbids relative `require` |
+| Dispatch        | main-process `DISPATCH_ALLOWLIST` + payload checks; no `session.quit`         |
 
 Compose is **Agent** provenance under current socket policy
 (`actor_for_client` → `ActorKind.AGENT`). Human `Text` is #94. Live transcript
 UI / ownership / XSS gates / headless runtime are #102.
 
 Security posture: `contextIsolation: true`, `nodeIntegration: false`,
-allowlisted preload, main-process action allowlist, no `/tmp` socket. Semgrep
-under `electron/src/` forbids non-literal `nodeIntegration` /
-`contextIsolation`, bare `.handle(...)` outside `ipc.ts`, and bare
-`call("dispatch", ...)` outside `ipc.ts`.
+allowlisted preload, main-process action allowlist, no `/tmp` socket. The
+renderer sandbox (Electron default) only allows `require("electron")` in
+preload, so `bun run build` bundles `src/preload.ts` into a single
+`dist/preload.js` (tsc alone leaves a relative `require("./protocol/channels")`
+that fails at runtime). Semgrep under `electron/src/` forbids non-literal
+`nodeIntegration` / `contextIsolation`, bare `.handle(...)` outside `ipc.ts`,
+and bare `call("dispatch", ...)` outside `ipc.ts`.
 
 ## Manual test plan
 
