@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from tagalong.control.transcript import TranscriptStore
+from tagalong.control import Controller
+from tagalong.control.transcript import FLUSH_INTERVAL_SECONDS, TranscriptStore
 from tagalong.presentation import Entry
 
 
@@ -31,23 +34,47 @@ def test_accepted_view_excludes_provisional_rows() -> None:
     assert [entry.text for entry in store.transcript_entries()] == ["kept"]
 
 
-def test_accept_promotes_provisional_and_publish_adds_once() -> None:
+def test_provisional_append_assigns_no_id_until_accept() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     store = TranscriptStore(
         publish=lambda name, payload: published.append((name, dict(payload)))
     )
     entry = Entry(kind="speech", source="Voice", text="hi")
-    row_id = store.append(entry, provisional=True)
-
+    assert store.append(entry, provisional=True) is None
+    assert store.id_for(entry) is None
     assert published == []
-    store.accept([entry])
 
-    assert [entry.text for entry in store.entries()] == ["hi"]
+    store.accept([entry])
+    row_id = store.id_for(entry)
+    assert row_id == 1
     assert published == [
         (
             "transcript.entry_added",
             {"id": row_id, "entry": store.row_payload(row_id)},
         )
+    ]
+
+
+def test_accept_after_interleaved_note_publishes_in_store_order() -> None:
+    """Wire id order matches store order even when a note lands mid-turn."""
+    published: list[tuple[int, str]] = []
+
+    def capture(name: str, payload: object) -> None:
+        data = dict(payload) if isinstance(payload, dict) else {}
+        raw_id = data.get("id")
+        published.append((raw_id if isinstance(raw_id, int) else -1, name))
+
+    store = TranscriptStore(publish=capture)
+    echo = Entry(kind="speech", source="Voice", text="hello")
+    store.append(echo, provisional=True)
+    store.append(Entry(kind="note", text="echo suppressed"))
+    store.accept([echo])
+
+    assert [row.entry.text for row in store.rows()] == ["echo suppressed", "hello"]
+    assert [row.id for row in store.rows()] == [1, 2]
+    assert published == [
+        (1, "transcript.entry_added"),
+        (2, "transcript.entry_added"),
     ]
 
 
@@ -66,6 +93,14 @@ def test_reject_removes_provisional_without_publishing() -> None:
     assert published == []
 
 
+def test_reject_keeps_already_accepted_rows() -> None:
+    store = TranscriptStore()
+    kept = Entry(kind="note", text="published")
+    store.append(kept)
+    store.reject([kept])
+    assert [entry.text for entry in store.entries()] == ["published"]
+
+
 def test_non_provisional_append_publishes_entry_added() -> None:
     published: list[str] = []
     store = TranscriptStore(publish=lambda name, _payload: published.append(name))
@@ -81,6 +116,7 @@ def test_text_deltas_coalesce_to_one_entry_updated_per_flush() -> None:
     )
     entry = Entry(kind="speech", source="Taga", text="", streaming=True)
     row_id = store.append(entry)
+    assert row_id is not None
     published.clear()
 
     store.append_text(entry, "Hel")
@@ -97,6 +133,28 @@ def test_text_deltas_coalesce_to_one_entry_updated_per_flush() -> None:
     assert payload["id"] == row_id
     assert payload["entry"] == store.row_payload(row_id)
     assert store.row_payload(row_id)["text"] == "Hello!"
+
+
+def test_coalesce_pump_publishes_without_textual_flush() -> None:
+    published: list[str] = []
+    store = TranscriptStore(
+        publish=lambda name, _payload: published.append(name),
+        flush_interval=0.02,
+    )
+    entry = Entry(kind="speech", source="Taga", text="", streaming=True)
+    store.append(entry)
+    published.clear()
+    store.append_text(entry, "x")
+    store.start_coalesce_pump()
+    try:
+        deadline = time.monotonic() + 1.0
+        while "transcript.entry_updated" not in published:
+            if time.monotonic() > deadline:
+                raise AssertionError("coalesce pump did not publish entry_updated")
+            time.sleep(0.01)
+    finally:
+        store.stop_coalesce_pump()
+    assert FLUSH_INTERVAL_SECONDS == 0.05
 
 
 def test_finalize_marks_streaming_done_and_flushes() -> None:
@@ -206,11 +264,17 @@ def test_clear_empties_store_and_publishes_cleared() -> None:
     assert published == ["transcript.cleared"]
 
 
-def test_ids_reset_on_clear() -> None:
+def test_ids_keep_climbing_across_clear() -> None:
     store = TranscriptStore()
     store.append(Entry(kind="note", text="a"))
     store.clear()
-    assert store.append(Entry(kind="note", text="b")) == 1
+    assert store.append(Entry(kind="note", text="b")) == 2
+
+
+def test_controller_starts_coalesce_pump() -> None:
+    controller = Controller()
+    assert controller.transcript._pump_thread is not None
+    controller.transcript.stop_coalesce_pump()
 
 
 def test_lookup_by_entry_identity() -> None:

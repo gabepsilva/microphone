@@ -200,6 +200,9 @@ class Controller:
     ) -> None:
         # RLock shared with TranscriptStore so mutations and EventLog.publish
         # stay one critical section without nested-lock deadlocks (#102).
+        # Handlers run under this lock: none may block on the interface thread
+        # (e.g. VoiceCodexTUI._call / call_from_thread), or an app-thread
+        # transcript mutation deadlocks against dispatch.
         if transcript is None:
             self._lock = threading.RLock()
             self._transcript = TranscriptStore(lock=self._lock)
@@ -211,6 +214,7 @@ class Controller:
         self._by_id = {action.id: action for action in catalog}
         self._events = EventLog(capacity, clock)
         self._transcript.set_publisher(self._events.publish)
+        self._transcript.start_coalesce_pump()
         self._handlers: dict[str, Handler] = {}
         self._requests = _Requests()
         self._answered: OrderedDict[tuple[str, str], _Answer] = OrderedDict()
