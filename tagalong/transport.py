@@ -13,6 +13,7 @@ refuses to start, rather than listen somewhere any local user can connect.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import struct
@@ -22,6 +23,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .choosers import input_devices
 from .control import (
     Accepted,
     Actor,
@@ -36,6 +38,7 @@ from .control import (
 )
 from .control.actions import PROTOCOL_VERSION
 from .discovery import list_commands
+from .streams import graph, offered_applications
 
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 _CRED_FORMAT = "3i"
@@ -47,6 +50,10 @@ ACCEPT_TIMEOUT = 0.25
 JOIN_TIMEOUT = 2.0
 JSONRPC = "2.0"
 _FRAME_LIMIT_LABEL = f"{MAX_FRAME // (1024 * 1024)} MiB"
+# Upper bound for poll parking. Unbounded waits let a client pin a worker
+# thread past stop(), and values near time_t limits raise OverflowError
+# outside the JSON-RPC error path (#96 review).
+MAX_POLL_MS = 60_000
 
 
 class TransportError(Exception):
@@ -311,6 +318,7 @@ class LocalServer:
             "snapshot": self._rpc_snapshot,
             "capabilities": self._rpc_capabilities,
             "commands.list": self._rpc_commands,
+            "devices.list": self._rpc_devices_list,
             "subscribe": self._rpc_subscribe,
             "poll": self._rpc_poll,
             "dispatch": self._rpc_dispatch,
@@ -399,9 +407,23 @@ class LocalServer:
         session: _Session,
         actor: Actor,
     ) -> dict[str, object]:
-        del params, actor
+        del actor
         if session.subscribed is None:
             return _error(rpc_id, -32001, "not subscribed")
+        if "timeout_ms" in params:
+            timeout_ms = params["timeout_ms"]
+            if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int | float):
+                raise TypeError("timeout_ms must be a number")
+            if not math.isfinite(timeout_ms):
+                raise ValueError("timeout_ms must be finite")
+            if timeout_ms < 0:
+                raise ValueError("timeout_ms must be >= 0")
+            # Park until an event arrives or the budget expires. A parked poll
+            # holds this connection for the whole wait — Electron opens a
+            # second socket for commands (#96 G1). Clamp so a huge client
+            # budget cannot OverflowError or outlive LocalServer.stop().
+            budget_ms = min(float(timeout_ms), MAX_POLL_MS)
+            session.subscribed.wait(budget_ms / 1000.0)
         events = [
             {
                 "sequence": event.sequence,
@@ -410,7 +432,36 @@ class LocalServer:
             }
             for event in session.subscribed.drain()
         ]
-        return _result(rpc_id, {"events": events})
+        # lost is terminal for this Subscription; recovery is subscribe again.
+        return _result(rpc_id, {"events": events, "lost": session.subscribed.lost})
+
+    def _rpc_devices_list(
+        self,
+        rpc_id: object,
+        params: Mapping[str, Any],
+        session: _Session,
+        actor: Actor,
+    ) -> dict[str, object]:
+        del params, session, actor
+        try:
+            discovered = input_devices()
+        except RuntimeError as error:
+            # PortAudio missing / query failed — do not let RuntimeError kill
+            # the connection thread (_dispatch only catches Type/Value/KeyError).
+            return _error(rpc_id, -32004, str(error))
+        inputs = [
+            {
+                "index": index,
+                "name": str(device["name"]),
+                "channels": int(device["max_input_channels"]),
+            }
+            for index, device in discovered
+        ]
+        applications = [
+            {"label": label, "name": name}
+            for label, name in offered_applications(graph())
+        ]
+        return _result(rpc_id, {"inputs": inputs, "applications": applications})
 
     def _rpc_dispatch(
         self,
