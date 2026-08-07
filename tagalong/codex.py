@@ -330,6 +330,12 @@ REASONING_SUMMARY = "auto"
 # answer is discarded; the point is the round trip, not the words.
 WARMUP_PROMPT = "Warm-up ping. Reply with exactly: ready."
 
+# A wedged Codex turn yields no notifications and never ends. The worker waits
+# this long for the next stream event; silence is the evidence, so recovery
+# forks unconditionally rather than asking Thread.read whether the turn looks
+# free (a zombie reports completed and would pass that gate).
+STREAM_SILENCE_SECONDS = 25.0
+
 
 @dataclass
 class Speculation:
@@ -403,9 +409,14 @@ class CodexConversation:
         self.prefire_enabled = settings.prefire
         self.latency = TurnLatencyEstimator()
         self.speculation: Speculation | None = None
+        # Set by the listener when interrupt() fails during abandon; the worker
+        # forks before the next _start_turn. Never written from a fork on the
+        # listener — that would race the worker's local thread handle.
+        self.thread_poisoned = False
         # A fresh thread's first turn costs about a second more than the ones
-        # after it. Set here and after every fork, because a fork is a fresh
-        # thread and would quietly re-incur it.
+        # after it. Set here and after every model-switch fork, because a fork
+        # is a fresh thread and would quietly re-incur it. Recovery forks omit
+        # this so a waiting user turn is not delayed by _warm_up.
         self.warmup_pending = True
         self.codex = Codex()
         self.thread = self.codex.thread_start(
@@ -467,8 +478,14 @@ class CodexConversation:
             self.speculation = None
             turn = speculation.turn
         if turn is not None:
-            with suppress(Exception):
+            try:
                 turn.interrupt()
+            except Exception:
+                # Listener/close path: do not fork self.thread here. The worker
+                # owns that write; mark the thread poisoned under the lock so
+                # the worker forks before its next _start_turn.
+                with self.context_lock:
+                    self.thread_poisoned = True
         if self.tts is not None:
             self.tts.interrupt()
         return True
@@ -712,6 +729,38 @@ class CodexConversation:
             approval_mode=ApprovalMode.deny_all,
         )
 
+    def _fork_for_recovery(self) -> bool:
+        """Replace a wedged Codex thread without warming ahead of a waiting turn.
+
+        Model-switch forks set ``warmup_pending`` so the slow first turn is
+        paid while nobody waits. A recovery fork is the opposite: a user turn
+        is already waiting, so warming first would delay the reply further.
+        """
+        try:
+            forked = self.codex.thread_fork(
+                self.thread.id,
+                model=self.model,
+                service_tier=self.service_tier,
+                sandbox=self.sandbox,
+                approval_mode=ApprovalMode.deny_all,
+                developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
+            )
+        except Exception as error:
+            self.transcript_display.error(f"Could not recover Codex thread: {error}")
+            return False
+        with self.context_lock:
+            self.thread = forked
+            self.thread_poisoned = False
+        self.transcript_display.set_codex(model=self.model, thread=self.thread.id)
+        return True
+
+    def _recover_poisoned_thread(self) -> bool:
+        """Fork on the worker when the listener marked the thread poisoned."""
+        with self.context_lock:
+            if not self.thread_poisoned:
+                return True
+        return self._fork_for_recovery()
+
     def _run_codex(self, queued):
         if not self.is_current(queued.generation):
             return
@@ -743,6 +792,17 @@ class CodexConversation:
 
     def _attempt(self, turn_input, reply_to, generation, speculation=None):
         """Run one turn to completion; report the errors it streamed back."""
+        # Poison is checked before any start, including the abandoned early
+        # return: the listener only sets the flag, and the worker is the sole
+        # writer of self.thread.
+        if not self._recover_poisoned_thread():
+            return []
+        if speculation is not None:
+            with self.context_lock:
+                abandoned = speculation.abandoned
+            if abandoned:
+                # Cancelled before start: do not call thread.turn() for a dead guess.
+                return []
         turn = self._start_turn(turn_input, generation)
         if turn is None:
             return []
@@ -750,8 +810,12 @@ class CodexConversation:
         if speculation is not None and not self._adopt_turn(speculation, turn):
             # Abandoned between queueing and starting: the speaker resumed
             # while this turn was still waiting its place in the worker.
-            with suppress(Exception):
+            try:
                 turn.interrupt()
+            except Exception:
+                # Worker path, no stream() yet: fork now rather than waiting
+                # for the silence bound to rediscover a thread we know is bad.
+                self._fork_for_recovery()
             return []
         return self._stream_turn(turn, reply_to)
 
@@ -798,8 +862,51 @@ class CodexConversation:
             sentence_chunker,
             on_first_delta=lambda: self.latency.record(time.monotonic() - started),
         )
-        renderer.render(turn.stream())
-        return renderer.errors
+        return self._consume_stream(turn, renderer)
+
+    def _consume_stream(self, turn, renderer):
+        """Drain ``turn.stream()`` on a helper thread; fork on notification silence.
+
+        The helper owns the stream context so a wedged ``stream()`` cannot park
+        the Codex worker. The worker waits on the next notification with a
+        silence bound; when it trips, recovery forks unconditionally — there is
+        no trustworthy Thread.read readiness signal for this failure.
+        """
+        notifications: queue.Queue = queue.Queue()
+        done = object()
+
+        def run() -> None:
+            events = turn.stream()
+            try:
+                for event in events:
+                    notifications.put(("event", event))
+                notifications.put(("done", done))
+            except Exception as error:
+                notifications.put(("error", error))
+            finally:
+                with suppress(Exception):
+                    events.close()
+
+        helper = threading.Thread(target=run, name="codex-stream", daemon=True)
+        helper.start()
+        try:
+            while True:
+                try:
+                    kind, payload = notifications.get(timeout=STREAM_SILENCE_SECONDS)
+                except queue.Empty:
+                    with suppress(Exception):
+                        turn.interrupt()
+                    self._fork_for_recovery()
+                    return renderer.errors
+                if kind == "done":
+                    return renderer.errors
+                if kind == "error":
+                    raise payload
+                if kind != "event":
+                    raise RuntimeError(f"unexpected stream signal: {kind!r}")
+                renderer.handle(payload.payload)
+        finally:
+            helper.join(timeout=STREAM_SILENCE_SECONDS)
 
     def _warm_up(self):
         """Pay a thread's first-turn cost before anyone is waiting on it.

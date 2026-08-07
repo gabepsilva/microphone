@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
 )
 
+from tagalong import codex as codex_module
 from tagalong.codex import (
     CODEX_DEVELOPER_INSTRUCTIONS,
     REASONING_SUMMARY,
@@ -1086,6 +1088,9 @@ def test_a_guess_survives_a_turn_that_refuses_to_be_interrupted(
 
     assert quiet_conversation.cancel_prefire("Voice") is True
     assert quiet_conversation.speculation is None
+    # Listener path: poison the thread; do not fork from this thread.
+    assert quiet_conversation.thread_poisoned is True
+    assert quiet_conversation.fake_codex.forked_from is None
 
 
 def test_closing_does_not_wait_out_a_wedged_worker(monkeypatch) -> None:
@@ -1536,10 +1541,10 @@ def test_a_closed_conversation_does_not_guess(quiet_conversation) -> None:
     assert not quiet_conversation.prefire("Voice", "a question")
 
 
-def test_a_turn_abandoned_before_it_started_is_interrupted_at_once(
+def test_a_turn_abandoned_before_it_started_never_calls_thread_turn(
     quiet_conversation,
 ) -> None:
-    """Cancelled while still queued: the worker must not render a dead turn."""
+    """Cancelled while still queued: do not start a dead speculative turn."""
     turn = FakeTurn(events=[delta("Half an answer"), turn_completed()])
     quiet_conversation.fake_codex.thread.next_turn = turn
     quiet_conversation.prefire("Voice", "half a thought", timestamp="T1")
@@ -1548,8 +1553,261 @@ def test_a_turn_abandoned_before_it_started_is_interrupted_at_once(
 
     quiet_conversation._run_codex(queued)
 
-    assert turn.interrupted == 1
+    assert quiet_conversation.fake_codex.thread.turns == []
+    assert turn.interrupted == 0
     assert "codex_delta" not in quiet_conversation.fake_display.names()
+
+
+def test_abandon_before_adopt_with_failed_interrupt_forks_for_the_next_turn(
+    quiet_conversation,
+) -> None:
+    """Failed interrupt after turn/start must not leave a permanent zombie."""
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+
+    class DeadOnArrival(FakeTurn):
+        def interrupt(self):
+            raise RuntimeError("-32600: no active turn to interrupt")
+
+    dead = DeadOnArrival()
+
+    def start_then_abandon(prompt, **kwargs):
+        conversation.fake_codex.thread.turns.append(prompt)
+        conversation.fake_codex.thread.kwargs = kwargs
+        # Race: abandon after turn/start, before _adopt_turn attaches it.
+        conversation.cancel_prefire("Voice")
+        return dead
+
+    conversation.fake_codex.thread.turn = start_then_abandon
+    conversation.prefire("Voice", "half a thought", timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.fake_codex.forked_from == "thread-1"
+    assert conversation.thread.id == "thread-2"
+    assert conversation.warmup_pending is False
+    assert conversation.thread_poisoned is False
+    from openai_codex import ApprovalMode, Sandbox
+
+    assert conversation.fake_codex.fork_kwargs == {
+        "model": "gpt-5.6-luna",
+        "service_tier": None,
+        "sandbox": Sandbox("read-only"),
+        "approval_mode": ApprovalMode.deny_all,
+        "developer_instructions": CODEX_DEVELOPER_INSTRUCTIONS,
+    }
+    assert (
+        "set_codex",
+        {"model": "gpt-5.6-luna", "thread": "thread-2"},
+    ) in conversation.fake_display.calls
+
+    conversation.thread.next_turn = FakeTurn(
+        events=[delta("Recovered."), turn_completed()]
+    )
+    conversation.ingest("Voice", "try again", respond=True, timestamp="T2")
+    next_queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(next_queued)
+
+    assert conversation.thread.id == "thread-2"
+    assert conversation.thread.turns
+    assert ("codex_delta", "Recovered.") in conversation.fake_display.calls
+
+
+def test_listener_poison_is_forked_by_the_worker_before_the_next_turn(
+    quiet_conversation,
+) -> None:
+    """Failed interrupt on abandon sets a flag; only the worker forks."""
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+
+    class RefusingTurn(FakeTurn):
+        def interrupt(self):
+            raise RuntimeError("-32600: no active turn to interrupt")
+
+    conversation.prefire("Voice", "a question", timestamp="T1")
+    abandoned = conversation.requests.get(timeout=WAIT_SECONDS)
+    conversation.speculation.turn = RefusingTurn()
+    assert conversation.cancel_prefire("Voice") is True
+    assert conversation.thread_poisoned is True
+    assert conversation.fake_codex.forked_from is None
+
+    # Worker drains the abandoned guess first: recovers via fork, starts nothing.
+    conversation._run_codex(abandoned)
+    assert conversation.fake_codex.forked_from == "thread-1"
+    assert conversation.thread.id == "thread-2"
+    assert conversation.thread_poisoned is False
+    assert conversation.warmup_pending is False
+    assert conversation.thread.turns == []
+    from openai_codex import ApprovalMode, Sandbox
+
+    assert conversation.fake_codex.fork_kwargs == {
+        "model": "gpt-5.6-luna",
+        "service_tier": None,
+        "sandbox": Sandbox("read-only"),
+        "approval_mode": ApprovalMode.deny_all,
+        "developer_instructions": CODEX_DEVELOPER_INSTRUCTIONS,
+    }
+
+    conversation.thread.next_turn = FakeTurn(
+        events=[delta("After fork."), turn_completed()]
+    )
+    conversation.ingest("Voice", "next", respond=True, timestamp="T2")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.thread.id == "thread-2"
+    assert ("codex_delta", "After fork.") in conversation.fake_display.calls
+
+
+def test_poisoned_thread_is_recovered_inside_the_same_attempt(
+    quiet_conversation,
+) -> None:
+    """A successful recovery must return True so this attempt can start."""
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+    conversation.thread_poisoned = True
+    answer = FakeTurn(events=[delta("Same attempt."), turn_completed()])
+    original_fork = conversation.fake_codex.thread_fork
+
+    def fork_with_answer(thread_id, **kwargs):
+        forked = original_fork(thread_id, **kwargs)
+        forked.next_turn = answer
+        return forked
+
+    conversation.fake_codex.thread_fork = fork_with_answer
+    conversation.ingest("Voice", "hello", respond=True, timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.fake_codex.forked_from == "thread-1"
+    assert conversation.thread.id == "thread-2"
+    assert ("codex_delta", "Same attempt.") in conversation.fake_display.calls
+
+
+def test_failed_poison_recovery_does_not_start_a_turn(quiet_conversation) -> None:
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+    conversation.thread_poisoned = True
+    conversation.fake_codex.fork_error = RuntimeError("fork denied")
+    conversation.thread.next_turn = FakeTurn(
+        events=[delta("Should not render."), turn_completed()]
+    )
+    conversation.ingest("Voice", "hello", respond=True, timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.thread.turns == []
+    assert "codex_delta" not in conversation.fake_display.names()
+    assert (
+        "error",
+        "Could not recover Codex thread: fork denied",
+    ) in conversation.fake_display.calls
+
+
+def test_a_silent_stream_trips_the_bound_and_forks(
+    monkeypatch, quiet_conversation
+) -> None:
+    """Zero notifications for the silence window → unconditional recovery fork."""
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+    released = threading.Event()
+    created: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def tracking_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    monkeypatch.setattr(codex_module.threading, "Thread", tracking_thread)
+
+    class SilentTurn(FakeTurn):
+        def stream(self):
+            released.wait(timeout=WAIT_SECONDS)
+            return
+            yield  # pragma: no cover — generator so stream() is iterable
+
+        def interrupt(self):
+            self.interrupted += 1
+            released.set()
+
+    conversation.thread.next_turn = SilentTurn()
+    conversation.ingest("Voice", "are you there", respond=True, timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.fake_codex.forked_from == "thread-1"
+    assert conversation.thread.id == "thread-2"
+    assert conversation.warmup_pending is False
+    assert "error" not in conversation.fake_display.names()
+    helpers = [thread for thread in created if thread.name == "codex-stream"]
+    assert len(helpers) == 1
+    assert helpers[0].daemon is True
+
+
+def test_a_slow_but_ticking_stream_does_not_fork(
+    monkeypatch, quiet_conversation
+) -> None:
+    """Silence bound is a gap bound, not a total-duration bound."""
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.12)
+    conversation = quiet_conversation
+    conversation.warmup_pending = False
+
+    class TickingTurn(FakeTurn):
+        def stream(self):
+            yield delta("Still ")
+            time.sleep(0.05)
+            yield delta("working.")
+            time.sleep(0.05)
+            yield turn_completed()
+
+    conversation.thread.next_turn = TickingTurn()
+    conversation.ingest("Voice", "take your time", respond=True, timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert conversation.fake_codex.forked_from is None
+    assert conversation.thread.id == "thread-1"
+    assert ("codex_delta", "Still ") in conversation.fake_display.calls
+    assert ("codex_delta", "working.") in conversation.fake_display.calls
+
+
+def test_recovery_fork_failure_uses_the_existing_error_path(
+    monkeypatch, quiet_conversation
+) -> None:
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.05)
+    conversation = quiet_conversation
+    conversation.fake_codex.fork_error = RuntimeError("fork denied")
+    released = threading.Event()
+
+    class SilentTurn(FakeTurn):
+        def stream(self):
+            released.wait(timeout=WAIT_SECONDS)
+            return
+            yield  # pragma: no cover
+
+        def interrupt(self):
+            self.interrupted += 1
+            released.set()
+
+    conversation.thread.next_turn = SilentTurn()
+    conversation.ingest("Voice", "hello", respond=True, timestamp="T1")
+    queued = conversation.requests.get(timeout=WAIT_SECONDS)
+
+    conversation._run_codex(queued)
+
+    assert (
+        "error",
+        "Could not recover Codex thread: fork denied",
+    ) in conversation.fake_display.calls
 
 
 # --------------------------------------------------------------------------
