@@ -2778,10 +2778,20 @@ class VoiceCodexTUI:
         The prompt draws what is typed here before the action is dispatched,
         so this path is for socket peers only — see
         :func:`tagalong.application._show_remote_message`.
+
+        ``_post``, not ``_call``: this runs inside a controller handler, which
+        holds the controller's writer lock — and that lock is this façade's
+        transcript lock once ``attach_conversation_hooks`` adopts the store.
+        Waiting on the application thread would wait on a thread that is about
+        to want the very lock the caller is holding, and ``add_entry`` takes it
+        (``TranscriptStore.append``). Handing the draw over and returning lets
+        the caller release the lock the app thread is going to ask for.
+
+        The entry is therefore stamped here rather than at mount, so a row
+        drawn a tick late still reads in the order the session was told.
         """
-        self._call(
-            lambda: self.app.add_entry(Entry(kind="speech", source=speaker, text=text))
-        )
+        entry = Entry(kind="speech", source=speaker, text=text, stamp=self.app._stamp())
+        self._post(lambda: self.app.add_entry(entry))
 
     def note(self, text: str) -> None:
         """Append a dim system line (policy changes, echo suppression, …)."""

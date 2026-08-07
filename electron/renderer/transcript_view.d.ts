@@ -54,6 +54,14 @@ export function idlePartialText(state: {
   audio_stream_muted?: boolean;
 }): string;
 
+export const TAIL_SLACK_PX: number;
+
+export function isTailing(area: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}): boolean;
+
 export function buildTranscriptRowElement(
   document: DomDocument,
   row: TranscriptRowLike,

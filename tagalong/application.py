@@ -146,6 +146,14 @@ class MessageDisplayPort(Protocol):
     peer has no such prompt: unless the handler draws it, the message reaches
     Codex as context and reaches the transcript nowhere, so both clients
     answer a question neither of them shows being asked.
+
+    ``show_message`` runs inside a handler, so it runs under the controller's
+    writer lock — and in a TUI session that lock is the transcript store's
+    lock, because ``attach_conversation_hooks`` hands the store to the
+    controller. An implementation must therefore **return without waiting on
+    another thread**: a display that blocks until, say, a UI thread has drawn
+    the row blocks until a thread that has to take the lock its caller is
+    still holding. Schedule the draw and return.
     """
 
     def show_message(self, speaker: str, text: str) -> None: ...

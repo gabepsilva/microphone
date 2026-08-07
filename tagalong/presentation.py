@@ -53,6 +53,10 @@ class MessageSink(Protocol):
     involved: speech arrives as revisable text and settles through
     ``commit``, while a message typed into a socket client is final when it
     arrives and has no prompt of its own to draw it.
+
+    Called from inside a control handler, under the controller's writer lock:
+    schedule the draw and return, never wait on another thread for it. See
+    :class:`tagalong.application.MessageDisplayPort`.
     """
 
     def show_message(self, speaker: str, text: str) -> None: ...

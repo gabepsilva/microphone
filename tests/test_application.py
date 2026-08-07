@@ -278,6 +278,43 @@ def test_an_agent_message_is_drawn_on_the_transcript() -> None:
     assert conversation.ingested == [("Agent", "hello from a client", True, ())]
 
 
+def test_the_display_is_called_under_the_controllers_writer_lock() -> None:
+    # Why MessageDisplayPort.show_message must not wait on another thread:
+    # the handler runs under the lock, and in a TUI session that lock is the
+    # transcript store's (cli.attach_conversation_hooks adopts tui.transcript).
+    # A display that waited for a UI thread would wait for a thread that has
+    # to take this lock to append the row.
+    controller = Controller()
+    held: list[bool] = []
+
+    class LockProbe:
+        def show_message(self, speaker: str, text: str) -> None:
+            del speaker, text
+
+            # Another thread, because the lock is reentrant for this one.
+            def probe() -> None:
+                held.append(not controller.transcript.lock.acquire(timeout=0.2))
+                if not held[-1]:
+                    controller.transcript.lock.release()
+
+            worker = threading.Thread(target=probe)
+            worker.start()
+            worker.join(timeout=2)
+
+    bind_first_slice(
+        controller,
+        conversation=FakeConversation(),
+        tts=FakeSpeech(),
+        display=LockProbe(),
+    )
+
+    controller.dispatch(
+        "message.send", {"text": "hi"}, actor=agent("electron", {Scope.CONVERSE})
+    )
+
+    assert held == [True]
+
+
 def test_a_human_message_is_not_drawn_twice() -> None:
     # The prompt puts the typed line on screen before dispatching.
     display = FakeMessageDisplay()

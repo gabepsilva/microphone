@@ -1,5 +1,6 @@
 import {
   applyTranscriptDomEvent,
+  isTailing,
   renderPartialLine,
   renderTranscriptSnapshot,
 } from "./transcript_view.js";
@@ -45,9 +46,32 @@ let catalog = [];
 let paletteRows = [];
 let paletteIndex = 0;
 
+const LIVE_BANNER = "live · session attached";
+
 function setBanner(text, isError) {
   banner.textContent = text;
   banner.classList.toggle("error", Boolean(isError));
+}
+
+/**
+ * Say the session is live again, unless the banner is carrying an error.
+ *
+ * `state.changed` arrives for anything the session does, including things the
+ * failed call had nothing to do with, so restating "live" on every fragment
+ * would wipe an error before it had been read. An error stays until something
+ * actually succeeds.
+ */
+function setBannerLive() {
+  if (!banner.classList.contains("error")) {
+    banner.textContent = LIVE_BANNER;
+  }
+}
+
+/** Clear an error the banner is showing, because a call has just worked. */
+function clearBannerError() {
+  if (banner.classList.contains("error")) {
+    setBanner(LIVE_BANNER, false);
+  }
 }
 
 if (!api) {
@@ -144,6 +168,7 @@ async function refreshDevices(state) {
   let listed;
   try {
     listed = await api.devicesList();
+    clearBannerError();
   } catch (error) {
     setBanner(error.message, true);
     listed = { inputs: [], applications: [] };
@@ -213,15 +238,23 @@ function applyState(state) {
   syncEffective(state);
   renderPartialLine(partialLine, state);
   applying = false;
-  setBanner("live · session attached");
+  setBannerLive();
 }
 
+/**
+ * Run an action. Answers whether it was accepted, so a caller that is about
+ * to throw away what the user typed can decline to.
+ * @returns {Promise<boolean>}
+ */
 async function dispatch(action, payload) {
   try {
     await api.dispatch(action, payload);
   } catch (error) {
     setBanner(error.message, true);
+    return false;
   }
+  clearBannerError();
+  return true;
 }
 
 /** Upload an image and return its attachment id, or null when it failed. */
@@ -281,7 +314,12 @@ async function send() {
   if (!text.trim() && ids.length === 0) {
     return;
   }
-  await dispatch("message.send", { text, images: ids, respond: true });
+  // Only clear the draft once the session has taken it. A refused or
+  // undeliverable send otherwise leaves the banner explaining what went wrong
+  // above an empty box, with the message itself gone.
+  if (!(await dispatch("message.send", { text, images: ids, respond: true }))) {
+    return;
+  }
   composeText.value = "";
   autoGrow();
   fileInput.value = "";
@@ -589,20 +627,6 @@ async function boot() {
     return;
   }
   bind();
-  try {
-    catalog = parseCommandList(await api.commandsList());
-  } catch (error) {
-    // A session without a catalog still types; only the menu is missing.
-    setBanner(error.message, true);
-  }
-  try {
-    // Read once: the CLI's catalog does not change under a running session,
-    // and probing it shells out to `codex debug models`.
-    codexModels = parseCodexCatalog(await api.codexCatalog());
-  } catch (error) {
-    // Without a catalog the pickers still offer what the session is running.
-    setBanner(error.message, true);
-  }
   api.onState((state) => {
     applyState(state);
   });
@@ -610,6 +634,8 @@ async function boot() {
     if (!Array.isArray(rows)) {
       return;
     }
+    // A snapshot is a fresh start — boot, or resubscribe after `lost`. There
+    // is no reading position to preserve across a list that was replaced.
     renderTranscriptSnapshot(transcriptList, document, rows);
     syncEmptyScreen();
     scrollToLatest();
@@ -618,10 +644,17 @@ async function boot() {
     if (event === null || typeof event !== "object") {
       return;
     }
+    const follow = isTailing(transcriptArea);
     applyTranscriptDomEvent(transcriptList, document, event);
     syncEmptyScreen();
-    scrollToLatest();
+    if (follow) {
+      scrollToLatest();
+    }
   });
+  // The transcript and the settings come first: everything below is a catalog
+  // the UI degrades gracefully without, and `codex.catalog` in particular
+  // shells out to `codex debug models` on the session's side. Awaiting either
+  // one here would hold the first paint behind a subprocess.
   try {
     const snapshot = await api.snapshot();
     await refreshDevices(snapshot.state);
@@ -634,13 +667,29 @@ async function boot() {
   } catch (error) {
     setBanner(error.message, true);
   }
+  try {
+    catalog = parseCommandList(await api.commandsList());
+  } catch (error) {
+    // A session without a catalog still types; only the menu is missing.
+    setBanner(error.message, true);
+  }
+  try {
+    // Read once: the CLI's catalog does not change under a running session.
+    codexModels = parseCodexCatalog(await api.codexCatalog());
+    // Redraw the pickers: the state that would have drawn them has landed.
+    syncCodexPickers(current);
+  } catch (error) {
+    // Without a catalog the pickers still offer what the session is running.
+    setBanner(error.message, true);
+  }
   // Refresh device catalogs periodically — hardware changes are not
-  // on the state.changed stream.
+  // on the state.changed stream. `devices.list`, not `snapshot`: the snapshot
+  // payload carries the whole transcript (transport.snapshot_payload), and
+  // re-serialising every accepted row across the socket and IPC every five
+  // seconds to redraw two selects costs more the longer the session runs.
+  // The desired/effective values it needs are already on the last state seen.
   setInterval(() => {
-    api
-      .snapshot()
-      .then((snap) => refreshDevices(snap.state))
-      .catch(() => {});
+    void refreshDevices(current).catch(() => {});
   }, 5000);
 }
 

@@ -7,6 +7,8 @@ import {
   entryBodyText,
   entryFootnote,
   idlePartialText,
+  isTailing,
+  TAIL_SLACK_PX,
   renderPartialLine,
   renderTranscriptSnapshot,
   rowLayout,
@@ -256,5 +258,35 @@ describe("transcript_view entry model", () => {
     expect(textsIn(partial as FakeNode).join("")).toBe(
       "mic muted, audio still transcribing",
     );
+  });
+});
+
+describe("transcript_view tail following", () => {
+  // A chat surface that scrolls on every event cannot be read during a
+  // streaming answer: the TUI gates the same behaviour on `_tailing`.
+  const area = (scrollHeight: number, scrollTop: number, clientHeight: number) => ({
+    scrollHeight,
+    scrollTop,
+    clientHeight,
+  });
+
+  it("follows at the live end and while within a row or two of it", () => {
+    expect(isTailing(area(0, 0, 0))).toBe(true);
+    expect(isTailing(area(2000, 1400, 600))).toBe(true);
+    expect(isTailing(area(2000, 1400 - TAIL_SLACK_PX, 600))).toBe(true);
+  });
+
+  it("stops following once the reader is held back in history", () => {
+    expect(isTailing(area(2000, 1400 - TAIL_SLACK_PX - 1, 600))).toBe(false);
+    expect(isTailing(area(2000, 0, 600))).toBe(false);
+  });
+
+  it("reads as following only before the row lands, not after", () => {
+    // Sitting at the end of a 2000px transcript.
+    const before = area(2000, 1400, 600);
+    expect(isTailing(before)).toBe(true);
+    // The same view once a 400px answer has been appended and nothing has
+    // scrolled yet: measuring here would decide the reader had walked away.
+    expect(isTailing(area(2400, 1400, 600))).toBe(false);
   });
 });

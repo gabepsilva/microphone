@@ -236,6 +236,28 @@ export function applyTranscriptDomEvent(list, document, event) {
 }
 
 /**
+ * A row or two of slack, so a nudge off the end still counts as following.
+ */
+export const TAIL_SLACK_PX = 64;
+
+/**
+ * Whether the transcript view is following the live end rather than held
+ * back in history.
+ *
+ * The TUI keeps the same distinction (`VoiceCodexApp._tailing`): a row that
+ * mounts and scrolls while something above is being read grows the content
+ * out from under the reader. Read this *before* applying an event — the
+ * append is what changes `scrollHeight`, so measuring afterwards always says
+ * the view had fallen behind.
+ *
+ * @param {{ scrollHeight: number, scrollTop: number, clientHeight: number }} area
+ * @returns {boolean}
+ */
+export function isTailing(area) {
+  return area.scrollHeight - area.scrollTop - area.clientHeight <= TAIL_SLACK_PX;
+}
+
+/**
  * What the line under the transcript says when nothing is being recognised.
  * Mirrors tui.VoiceCodexScreen._sync_partial: the reason the line is quiet is
  * more useful than the silence itself.
