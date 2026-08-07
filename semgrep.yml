@@ -96,3 +96,61 @@ rules:
       - metavariable-regex:
           metavariable: $TARGET
           regex: ^(["\']tagalong\.domain[.\\'"]|tagalong\.domain\b|domain\.[A-Za-z_]+$)
+
+  # Electron security posture. Explicit paths.include — do not inherit Semgrep
+  # defaults over a tree that may contain electron/node_modules (make semgrep
+  # mounts the whole repository). Allowlist the safe literal so env flags,
+  # Boolean(...), and variable prefs cannot slip past a literal-only match.
+  - id: electron-no-node-integration
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      nodeIntegration must stay the literal false; the renderer talks through
+      the preload bridge only.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        # Anchored at repo root (Semgrepignore v2); do not use a bare
+        # electron/src/ that warns and will change meaning.
+        - /electron/src/
+    patterns:
+      - pattern: "nodeIntegration: $X"
+      - pattern-not: "nodeIntegration: false"
+
+  - id: electron-no-open-context-isolation
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      contextIsolation must stay the literal true so the preload bridge remains
+      the only renderer surface.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+    patterns:
+      - pattern: "contextIsolation: $X"
+      - pattern-not: "contextIsolation: true"
+
+  # Make registerIpcHandlers the sole door. Use $IPC.handle so a one-line
+  # rename (const m = ipcMain; m.handle(...)) cannot defeat the chokepoint —
+  # ipcMain.handle(...) alone misses that. Cost: any future .handle( under
+  # electron/src/ outside ipc.ts will fire; message names the registrar.
+  - id: electron-ipc-handle-only-via-registrar
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Register IPC channels through registerIpcHandlers in electron/src/ipc.ts.
+      A bare .handle(...) call bypasses the CHANNELS orphan gate.
+    metadata:
+      category: security
+      technology: [electron]
+    paths:
+      include:
+        - /electron/src/
+      exclude:
+        - /electron/src/ipc.ts
+    pattern: $IPC.handle(...)

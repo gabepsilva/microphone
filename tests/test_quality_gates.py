@@ -18,7 +18,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -1147,6 +1149,195 @@ def test_semgrep_forbids_faking_the_unit_under_test() -> None:
     assert "python-test-fakes-the-unit-under-test" in rules
     assert "tagalong" in rules
     assert "domain" in rules
+
+
+def _semgrep_image() -> str:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(r"^SEMGREP_IMAGE\s*:=\s*(\S+)\s*$", makefile, flags=re.M)
+    assert match is not None, "Makefile must pin SEMGREP_IMAGE for this proof"
+    return match.group(1)
+
+
+def _run_semgrep_on_tree(tree: Path, *, image: str) -> tuple[int, set[str]]:
+    reports = tree / "reports"
+    reports.mkdir(exist_ok=True)
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--env",
+            "SEMGREP_ENABLE_VERSION_CHECK=0",
+            "--env",
+            "SEMGREP_SEND_METRICS=off",
+            "--volume",
+            f"{tree}:/src:ro",
+            "--volume",
+            f"{reports}:/reports",
+            "--workdir",
+            "/src",
+            image,
+            "semgrep",
+            "scan",
+            "--config",
+            "semgrep.yml",
+            "--error",
+            "--metrics=off",
+            "--json-output",
+            "/reports/semgrep.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    findings = json.loads((reports / "semgrep.json").read_text(encoding="utf-8"))
+    rule_ids = {hit["check_id"] for hit in findings.get("results", [])}
+    return result.returncode, rule_ids
+
+
+def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
+    """Allowlist form must catch non-literal bypasses, not only `: true` / `: false`."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-no-node-integration" in rules
+    assert "electron-no-open-context-isolation" in rules
+    assert 'pattern-not: "nodeIntegration: false"' in rules
+    assert 'pattern-not: "contextIsolation: true"' in rules
+    assert "/electron/src/" in rules
+
+    image = _semgrep_image()
+    # Non-literal forms the previous literal-only rules missed (reviewer F1).
+    planted = (
+        'import { BrowserWindow } from "electron";\n'
+        'const DEV = process.env.TAGALONG_DEV === "1";\n'
+        "const prefs = { nodeIntegration: DEV, contextIsolation: !DEV };\n"
+        "export function viaVariable(): BrowserWindow {\n"
+        "  return new BrowserWindow({ webPreferences: prefs });\n"
+        "}\n"
+        "export function viaCoercion(): BrowserWindow {\n"
+        "  return new BrowserWindow({\n"
+        "    webPreferences: {\n"
+        "      nodeIntegration: Boolean(1),\n"
+        "      contextIsolation: 0 as unknown as boolean,\n"
+        "    },\n"
+        "  });\n"
+        "}\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        src.mkdir(parents=True)
+        (src / "planted.ts").write_text(planted, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, (
+            f"Semgrep accepted non-literal BrowserWindow prefs: {rule_ids}"
+        )
+        assert "electron-no-node-integration" in rule_ids
+        assert "electron-no-open-context-isolation" in rule_ids
+
+
+def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
+    """Aliased .handle outside ipc.ts must fail — orphan-handler half of #97."""
+    rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
+    assert "electron-ipc-handle-only-via-registrar" in rules
+    assert "$IPC.handle(...)" in rules
+    assert "/electron/src/ipc.ts" in rules
+
+    image = _semgrep_image()
+    # Aliased receiver defeats ipcMain.handle(...); $IPC.handle(...) must catch it.
+    backdoor = (
+        'import { ipcMain } from "electron";\n'
+        "export function plant(): void {\n"
+        "  const m = ipcMain;\n"
+        '  m.handle("tagalong:aliased", (_e, cmd: unknown) => cmd);\n'
+        "}\n"
+    )
+    allowed = (
+        'import { ipcMain } from "electron";\n'
+        "export function registerIpcHandlers(): void {\n"
+        '  ipcMain.handle("tagalong:snapshot", () => undefined);\n'
+        "}\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "electron" / "src"
+        src.mkdir(parents=True)
+        (src / "main.ts").write_text(backdoor, encoding="utf-8")
+        (src / "ipc.ts").write_text(allowed, encoding="utf-8")
+        (root / "semgrep.yml").write_text(rules, encoding="utf-8")
+        code, rule_ids = _run_semgrep_on_tree(root, image=image)
+        assert code != 0, "Semgrep accepted aliased .handle outside ipc.ts"
+        assert "electron-ipc-handle-only-via-registrar" in rule_ids
+        paths = {
+            hit["path"]
+            for hit in json.loads(
+                (root / "reports" / "semgrep.json").read_text(encoding="utf-8")
+            ).get("results", [])
+            if hit["check_id"] == "electron-ipc-handle-only-via-registrar"
+        }
+        assert any(path.endswith("main.ts") for path in paths)
+        assert not any(path.endswith("ipc.ts") for path in paths)
+
+
+# --------------------------------------------------------------------------
+# tools/electron_actions_gate.py
+# --------------------------------------------------------------------------
+
+
+def test_electron_actions_gate_passes_on_this_repository(monkeypatch) -> None:
+    gate = _load_gate("electron_actions_gate")
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(gate, "ACTIONS_PATH", ROOT / "electron/src/protocol/actions.ts")
+    assert gate.check() == []
+    assert gate.main([]) == 0
+
+
+def test_electron_actions_gate_rejects_drifted_committed_file(
+    tmp_path, monkeypatch
+) -> None:
+    gate = _load_gate("electron_actions_gate")
+    planted = tmp_path / "actions.ts"
+    planted.write_text(
+        gate.render_actions_ts().replace("tts.set_enabled", "tts.set_enabld"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "ACTIONS_PATH", planted)
+    problems = gate.check(path=planted)
+    assert problems, "gate accepted a drifted actions.ts"
+    assert str(planted) in problems[0]
+    assert gate.main([]) == 1
+
+
+def test_electron_actions_gate_rejects_a_missing_file(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("electron_actions_gate")
+    missing = tmp_path / "actions.ts"
+    monkeypatch.setattr(gate, "ACTIONS_PATH", missing)
+    problems = gate.check(path=missing)
+    assert any("missing" in problem for problem in problems)
+
+
+def test_electron_actions_gate_write_restores_sync(tmp_path, monkeypatch) -> None:
+    gate = _load_gate("electron_actions_gate")
+    target = tmp_path / "protocol" / "actions.ts"
+    monkeypatch.setattr(gate, "ACTIONS_PATH", target)
+    assert gate.main(["--write"]) == 0
+    assert target.is_file()
+    assert gate.check(path=target) == []
+    assert target.read_text(encoding="utf-8") == gate.render_actions_ts()
+
+
+def test_electron_actions_gate_render_covers_every_catalog_id() -> None:
+    gate = _load_gate("electron_actions_gate")
+    from tagalong.control.actions import CATALOG
+
+    rendered = gate.render_actions_ts()
+    for spec in CATALOG:
+        assert f'"{spec.id}"' in rendered
+        assert f"{gate.ts_key(spec.id)}:" in rendered
 
 
 def test_mutmut_mutates_files_that_exist() -> None:
