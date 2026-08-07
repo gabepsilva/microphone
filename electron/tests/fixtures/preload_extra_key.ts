@@ -10,5 +10,14 @@ contextBridge.exposeInMainWorld("tagalong", {
   devicesList: () => ipcRenderer.invoke(CHANNELS.devicesList),
   commandsList: () => ipcRenderer.invoke(CHANNELS.commandsList),
   capabilities: () => ipcRenderer.invoke(CHANNELS.capabilities),
+  onState: (callback: (state: unknown) => void) => {
+    const listener = (): void => {
+      callback(undefined);
+    };
+    ipcRenderer.on(CHANNELS.stateChanged, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.stateChanged, listener);
+    };
+  },
   readFile: (path: string) => ipcRenderer.invoke("tagalong:readFile", path),
 });

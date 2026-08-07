@@ -5,6 +5,23 @@ export const CHANNELS = {
   devicesList: "tagalong:devicesList",
   commandsList: "tagalong:commandsList",
   capabilities: "tagalong:capabilities",
+  /** Main → renderer push; not registered via ipcMain.handle. */
+  stateChanged: "tagalong:stateChanged",
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
+
+/** Channels registered with ipcMain.handle (invoke direction). */
+export const INVOKE_CHANNELS = [
+  CHANNELS.snapshot,
+  CHANNELS.dispatch,
+  CHANNELS.devicesList,
+  CHANNELS.commandsList,
+  CHANNELS.capabilities,
+] as const;
+
+/** Main → renderer push channels (webContents.send / ipcRenderer.on). */
+export const PUSH_CHANNELS = [CHANNELS.stateChanged] as const;
+
+export type InvokeChannelName = (typeof INVOKE_CHANNELS)[number];
+export type PushChannelName = (typeof PUSH_CHANNELS)[number];

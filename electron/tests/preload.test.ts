@@ -18,6 +18,8 @@ async function loadPreload(modulePath: string): Promise<ExposedApi> {
     },
     ipcRenderer: {
       invoke: async () => undefined,
+      on: () => undefined,
+      removeListener: () => undefined,
     },
   }));
   // Cache-bust so each test loads a fresh module against the current mock.

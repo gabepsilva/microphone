@@ -175,6 +175,7 @@ export type SessionEventsOptions = {
  */
 export class SessionEvents {
   private _state: AppState = emptyAppState();
+  private _hasSnapshot = false;
   private _stopped = true;
   private _generation = 0;
   private _loop: Promise<void> | null = null;
@@ -193,6 +194,11 @@ export class SessionEvents {
 
   get state(): AppState {
     return this._state;
+  }
+
+  /** True once a subscribe snapshot has been parsed — not the empty defaults. */
+  get hasSnapshot(): boolean {
+    return this._hasSnapshot;
   }
 
   async start(): Promise<void> {
@@ -214,6 +220,7 @@ export class SessionEvents {
   private async _subscribe(): Promise<void> {
     const snapshot = (await this.events.call("subscribe")) as SnapshotResult;
     this._state = parseAppState(snapshot.state);
+    this._hasSnapshot = true;
     this.onState(this._state);
   }
 
