@@ -75,6 +75,8 @@ is always something the running session chooses, never how it was started.
 
 ```bash
 uv run tagalong
+# Session without Textual — Electron (or another socket client) attaches:
+uv run tagalong --headless
 ```
 
 `uv sync` installs the project, so `tagalong` is a real command. The root
@@ -86,6 +88,10 @@ transcription, and also transcribes Audio when `audio_stream` names an
 application. If the file or an input device is absent, the typed/Codex session
 still starts. The microphone picker under the mic meter refreshes as devices
 are connected, so an input can be selected later without restarting.
+
+`--headless` is a start mode, not a daemon: one process still owns the session
+and the exclusive flock; Textual is optional in-process; clients attach over the
+Unix socket; the session exits with the process (SIGINT/SIGTERM).
 
 ## Session transcripts
 
