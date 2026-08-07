@@ -2,10 +2,23 @@ import path from "node:path";
 
 import { app, BrowserWindow, ipcMain } from "electron";
 
-import { TagAlongClient } from "./client";
+import { SessionEvents, TagAlongClient } from "./client";
 import { registerIpcHandlers } from "./ipc";
 
-const client = new TagAlongClient();
+/** Command connection — never park a long-poll here (#96 G1). */
+const commands = new TagAlongClient();
+/** Event connection — parked on poll; same actor id as commands. */
+const events = new TagAlongClient();
+
+const sessionEvents = new SessionEvents(events, {
+  onState: () => {
+    // Renderer binding lands in later #96 phases; this loop keeps live state
+    // and recovers from lost / disconnect in the meantime.
+  },
+  onError: (error) => {
+    console.error("tagalong event loop:", error.message);
+  },
+});
 
 async function createWindow(): Promise<void> {
   const window = new BrowserWindow({
@@ -20,10 +33,21 @@ async function createWindow(): Promise<void> {
   await window.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
 }
 
-registerIpcHandlers(ipcMain, client);
+registerIpcHandlers(ipcMain, commands);
 
-void app.whenReady().then(createWindow);
+void app.whenReady().then(async () => {
+  // Show the window even when the TUI/socket is unhealthy — attach-only means
+  // that case is expected, and an unbounded handshake must not hide the UI.
+  await createWindow();
+  void sessionEvents.start().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("tagalong subscribe failed:", message);
+  });
+});
+
 app.on("window-all-closed", () => {
+  sessionEvents.stop();
+  commands.close();
   if (process.platform !== "darwin") {
     app.quit();
   }
