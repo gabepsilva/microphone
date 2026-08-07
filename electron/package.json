@@ -16,12 +16,12 @@
     "start": "bun run build && electron --no-sandbox --disable-gpu --disable-gpu-sandbox --in-process-gpu --ozone-platform-hint=auto ."
   },
   "devDependencies": {
-    "@types/bun": "1.2.20",
-    "@types/node": "22.18.0",
-    "electron": "37.2.6",
-    "eslint": "9.33.0",
-    "prettier": "3.6.2",
-    "typescript": "5.9.3",
-    "typescript-eslint": "8.39.1"
+    "@types/bun": "1.3.14",
+    "@types/node": "26.1.2",
+    "electron": "43.2.0",
+    "eslint": "10.8.0",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2",
+    "typescript-eslint": "8.66.0"
   }
 }
