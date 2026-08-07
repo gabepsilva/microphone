@@ -39,11 +39,14 @@ body {
 body {
   margin: 0;
   font-family: var(--sans);
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1.6;
   background: var(--bg);
   color: var(--text);
-  -webkit-font-smoothing: antialiased;
+  /* Deliberately no -webkit-font-smoothing: on Linux it replaces subpixel
+     rendering with grayscale antialiasing, which is what reads as blur.
+     Every size below is a whole pixel for the same reason — a half pixel
+     lands glyph stems off the pixel grid. */
 }
 ::selection {
   background: var(--accent-soft);
@@ -109,7 +112,7 @@ body {
 }
 .status {
   color: var(--faint);
-  font-size: 15px;
+  font-size: 16px;
   padding-bottom: 0.35rem;
   overflow-wrap: anywhere;
 }
@@ -143,7 +146,7 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 14.5px;
+  font-size: 15px;
   color: var(--faint);
 }
 .msg-source {
@@ -175,7 +178,7 @@ body {
 .msg-output {
   margin: 0.35rem 0 0;
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.45;
   color: var(--muted);
   white-space: pre-wrap;
@@ -186,7 +189,7 @@ body {
 }
 .msg-cutoff {
   margin-top: 0.4rem;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--danger);
 }
 
@@ -256,7 +259,7 @@ body {
 }
 .md-code code {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--text);
   white-space: pre;
@@ -266,7 +269,7 @@ body {
   position: absolute;
   top: 0.35rem;
   right: 0.6rem;
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--faint);
@@ -285,7 +288,7 @@ body {
 .md-code-inline {
   padding: 0.05rem 0.3rem;
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 16px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -307,7 +310,7 @@ body {
   display: block;
   overflow-x: auto;
   max-width: 100%;
-  font-size: 14.5px;
+  font-size: 15px;
 }
 .md-table th,
 .md-table td {
@@ -346,7 +349,7 @@ body {
 
 .msg-note .msg-bubble {
   color: var(--faint);
-  font-size: 14.5px;
+  font-size: 15px;
 }
 .msg-note .msg-meta {
   display: none;
@@ -360,7 +363,7 @@ body {
 }
 .msg-command .msg-body {
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: 16px;
   color: var(--muted);
 }
 
@@ -409,7 +412,7 @@ body {
 }
 .splash-col-head {
   margin: 0 0 0.5rem;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -429,7 +432,7 @@ body {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 14px;
+  font-size: 15px;
   text-align: center;
 }
 
@@ -443,7 +446,7 @@ body {
   max-width: 46rem;
   margin: 0 auto;
   width: 100%;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--faint);
   min-height: 1.9rem;
 }
@@ -537,7 +540,7 @@ body {
   border: none;
   background: var(--surface-3);
   color: var(--muted);
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
   cursor: pointer;
 }
@@ -565,7 +568,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 16px;
 }
 #command-palette {
   max-width: 46rem;
@@ -601,12 +604,12 @@ body {
 }
 .command-aliases {
   color: var(--faint);
-  font-size: 14.5px;
+  font-size: 15px;
   white-space: nowrap;
 }
 .command-summary {
   color: var(--muted);
-  font-size: 15px;
+  font-size: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -614,7 +617,7 @@ body {
 .command-empty {
   padding: 0.3rem 0.6rem;
   color: var(--faint);
-  font-size: 15px;
+  font-size: 16px;
 }
 
 #promptfoot {
@@ -624,7 +627,7 @@ body {
   max-width: 46rem;
   margin: 0.45rem auto 0;
   padding: 0 0.9rem;
-  font-size: 14.5px;
+  font-size: 15px;
   color: var(--faint);
 }
 #policy-chip {
@@ -659,7 +662,7 @@ body {
 }
 .panel-head {
   margin: 0 0 0.6rem;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -685,7 +688,7 @@ body {
 }
 .field-label {
   color: var(--muted);
-  font-size: 15px;
+  font-size: 16px;
 }
 .field-foot {
   display: flex;
@@ -697,7 +700,7 @@ body {
 }
 .eff {
   color: var(--faint);
-  font-size: 14px;
+  font-size: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -728,7 +731,7 @@ input[type="number"] {
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
-  font-size: 15.5px;
+  font-size: 16px;
 }
 select:hover,
 input:hover {
@@ -769,7 +772,7 @@ textarea:focus {
 }
 .unit {
   color: var(--faint);
-  font-size: 14.5px;
+  font-size: 15px;
 }
 
 .switch {
@@ -819,7 +822,7 @@ textarea:focus {
 }
 .switch-label {
   color: var(--faint);
-  font-size: 14.5px;
+  font-size: 15px;
 }
 
 .actions {
@@ -829,7 +832,7 @@ textarea:focus {
 }
 button {
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
   color: var(--muted);
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -855,7 +858,7 @@ button:hover {
   height: 1.75rem;
   padding: 0;
   border-radius: 50%;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
 }
 #sidebar-restore {
@@ -872,12 +875,12 @@ button:hover {
 .note {
   margin: 0.9rem 0 0;
   color: var(--faint);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
 }
 .note code {
   font-family: var(--mono);
-  font-size: 13.5px;
+  font-size: 14px;
 }
 .note strong {
   color: var(--muted);
