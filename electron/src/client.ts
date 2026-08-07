@@ -1,7 +1,12 @@
 import net from "node:net";
 import path from "node:path";
 
-import { applyStateFragment, emptyAppState, type AppState } from "./state";
+import {
+  applyStateFragment,
+  emptyAppState,
+  parseAppState,
+  type AppState,
+} from "./state";
 
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   const runtime = env.XDG_RUNTIME_DIR;
@@ -171,6 +176,7 @@ export type SessionEventsOptions = {
 export class SessionEvents {
   private _state: AppState = emptyAppState();
   private _stopped = true;
+  private _generation = 0;
   private _loop: Promise<void> | null = null;
   private readonly timeoutMs: number;
   private readonly onState: (state: AppState) => void;
@@ -194,28 +200,30 @@ export class SessionEvents {
       return;
     }
     this._stopped = false;
+    const generation = ++this._generation;
     await this._subscribe();
-    this._loop = this._run();
+    this._loop = this._run(generation);
   }
 
   stop(): void {
     this._stopped = true;
+    this._generation += 1;
     this.events.close();
   }
 
   private async _subscribe(): Promise<void> {
     const snapshot = (await this.events.call("subscribe")) as SnapshotResult;
-    this._state = snapshot.state;
+    this._state = parseAppState(snapshot.state);
     this.onState(this._state);
   }
 
-  private async _run(): Promise<void> {
-    while (!this._stopped) {
+  private async _run(generation: number): Promise<void> {
+    while (generation === this._generation) {
       try {
         const polled = (await this.events.call("poll", {
           timeout_ms: this.timeoutMs,
         })) as PollResult;
-        if (this._stopped) {
+        if (generation !== this._generation) {
           return;
         }
         if (polled.lost) {
@@ -230,7 +238,7 @@ export class SessionEvents {
           }
         }
       } catch (error) {
-        if (this._stopped) {
+        if (generation !== this._generation) {
           return;
         }
         const err = error instanceof Error ? error : new Error(String(error));
@@ -240,6 +248,9 @@ export class SessionEvents {
         try {
           await this._subscribe();
         } catch (resubscribeError) {
+          if (generation !== this._generation) {
+            return;
+          }
           const nested =
             resubscribeError instanceof Error
               ? resubscribeError
