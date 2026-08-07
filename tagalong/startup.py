@@ -24,7 +24,14 @@ from .choosers import (
 )
 from .config import load_startup_config
 from .domain import POLICY_NAMES, ResponsePolicy, TurnSilence
-from .speech import DEFAULT_PROVIDER, PROVIDER_LABELS, PROVIDERS, default_voice
+from .speech import (
+    DEFAULT_PROVIDER,
+    EDGE,
+    PIPER,
+    PROVIDER_LABELS,
+    PROVIDERS,
+    default_voice,
+)
 
 DEFAULT_TURN_SILENCE = 3.0
 DEFAULT_CODEX_MODEL = "gpt-5.6-luna"
@@ -203,8 +210,8 @@ def _resolve_defaults(args):
         ("audio_stream", DEFAULT_AUDIO_STREAM),
         ("taga_after", DEFAULT_TAGA_AFTER),
         ("tts_provider", DEFAULT_PROVIDER),
-        ("piper_voice", default_voice(DEFAULT_PROVIDER)),
-        ("edge_voice", default_voice("edge")),
+        ("piper_voice", default_voice(PIPER)),
+        ("edge_voice", default_voice(EDGE)),
         ("turn_silence", DEFAULT_TURN_SILENCE),
         ("codex_model", DEFAULT_CODEX_MODEL),
         ("codex_reasoning", DEFAULT_CODEX_EFFORT),
@@ -215,11 +222,9 @@ def _resolve_defaults(args):
             setattr(args, option, fallback)
     if args.tts_voice is None:
         args.tts_voice = (
-            args.piper_voice
-            if args.tts_provider == DEFAULT_PROVIDER
-            else args.edge_voice
+            args.piper_voice if args.tts_provider == PIPER else args.edge_voice
         )
-    elif args.tts_provider == DEFAULT_PROVIDER:
+    elif args.tts_provider == PIPER:
         args.piper_voice = args.tts_voice
     else:
         args.edge_voice = args.tts_voice
