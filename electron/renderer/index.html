@@ -4,41 +4,460 @@
     <meta charset="utf-8" />
     <title>TagAlong</title>
     <style>
+      :root {
+        --bg: #1a1d21;
+        --panel: #24292f;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #3fb950;
+        --border: #30363d;
+        --danger: #f85149;
+      }
+      * {
+        box-sizing: border-box;
+      }
       body {
-        font-family: sans-serif;
-        margin: 2rem;
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top left, #243045, var(--bg) 55%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 1.25rem 1.5rem 2rem;
+      }
+      h1 {
+        font-family: "IBM Plex Serif", Georgia, serif;
+        font-weight: 600;
+        font-size: 1.75rem;
+        margin: 0 0 0.25rem;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-bottom: 1.25rem;
+      }
+      section {
+        background: color-mix(in srgb, var(--panel) 92%, black);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 0.9rem;
+      }
+      section h2 {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 0 0 0.75rem;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.55rem;
+      }
+      .row:last-child {
+        margin-bottom: 0;
+      }
+      label {
+        font-size: 0.95rem;
+      }
+      select,
+      input[type="text"],
+      input[type="number"],
+      textarea {
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.35rem 0.5rem;
+        min-width: 12rem;
+        font: inherit;
+      }
+      textarea {
+        width: 100%;
+        min-height: 4.5rem;
+        resize: vertical;
       }
       button {
-        margin-top: 1rem;
+        font: inherit;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 0.4rem 0.75rem;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--muted);
+      }
+      button.primary {
+        background: color-mix(in srgb, var(--accent) 25%, var(--panel));
+        border-color: var(--accent);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+      .status {
+        font-size: 0.85rem;
+        color: var(--muted);
+        min-height: 1.2rem;
+      }
+      .status.error {
+        color: var(--danger);
+      }
+      .note {
+        font-size: 0.8rem;
+        color: var(--muted);
+        margin-top: 0.6rem;
+        line-height: 1.35;
+      }
+      .eff {
+        font-size: 0.75rem;
+        color: var(--muted);
       }
     </style>
   </head>
   <body>
-    <h1>TagAlong</h1>
-    <p id="status">connecting…</p>
-    <button id="toggle" type="button">Toggle voice reply</button>
-    <script>
-      const status = document.getElementById("status");
-      const toggle = document.getElementById("toggle");
+    <main>
+      <h1>TagAlong</h1>
+      <p class="sub">Control surface for the running session · attach-only</p>
+      <p id="banner" class="status">connecting…</p>
 
-      async function refresh() {
-        const snapshot = await window.tagalong.snapshot();
-        status.textContent = snapshot.state.tts_enabled
-          ? "Voice reply is on"
-          : "Voice reply is off";
+      <section>
+        <h2>Devices</h2>
+        <div class="row">
+          <label for="microphone">Microphone</label>
+          <select id="microphone"></select>
+        </div>
+        <div class="row">
+          <span></span>
+          <span class="eff" id="microphone-effective"></span>
+        </div>
+        <div class="row">
+          <label for="mic-mute">Mute microphone</label>
+          <input id="mic-mute" type="checkbox" />
+        </div>
+        <div class="row">
+          <label for="audio-stream">Far end</label>
+          <select id="audio-stream"></select>
+        </div>
+        <div class="row">
+          <span></span>
+          <span class="eff" id="audio-effective"></span>
+        </div>
+        <div class="row">
+          <label for="audio-mute">Mute far end</label>
+          <input id="audio-mute" type="checkbox" />
+        </div>
+      </section>
+
+      <section>
+        <h2>Settings</h2>
+        <div class="row">
+          <label for="response-policy">Respond after</label>
+          <select id="response-policy">
+            <option value="audio">Audio</option>
+            <option value="both">Voice + Audio</option>
+            <option value="voice">Voice</option>
+            <option value="quiet">Stay silent</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="tts-enabled">Voice reply</label>
+          <input id="tts-enabled" type="checkbox" />
+        </div>
+        <div class="row">
+          <label for="tts-provider">TTS engine</label>
+          <select id="tts-provider">
+            <option value="piper">Piper (local)</option>
+            <option value="edge">Edge (cloud)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="codex-model">Codex model</label>
+          <input id="codex-model" type="text" placeholder="model id" />
+        </div>
+        <div class="row">
+          <label for="codex-reasoning">Reasoning effort</label>
+          <input id="codex-reasoning" type="text" placeholder="effort" />
+        </div>
+        <div class="row">
+          <label for="turn-silence">Turn silence (s)</label>
+          <input id="turn-silence" type="number" min="0" step="0.5" />
+        </div>
+      </section>
+
+      <section>
+        <h2>Session</h2>
+        <div class="actions">
+          <button type="button" id="interrupt">Interrupt</button>
+          <button type="button" id="end-turn">End voice turn</button>
+          <button type="button" id="new-session">New session</button>
+          <button type="button" id="save-transcript">Save transcript</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Compose</h2>
+        <textarea id="compose-text" placeholder="Message Taga…"></textarea>
+        <div class="row" style="margin-top: 0.6rem">
+          <input id="compose-image" type="file" accept="image/*" />
+          <button type="button" class="primary" id="send">Send</button>
+        </div>
+        <p class="note">
+          Compose is labelled <strong>Agent</strong> under today’s socket policy
+          (Electron peers are <code>ActorKind.AGENT</code>). Human
+          <code>Text</code> provenance is #94 — out of scope here. There is no Quit
+          control; the TUI owns process lifecycle.
+        </p>
+      </section>
+    </main>
+    <script>
+      const NO_MIC = "__none__";
+      const NO_AUDIO = "none";
+      const api = window.tagalong;
+      const banner = document.getElementById("banner");
+      let applying = false;
+      let attachmentIds = [];
+
+      function setBanner(text, isError) {
+        banner.textContent = text;
+        banner.classList.toggle("error", Boolean(isError));
       }
 
-      toggle.addEventListener("click", async () => {
-        const snapshot = await window.tagalong.snapshot();
-        await window.tagalong.dispatch("tts.set_enabled", {
-          enabled: !snapshot.state.tts_enabled,
-        });
-        await refresh();
-      });
+      function selectionValue(sel) {
+        return sel && sel.desired != null ? sel.desired : NO_MIC;
+      }
 
-      refresh().catch((error) => {
-        status.textContent = error.message;
-      });
+      function fillSelect(select, options, selected) {
+        const current = selected;
+        select.innerHTML = "";
+        for (const opt of options) {
+          const el = document.createElement("option");
+          el.value = opt.value;
+          el.textContent = opt.label;
+          select.appendChild(el);
+        }
+        if ([...select.options].some((o) => o.value === current)) {
+          select.value = current;
+        }
+      }
+
+      async function refreshDevices(state) {
+        let listed;
+        try {
+          listed = await api.devicesList();
+        } catch (error) {
+          setBanner(error.message, true);
+          listed = { inputs: [], applications: [] };
+        }
+        const micOptions = [
+          { value: NO_MIC, label: "None" },
+          ...listed.inputs.map((d) => ({ value: d.name, label: d.name })),
+        ];
+        const audioOptions = [
+          { value: NO_AUDIO, label: "None" },
+          ...listed.applications.map((a) => ({
+            value: a.name,
+            label: a.label || a.name,
+          })),
+        ];
+        fillSelect(
+          document.getElementById("microphone"),
+          micOptions,
+          state.microphone?.desired ?? NO_MIC,
+        );
+        fillSelect(
+          document.getElementById("audio-stream"),
+          audioOptions,
+          state.audio_stream?.desired ?? NO_AUDIO,
+        );
+        document.getElementById("microphone-effective").textContent = state.microphone
+          ?.effective
+          ? `effective: ${state.microphone.effective}`
+          : "";
+        document.getElementById("audio-effective").textContent = state.audio_stream
+          ?.effective
+          ? `effective: ${state.audio_stream.effective}`
+          : "";
+      }
+
+      function applyState(state) {
+        applying = true;
+        document.getElementById("mic-mute").checked = Boolean(state.microphone_muted);
+        document.getElementById("audio-mute").checked = Boolean(
+          state.audio_stream_muted,
+        );
+        document.getElementById("tts-enabled").checked = Boolean(state.tts_enabled);
+        document.getElementById("response-policy").value =
+          state.response_policy || "both";
+        document.getElementById("tts-provider").value = state.tts_provider || "piper";
+        document.getElementById("codex-model").value = state.codex_model || "";
+        document.getElementById("codex-reasoning").value = state.codex_reasoning || "";
+        document.getElementById("turn-silence").value = state.turn_silence ?? 3;
+        const mic = document.getElementById("microphone");
+        if (state.microphone?.desired != null) {
+          if (![...mic.options].some((o) => o.value === state.microphone.desired)) {
+            const opt = document.createElement("option");
+            opt.value = state.microphone.desired;
+            opt.textContent = state.microphone.desired;
+            mic.appendChild(opt);
+          }
+          mic.value = state.microphone.desired;
+        } else {
+          mic.value = NO_MIC;
+        }
+        const audio = document.getElementById("audio-stream");
+        const wanted = state.audio_stream?.desired ?? NO_AUDIO;
+        if (![...audio.options].some((o) => o.value === wanted)) {
+          const opt = document.createElement("option");
+          opt.value = wanted;
+          opt.textContent = wanted;
+          audio.appendChild(opt);
+        }
+        audio.value = wanted;
+        document.getElementById("microphone-effective").textContent = state.microphone
+          ?.effective
+          ? `effective: ${state.microphone.effective}`
+          : "";
+        document.getElementById("audio-effective").textContent = state.audio_stream
+          ?.effective
+          ? `effective: ${state.audio_stream.effective}`
+          : "";
+        applying = false;
+        setBanner("live");
+      }
+
+      async function dispatch(action, payload) {
+        try {
+          await api.dispatch(action, payload);
+        } catch (error) {
+          setBanner(error.message, true);
+        }
+      }
+
+      function bind() {
+        document.getElementById("microphone").addEventListener("change", (e) => {
+          if (applying) return;
+          const name = e.target.value === NO_MIC ? null : e.target.value;
+          void dispatch("microphone.select", { name });
+        });
+        document.getElementById("audio-stream").addEventListener("change", (e) => {
+          if (applying) return;
+          const name = e.target.value;
+          void dispatch("audio_stream.select", { name });
+        });
+        document.getElementById("mic-mute").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("microphone.set_muted", { muted: e.target.checked });
+        });
+        document.getElementById("audio-mute").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("audio_stream.set_muted", { muted: e.target.checked });
+        });
+        document.getElementById("response-policy").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("response_policy.set", { policy: e.target.value });
+        });
+        document.getElementById("tts-enabled").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("tts.set_enabled", { enabled: e.target.checked });
+        });
+        document.getElementById("tts-provider").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("tts.set_provider", { provider: e.target.value });
+        });
+        document.getElementById("codex-model").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("codex.set_model", { model: e.target.value });
+        });
+        document.getElementById("codex-reasoning").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("codex.set_reasoning", { effort: e.target.value });
+        });
+        document.getElementById("turn-silence").addEventListener("change", (e) => {
+          if (applying) return;
+          void dispatch("turn_silence.set", {
+            seconds: Number(e.target.value),
+          });
+        });
+
+        document.getElementById("interrupt").addEventListener("click", () => {
+          void dispatch("session.interrupt", {});
+        });
+        document.getElementById("end-turn").addEventListener("click", () => {
+          void dispatch("voice.end_turn", {});
+        });
+        document.getElementById("new-session").addEventListener("click", () => {
+          void dispatch("session.new", {});
+        });
+        document.getElementById("save-transcript").addEventListener("click", () => {
+          void dispatch("transcript.save", {});
+        });
+
+        document.getElementById("send").addEventListener("click", async () => {
+          const text = document.getElementById("compose-text").value;
+          const fileInput = document.getElementById("compose-image");
+          attachmentIds = [];
+          if (fileInput.files && fileInput.files[0]) {
+            const buffer = await fileInput.files[0].arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i += 1) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            const data = btoa(binary);
+            try {
+              const outcome = await api.dispatch("attachment.upload", { data });
+              if (outcome && outcome.effective) {
+                attachmentIds = [outcome.effective];
+              }
+            } catch (error) {
+              setBanner(error.message, true);
+              return;
+            }
+          }
+          await dispatch("message.send", {
+            text,
+            images: attachmentIds,
+            respond: true,
+          });
+          document.getElementById("compose-text").value = "";
+          fileInput.value = "";
+          attachmentIds = [];
+        });
+      }
+
+      async function boot() {
+        bind();
+        api.onState((state) => {
+          applyState(state);
+        });
+        try {
+          const snapshot = await api.snapshot();
+          await refreshDevices(snapshot.state);
+          applyState(snapshot.state);
+        } catch (error) {
+          setBanner(error.message, true);
+        }
+        // Refresh device catalogs periodically — hardware changes are not
+        // on the state.changed stream.
+        setInterval(() => {
+          api
+            .snapshot()
+            .then((snap) => refreshDevices(snap.state))
+            .catch(() => {});
+        }, 5000);
+      }
+
+      boot();
     </script>
   </body>
 </html>

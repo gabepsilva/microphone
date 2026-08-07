@@ -4,33 +4,46 @@ import { app, BrowserWindow, ipcMain } from "electron";
 
 import { SessionEvents, TagAlongClient } from "./client";
 import { registerIpcHandlers } from "./ipc";
+import type { AppState } from "./state";
 
 /** Command connection — never park a long-poll here (#96 G1). */
 const commands = new TagAlongClient();
 /** Event connection — parked on poll; same actor id as commands. */
 const events = new TagAlongClient();
 
+let mainWindow: BrowserWindow | null = null;
+
+function broadcastState(state: AppState): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("tagalong:stateChanged", state);
+  }
+}
+
 const sessionEvents = new SessionEvents(events, {
-  onState: () => {
-    // Renderer binding lands in later #96 phases; this loop keeps live state
-    // and recovers from lost / disconnect in the meantime.
-  },
+  onState: broadcastState,
   onError: (error) => {
     console.error("tagalong event loop:", error.message);
   },
 });
 
 async function createWindow(): Promise<void> {
-  const window = new BrowserWindow({
-    width: 480,
-    height: 320,
+  mainWindow = new BrowserWindow({
+    width: 720,
+    height: 820,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
-  await window.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+  await mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+  // Push the already-subscribed snapshot once the page can listen.
+  if (sessionEvents.state) {
+    broadcastState(sessionEvents.state);
+  }
 }
 
 registerIpcHandlers(ipcMain, commands);

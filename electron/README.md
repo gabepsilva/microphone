@@ -1,8 +1,9 @@
 # TagAlong Electron client
 
-Talks to a running TUI session over the local JSON-RPC Unix socket
-(`$XDG_RUNTIME_DIR/tagalong/tagalong.sock`). It does not start a second
-Python runtime.
+Control surface for a running TagAlong session over the local JSON-RPC Unix
+socket (`$XDG_RUNTIME_DIR/tagalong/tagalong.sock`). It does **not** start a
+second Python runtime. The TUI owns process lifecycle; when the TUI exits, the
+socket dies with it (#96 attach-only).
 
 ```bash
 # CI / gates: skip the ~176 MB Electron binary; types still install.
@@ -18,19 +19,77 @@ Make targets from the repo root: `electron-typecheck`, `electron-lint`,
 `src/protocol/actions.ts` matches the Python `CATALOG`; regenerate with
 `make electron-actions-write` after a catalog change.
 
-`typescript` is pinned at 5.9.3 on purpose: `typescript-eslint@8.39.1` peers
-`<6.0.0`, and an unpinned `bun install typescript` can resolve 7.x, which
-hard-refuses and turns `bun run lint` red. `make ratchet` does not watch
-`electron/package.json`.
+## Architecture (issue #96)
 
-Security posture: `contextIsolation: true`, `nodeIntegration: false`, and an
-allowlisted preload API (`snapshot`, `setTts`). Semgrep under `electron/src/`
-allowlists those literals (non-literal bypasses fail) and forbids bare
-`ipcMain.handle` outside `src/ipc.ts`. The socket itself checks `SO_PEERCRED`
-and refuses a `/tmp` fallback.
+| Piece           | Role                                                                  |
+| --------------- | --------------------------------------------------------------------- |
+| Command socket  | `snapshot`, `dispatch`, `devices.list`, …                             |
+| Event socket    | parked `poll` with `timeout_ms`; applies `state.changed`              |
+| On `lost: true` | resubscribe (terminal per subscription)                               |
+| Preload         | allowlisted bridge only — see `tests/preload_allowlist.ts`            |
+| Dispatch        | main-process `DISPATCH_ALLOWLIST` + payload checks; no `session.quit` |
 
-IPC channel names live in `src/protocol/channels.ts` so main and preload share
-one spelling; `src/ipc.ts` registers every map entry so an orphan channel fails
-`bun test`. Action ids come from generated `src/protocol/actions.ts`. The
-socket client is `src/client.ts` — unit tests fake the socket; they do not
-launch an Electron window.
+Compose is **Agent** provenance under current socket policy
+(`actor_for_client` → `ActorKind.AGENT`). Human `Text` is #94. Live transcript
+UI / ownership / XSS gates / headless runtime are #102.
+
+Security posture: `contextIsolation: true`, `nodeIntegration: false`,
+allowlisted preload, main-process action allowlist, no `/tmp` socket. Semgrep
+under `electron/src/` forbids non-literal `nodeIntegration` /
+`contextIsolation`, bare `.handle(...)` outside `ipc.ts`, and bare
+`call("dispatch", ...)` outside `ipc.ts`.
+
+## Manual test plan
+
+Prerequisites: PortAudio + a working mic (for device pickers), PipeWire (for
+far-end applications), and Codex credentials as for a normal TUI session.
+
+1. **Start the session**
+
+   ```bash
+   uv run tagalong
+   ```
+
+   Leave the TUI running.
+
+2. **Start Electron** (separate terminal, repo root):
+
+   ```bash
+   cd electron && bun run start
+   ```
+
+   Expect the window status line to show `live` (not a connection error).
+
+3. **Live settings sync**
+   - In Electron, toggle **Voice reply**. Confirm the TUI sidebar TTS control
+     updates without refreshing Electron.
+   - In the TUI, change response policy. Confirm Electron’s **Respond after**
+     select updates via long-poll (`state.changed`) without clicking Refresh.
+
+4. **Overflow recovery** (optional / automated elsewhere)
+   - Covered by
+     `tests/test_transport.py::test_poll_reports_lost_after_overflow_and_resubscribe_clears_it`
+     and `electron/tests/client.test.ts` SessionEvents cases. Manually: leave
+     Electron backgrounded through a burst of settings changes, then confirm
+     the sidebar catches up after resubscribe (status returns to `live`).
+
+5. **Device pickers**
+   - Open **Microphone** / **Far end** selects — options come from
+     `devices.list` (inputs via PortAudio, applications via PipeWire graph).
+   - Choose a mic; confirm TUI effective/desired update. Toggle mute both ways.
+
+6. **Session actions**
+   - **Interrupt**, **End voice turn**, **New session**, **Save transcript**
+     each invoke the matching allowlisted action. Confirm TUI behaviour
+     matches. Confirm there is **no Quit** control in Electron.
+
+7. **Compose**
+   - Type text, optionally attach an image, **Send**.
+   - Confirm the TUI shows the message as an **Agent** line (not Human Text).
+   - Confirm a spoken/model reply still works when Voice reply is on.
+
+8. **Security smoke**
+   - DevTools → console: `window.require` / `process` should be unavailable
+     (`contextIsolation` + no `nodeIntegration`).
+   - Attempting `session.quit` via a forged preload path must fail the
+     allowlist (see `electron/tests/dispatch.test.ts`).
