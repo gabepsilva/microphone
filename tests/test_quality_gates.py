@@ -1293,6 +1293,8 @@ def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
     backdoor = (
         "export function plant(client: { call: Function }): void {\n"
         '  client.call("dispatch", { action: "session.quit", payload: {} });\n'
+        "  const call = client.call.bind(client);\n"
+        '  void call("dispatch", { action: "session.quit", payload: {} });\n'
         "}\n"
     )
     allowed = (

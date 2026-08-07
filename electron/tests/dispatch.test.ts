@@ -17,6 +17,8 @@ describe("DISPATCH_ALLOWLIST", () => {
     expect(DISPATCH_ALLOWLIST).toContain(ACTIONS.message_send);
     expect(isAllowedAction(ACTIONS.session_quit)).toBe(false);
     expect(DISPATCH_ALLOWLIST).not.toContain(ACTIONS.session_quit);
+    // transcript.append is #102 ownership territory, not the #96 compose surface.
+    expect(DISPATCH_ALLOWLIST).not.toContain(ACTIONS.transcript_append);
   });
 
   it("rejects unknown actions and session.quit", () => {
