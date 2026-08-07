@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, Menu, ipcMain } from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
 import { registerIpcHandlers } from "./ipc";
@@ -14,6 +14,12 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 app.commandLine.appendSwitch("in-process-gpu");
+// Under Wayland with fractional scaling, an XWayland window is rasterised at
+// 1x and upscaled by the compositor — that, not the CSS, is what reads as
+// blurry text. The hint selects Wayland natively when the session offers it
+// and falls back to X11 otherwise, so Chromium rasterises glyphs at the
+// monitor's real scale.
+app.commandLine.appendSwitch("ozone-platform-hint", "auto");
 
 /** Command connection — never park a long-poll here (#96 G1). */
 const commands = new TagAlongClient();
@@ -50,9 +56,13 @@ const sessionEvents = new SessionEvents(events, {
 });
 
 async function createWindow(): Promise<void> {
+  // No File/Edit/View/Window/Help: every entry it would offer is either a
+  // lifecycle the TUI owns or a browser affordance this surface does not use.
+  Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
-    width: 720,
+    width: 1200,
     height: 820,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

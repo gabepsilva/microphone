@@ -4,6 +4,7 @@ export const CHANNELS = {
   dispatch: "tagalong:dispatch",
   devicesList: "tagalong:devicesList",
   commandsList: "tagalong:commandsList",
+  codexCatalog: "tagalong:codexCatalog",
   capabilities: "tagalong:capabilities",
   /** Main → renderer push; not registered via ipcMain.handle. */
   stateChanged: "tagalong:stateChanged",
@@ -19,6 +20,7 @@ export const INVOKE_CHANNELS = [
   CHANNELS.dispatch,
   CHANNELS.devicesList,
   CHANNELS.commandsList,
+  CHANNELS.codexCatalog,
   CHANNELS.capabilities,
 ] as const;
 

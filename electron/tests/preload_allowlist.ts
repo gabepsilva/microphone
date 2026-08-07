@@ -1,6 +1,7 @@
 /** Frozen preload surface. Types cannot express "do not add a key". */
 export const PRELOAD_ALLOWLIST = [
   "capabilities",
+  "codexCatalog",
   "commandsList",
   "devicesList",
   "dispatch",

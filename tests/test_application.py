@@ -185,14 +185,25 @@ class FakeCapture:
 OWNER = local_user("tui")
 
 
+class FakeMessageDisplay:
+    """Records what a handler drew on the transcript, in order."""
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, str]] = []
+
+    def show_message(self, speaker: str, text: str) -> None:
+        self.shown.append((speaker, text))
+
+
 def bound(
     conversation: FakeConversation | None = None,
     tts: FakeSpeech | None = None,
+    display: FakeMessageDisplay | None = None,
 ) -> tuple[Controller, FakeConversation, FakeSpeech]:
     conversation = FakeConversation() if conversation is None else conversation
     tts = FakeSpeech() if tts is None else tts
     controller = Controller()
-    bind_first_slice(controller, conversation=conversation, tts=tts)
+    bind_first_slice(controller, conversation=conversation, tts=tts, display=display)
     return controller, conversation, tts
 
 
@@ -251,6 +262,102 @@ def test_an_agent_message_is_ingested_as_agent() -> None:
 
     assert outcome == Applied("req-1", ())
     assert conversation.ingested == [("Agent", "context from a tool", False, ())]
+
+
+def test_an_agent_message_is_drawn_on_the_transcript() -> None:
+    # A socket client has no prompt of its own, so nothing has drawn the
+    # message yet. Without this the text reaches Codex as context and reaches
+    # the transcript nowhere: both clients answer a question neither shows.
+    display = FakeMessageDisplay()
+    controller, conversation, _tts = bound(display=display)
+    caller = agent("electron", {Scope.CONVERSE})
+
+    controller.dispatch("message.send", {"text": "hello from a client"}, actor=caller)
+
+    assert display.shown == [("Agent", "hello from a client")]
+    assert conversation.ingested == [("Agent", "hello from a client", True, ())]
+
+
+def test_the_display_is_called_under_the_controllers_writer_lock() -> None:
+    # Why MessageDisplayPort.show_message must not wait on another thread:
+    # the handler runs under the lock, and in a TUI session that lock is the
+    # transcript store's (cli.attach_conversation_hooks adopts tui.transcript).
+    # A display that waited for a UI thread would wait for a thread that has
+    # to take this lock to append the row.
+    controller = Controller()
+    held: list[bool] = []
+
+    class LockProbe:
+        def show_message(self, speaker: str, text: str) -> None:
+            del speaker, text
+
+            # Another thread, because the lock is reentrant for this one.
+            def probe() -> None:
+                held.append(not controller.transcript.lock.acquire(timeout=0.2))
+                if not held[-1]:
+                    controller.transcript.lock.release()
+
+            worker = threading.Thread(target=probe)
+            worker.start()
+            worker.join(timeout=2)
+
+    bind_first_slice(
+        controller,
+        conversation=FakeConversation(),
+        tts=FakeSpeech(),
+        display=LockProbe(),
+    )
+
+    controller.dispatch(
+        "message.send", {"text": "hi"}, actor=agent("electron", {Scope.CONVERSE})
+    )
+
+    assert held == [True]
+
+
+def test_a_human_message_is_not_drawn_twice() -> None:
+    # The prompt puts the typed line on screen before dispatching.
+    display = FakeMessageDisplay()
+    controller, _conversation, _tts = bound(display=display)
+
+    controller.dispatch("message.send", {"text": "typed here"}, actor=OWNER)
+
+    assert display.shown == []
+
+
+def test_an_agent_appending_context_is_drawn_too() -> None:
+    from tagalong.application import bind_session_transcript_slice
+
+    class Turns:
+        def end_turn(self) -> None:
+            return None
+
+    class Rows:
+        def transcript_entries(self):
+            return []
+
+    class NoAttachments:
+        def upload(self, data: bytes) -> str:
+            del data
+            raise AssertionError("appending context uploads nothing")
+
+        def resolve(self, ids):
+            del ids
+            raise AssertionError("appending context resolves nothing")
+
+    display = FakeMessageDisplay()
+    conversation = FakeConversation()
+    controller = Controller(app_state_from_session(SessionState()))
+    bind_session_transcript_slice(
+        controller,
+        (conversation, Turns(), NoAttachments(), Rows()),
+        display=display,
+    )
+    caller = agent("notes-bot", {Scope.TRANSCRIPT})
+
+    controller.dispatch("transcript.append", {"text": "a note"}, actor=caller)
+
+    assert display.shown == [("Agent", "a note")]
 
 
 def test_an_agent_can_upload_then_send_with_the_id(tmp_path) -> None:

@@ -433,6 +433,52 @@ def test_a_note_becomes_a_dim_entry(tui) -> None:
     assert facade.app.entries[0].kind == "note"
 
 
+def test_a_remote_message_becomes_a_speech_entry(tui) -> None:
+    # Socket peers have no prompt of their own; this path draws for them.
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade.show_message(tui.AGENT, "hello from a client")
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert entry_texts(facade) == ["hello from a client"]
+    assert facade.app.entries[0].kind == "speech"
+    assert facade.app.entries[0].source == tui.AGENT
+
+
+def test_a_remote_message_is_scheduled_not_waited_on(tui) -> None:
+    """``show_message`` hands the draw over instead of waiting for it.
+
+    It runs inside a control handler, under the controller's writer lock —
+    and ``cli.attach_conversation_hooks`` gives the controller this façade's
+    transcript store, so that lock is the store's lock. Waiting on the
+    application thread would wait on the thread that has to take that lock to
+    append the row, while the caller still holds it: both stop for good.
+
+    The test above cannot see this. It calls from the application thread,
+    where ``_call`` takes its same-thread fast path and the marshalling never
+    happens. Here ``_app_thread`` is set to another ident, so the façade takes
+    the cross-thread path a socket peer would.
+    """
+    facade = tui.VoiceCodexTUI()
+
+    async def body(pilot):
+        facade._app_thread = -1
+        facade.show_message(tui.AGENT, "hello from a client")
+        # Handed over, not drawn: the caller is free to release the lock the
+        # application thread is about to want.
+        assert entry_texts(facade) == []
+        await pilot.pause()
+        assert entry_texts(facade) == ["hello from a client"]
+
+    drive(facade, body)
+
+    # Stamped when the session was told, not whenever the row happened to mount.
+    assert facade.app.entries[0].stamp != ""
+
+
 def test_a_codex_turn_streams_into_one_row_and_closes(tui) -> None:
     facade = tui.VoiceCodexTUI()
 
@@ -1639,6 +1685,7 @@ def protocol_methods():
     names: set[str] = set()
     for protocol in (
         presentation.TranscriptSink,
+        presentation.MessageSink,
         presentation.SessionStatusSink,
         presentation.CodexStreamSink,
         presentation.ApplicationListSink,

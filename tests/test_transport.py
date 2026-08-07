@@ -13,6 +13,7 @@ from typing import cast
 
 import pytest
 
+from tagalong import transport
 from tagalong.application import bind_first_slice
 from tagalong.control import (
     Accepted,
@@ -214,6 +215,48 @@ def test_commands_list_is_available_over_the_socket(tmp_path: Path) -> None:
         assert listing["commands"][0]["action_id"] == "session.new"
         caps = client.call("capabilities")
         assert any(entry["id"] == "session.new" for entry in caps["actions"])
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_codex_catalog_offers_models_and_their_efforts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tagalong.catalog import CodexModelOption
+
+    monkeypatch.setattr(
+        transport,
+        "probe_codex_models",
+        lambda: [CodexModelOption("gpt-5.6-luna", "Luna", ("low", "high"), "high")],
+    )
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        catalog = client.call("codex.catalog")
+        assert catalog["models"] == [
+            {
+                "slug": "gpt-5.6-luna",
+                "label": "Luna",
+                "efforts": ["low", "high"],
+                "default_effort": "high",
+            }
+        ]
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_codex_catalog_answers_empty_when_the_cli_offers_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # An empty catalog is an answer: the client keeps what the session runs
+    # rather than being told the query failed.
+    monkeypatch.setattr(transport, "probe_codex_models", list)
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        assert client.call("codex.catalog") == {"models": []}
     finally:
         client.close()
         server.stop()

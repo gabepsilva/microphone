@@ -76,8 +76,9 @@ far-end applications), and Codex credentials as for a normal TUI session.
 3. **Live settings sync**
    - In Electron, toggle **Voice reply**. Confirm the TUI sidebar TTS control
      updates without refreshing Electron.
-   - In the TUI, change response policy. Confirm Electron’s **Respond after**
-     select updates via long-poll (`state.changed`) without clicking Refresh.
+   - In the TUI, change response policy. Confirm Electron’s **Taga responds
+     to** select — and the chip under the prompt — update via long-poll
+     (`state.changed`) without clicking Refresh.
 
 4. **Overflow recovery** (optional / automated elsewhere)
    - Covered by
@@ -87,22 +88,55 @@ far-end applications), and Codex credentials as for a normal TUI session.
      the sidebar catches up after resubscribe (status returns to `live`).
 
 5. **Device pickers**
-   - Open **Microphone** / **Far end** selects — options come from
+   - Open **Microphone** / **Audio stream** selects — options come from
      `devices.list` (inputs via PortAudio, applications via PipeWire graph).
    - Choose a mic; confirm TUI effective/desired update. Toggle mute both ways.
 
 6. **Session actions**
-   - **Interrupt**, **End voice turn**, **New session**, **Save transcript**
-     each invoke the matching allowlisted action. Confirm TUI behaviour
-     matches. Confirm there is **no Quit** control in Electron.
+   - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save
+     transcript (`^S`), plus `^P`, `^K`, `^T`, `^B` — there are no buttons for
+     these; the empty screen is their reference and `renderer/shortcuts.js` is
+     the one table both it and the key handler read. `/new` runs from the
+     palette too. Confirm TUI behaviour matches, and that there is **no Quit**.
 
-7. **Compose**
-   - Type text, optionally attach an image, **Send**.
-   - Confirm the TUI shows the message as an **Agent** line (not Human Text).
+7. **Model pickers**
+   - **Model** and **Reasoning effort** are selects fed by `codex.catalog`
+     (the CLI's own catalog, read once at boot — probing shells out to
+     `codex debug models`). Choosing a model whose efforts exclude the running
+     one also dispatches the model's default effort, as `adopt_efforts_for`
+     does in the TUI.
+   - A model the catalog no longer lists still appears while the session runs
+     it (`options_including`). Every sidebar change applies immediately — the
+     silence field dispatches on `input`, not on blur.
+
+8. **Compose**
+   - Type text, optionally attach an image (**+** button or paste), press
+     **Enter** — or the send button.
+   - Shift+Enter adds a line; Esc dismisses the palette, then clears the draft.
+   - Confirm the sent line appears in **both** clients' transcripts as an
+     **Agent** line (not Human Text). Nothing local draws a socket peer's
+     message; `application._show_remote_message` does, so a session started
+     before that fix shows nothing here.
    - Confirm a spoken/model reply still works when Voice reply is on.
 
-8. **Security smoke**
-   - DevTools → console: `window.require` / `process` should be unavailable
-     (`contextIsolation` + no `nodeIntegration`).
-   - Attempting `session.quit` via a forged preload path must fail the
-     allowlist (see `electron/tests/dispatch.test.ts`).
+9. **Slash commands**
+   - Type `/` — the palette lists `commands.list` below the prompt. ↑↓ browse,
+     Tab completes, Enter runs, Esc dismisses. Ranking is ported from
+     `commands.match_commands`; `tests/commands.test.ts` pins the tiers.
+   - `/new` dispatches `session.new`. `/help` names no action — the catalog it
+     would print is the menu already on screen.
+
+10. **Markdown**
+
+- A finished Taga answer renders fenced code, headings, lists, quotes,
+  tables, and inline emphasis (`renderer/markdown.js`, mirroring
+  `tui.uses_markdown_body`). Streaming turns and anything transcribed from
+  the room stay literal.
+- Links are shown but **never** given an `href`: nothing in this window may
+  navigate away from the app, and there is no open-externally channel yet.
+
+11. **Security smoke**
+    - DevTools → console: `window.require` / `process` should be unavailable
+      (`contextIsolation` + no `nodeIntegration`).
+    - Attempting `session.quit` via a forged preload path must fail the
+      allowlist (see `electron/tests/dispatch.test.ts`).

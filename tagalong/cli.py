@@ -728,7 +728,12 @@ def attach_conversation_hooks(tui, conversation, tts, attachments):
     )
     controller.transcript.start_coalesce_pump()
     bind_first_slice(
-        controller, conversation=conversation, tts=tts, attachments=attachments
+        controller,
+        conversation=conversation,
+        tts=tts,
+        attachments=attachments,
+        # Socket peers have no prompt of their own; the handler draws for them.
+        display=tui,
     )
     install_first_slice_hooks(tui, controller, actor)
     return controller, actor
@@ -927,6 +932,7 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
     bind_session_transcript_slice(
         controller,
         (conversation, submitter, attachments, controller.transcript),
+        display=host,
     )
 
     mic_activity, audio_activity = sound_taps(host)
