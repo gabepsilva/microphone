@@ -633,15 +633,19 @@ body {
 
 /* -- sidebar --------------------------------------------------------- */
 
-/* Pinned: the controls stay put however far the transcript is scrolled, and
-   only scroll on their own if they outgrow the window. */
+/* Fixed to the window, not to the document: the panel is the full height of
+   the screen and cannot move, whatever the transcript does. The grid track
+   beside it stays 22rem wide, so the chat never runs underneath it. */
 #sidebar {
-  position: sticky;
+  position: fixed;
   top: 0;
-  align-self: start;
+  right: 0;
+  bottom: 0;
+  width: 22rem;
   height: 100vh;
   border-left: 1px solid var(--line);
   background: var(--surface);
+  box-shadow: -12px 0 24px -20px #000;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0.5rem 1rem 1.5rem;
