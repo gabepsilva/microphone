@@ -190,12 +190,6 @@ class SwitchableSpeech:
         """Forward readiness to the installed engine."""
         self._current().wait_ready(timeout)
 
-    @property
-    def switching(self) -> bool:
-        """True while a provider or voice switch thread is still running."""
-        switch = self.switch
-        return switch is not None and switch.is_alive()
-
     def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
         """Start replacing the engine; report whether the switch was started.
 
