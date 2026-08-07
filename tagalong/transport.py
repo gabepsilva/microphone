@@ -13,6 +13,7 @@ refuses to start, rather than listen somewhere any local user can connect.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import struct
@@ -49,6 +50,10 @@ ACCEPT_TIMEOUT = 0.25
 JOIN_TIMEOUT = 2.0
 JSONRPC = "2.0"
 _FRAME_LIMIT_LABEL = f"{MAX_FRAME // (1024 * 1024)} MiB"
+# Upper bound for poll parking. Unbounded waits let a client pin a worker
+# thread past stop(), and values near time_t limits raise OverflowError
+# outside the JSON-RPC error path (#96 review).
+MAX_POLL_MS = 60_000
 
 
 class TransportError(Exception):
@@ -409,12 +414,16 @@ class LocalServer:
             timeout_ms = params["timeout_ms"]
             if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int | float):
                 raise TypeError("timeout_ms must be a number")
+            if not math.isfinite(timeout_ms):
+                raise ValueError("timeout_ms must be finite")
             if timeout_ms < 0:
                 raise ValueError("timeout_ms must be >= 0")
             # Park until an event arrives or the budget expires. A parked poll
             # holds this connection for the whole wait — Electron opens a
-            # second socket for commands (#96 G1).
-            session.subscribed.wait(float(timeout_ms) / 1000.0)
+            # second socket for commands (#96 G1). Clamp so a huge client
+            # budget cannot OverflowError or outlive LocalServer.stop().
+            budget_ms = min(float(timeout_ms), MAX_POLL_MS)
+            session.subscribed.wait(budget_ms / 1000.0)
         events = [
             {
                 "sequence": event.sequence,
