@@ -29,7 +29,4 @@ export type SubmitDecision =
   | { kind: "info"; text: string }
   | { kind: "error"; text: string };
 
-export function decideSubmit(
-  trimmedText: string,
-  catalog: CommandSpec[],
-): SubmitDecision;
+export function decideSubmit(rawText: string, catalog: CommandSpec[]): SubmitDecision;

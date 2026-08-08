@@ -144,13 +144,23 @@ describe("detail line (TUI detail_line parity)", () => {
 });
 
 describe("submit decision", () => {
-  // Caller strips once; these cases assume already-trimmed input.
   it("routes plain text as a message", () => {
     expect(decideSubmit("hello", CATALOG)).toEqual({
       kind: "message",
       text: "hello",
     });
     expect(decideSubmit("", CATALOG)).toEqual({ kind: "message", text: "" });
+  });
+
+  it("strips once so leading-space slash and trailing spaces match the TUI", () => {
+    // Acceptance #134: " /new" and "/new " are commands; messages ship trimmed.
+    expect(decideSubmit(" /new", CATALOG).kind).toBe("command");
+    expect(decideSubmit("/new ", CATALOG).kind).toBe("command");
+    expect(decideSubmit("  /clear  ", CATALOG).kind).toBe("command");
+    expect(decideSubmit(" hi ", CATALOG)).toEqual({
+      kind: "message",
+      text: "hi",
+    });
   });
 
   it("dispatches action-backed commands without leftover args", () => {
@@ -205,12 +215,5 @@ describe("submit decision", () => {
       kind: "error",
       text: "unknown command: /missing",
     });
-  });
-
-  it("expects the caller to strip once (does not re-trim)", () => {
-    // send() trims before calling. Untrimmed leading space would still be a
-    // message here — the strip-once contract lives at the call site.
-    expect(decideSubmit("/new", CATALOG).kind).toBe("command");
-    expect(decideSubmit(" /new", CATALOG).kind).toBe("message");
   });
 });

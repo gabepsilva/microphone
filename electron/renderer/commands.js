@@ -256,15 +256,17 @@ export function detailLine(spec) {
 /**
  * Decide what Enter on a compose line should do.
  *
- * Caller must pass already-trimmed text (strip once at `send()` entry so
- * classification and the wire payload share one value).
+ * Strips once here so classification and the message wire payload share one
+ * value (TUI parity: `event.message.text.strip()` before both branches).
+ * Leading-space slash lines become commands; trailing spaces do not ride
+ * `message.send`.
  *
- * @param {string} trimmedText
+ * @param {string} rawText
  * @param {CommandSpec[]} catalog
  * @returns {SubmitDecision}
  */
-export function decideSubmit(trimmedText, catalog) {
-  const text = String(trimmedText ?? "");
+export function decideSubmit(rawText, catalog) {
+  const text = String(rawText ?? "").trim();
   if (!text.startsWith("/")) {
     return { kind: "message", text };
   }

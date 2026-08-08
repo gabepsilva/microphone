@@ -63,8 +63,10 @@ const LIVE_BANNER = "live · session attached";
  * `.error` is red styling only. `.sticky` means "do not overwrite on
  * state.changed" — errors set both (default `sticky = isError`); topic-help
  * info sets sticky without error so a correct answer is not painted red.
- * Lifetime of sticky info is the next explicit `setBanner` (Q6(a)), not a
- * background poll: `clearBannerError` only clears when `.error` is set.
+ *
+ * Lifetime: sticky info survives `setBannerLive` and background
+ * `clearBannerError` polls; user-initiated `dispatch()` success restores
+ * LIVE_BANNER (retires sticky and error without a timer).
  *
  * @param {string} text
  * @param {boolean} isError
@@ -90,11 +92,13 @@ function setBannerLive() {
 }
 
 /**
- * Clear an error the banner is showing, because a call has just worked.
+ * Clear an error the banner is showing, because a background call worked.
  *
  * Sticky *info* is left alone: success polls (devices.list every 5s) must not
  * retire a help answer on a timer. Errors set both classes, so clearing an
  * error still drops stickiness via `setBanner(LIVE_BANNER, false)`.
+ * User-initiated success goes through `dispatch()`, which restores LIVE_BANNER
+ * unconditionally.
  */
 function clearBannerError() {
   if (banner.classList.contains("error")) {
@@ -300,7 +304,10 @@ async function dispatch(action, payload) {
     setBanner(error.message, true);
     return false;
   }
-  clearBannerError();
+  // User-initiated path only (the 5s interval never calls dispatch). Restore
+  // LIVE_BANNER so sticky topic-help does not outlive the next successful
+  // command or message — without coupling to background clearBannerError.
+  setBanner(LIVE_BANNER, false);
   return true;
 }
 
@@ -328,18 +335,17 @@ function markAttached(count) {
 }
 
 async function send() {
-  // Strip once at entry so classification and message.send share one value
-  // (TUI parity at tui.py on_prompt_input_submitted). Leading-space slash
-  // lines must not become prompts; trailing spaces must not ride the wire.
-  const trimmed = composeText.value.trim();
-  const decision = decideSubmit(trimmed, catalog);
+  // decideSubmit strips once (TUI parity) and classifies; message branch
+  // ships decision.text so trailing spaces never ride the wire.
+  const decision = decideSubmit(composeText.value, catalog);
   if (decision.kind === "error") {
     setBanner(decision.text, true);
     return;
   }
   if (decision.kind === "info") {
-    // Sticky, non-error: survives setBannerLive on partial ASR. Banner
-    // lifetime lives here in uncovered app.js — pure decideSubmit is tested.
+    // Sticky, non-error: survives setBannerLive on partial ASR until the next
+    // successful dispatch() restores LIVE_BANNER. Apply/lifetime stays in
+    // uncovered app.js — pure decideSubmit is tested.
     setBanner(decision.text, false, true);
     composeText.value = "";
     autoGrow();
