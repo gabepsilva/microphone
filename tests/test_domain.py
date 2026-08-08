@@ -922,17 +922,18 @@ def test_strip_chrome_removes_slack_noise_without_paraphrasing() -> None:
     """Selection chrome only — wording that must survive stays substring-intact."""
     assert strip_chrome("") == ""
     slack = (
-        "Gabriel Silva 10:42 AM Hey team - the new deploy is live:tada: "
+        "Gabriel Silva 10:42 AM Hey team - the new deploy is live :tada:\n"
         "rollback is `make rollback`\n"
-        "dashboard: 3 replies:eyes: 4:tada: 2 Edited quoted: "
-        '"we should watch p99 for an hour"\n'
+        ":eyes: 4 :tada: 2\n"
+        "3 replies\n"
+        'quoted: "we should watch p99 for an hour" (edited)\n'
         "Sounds right.\n"
         "I'll keep an eye on it and post at noon if anything drifts."
     )
     cleaned = strip_chrome(slack)
     assert cleaned == (
         "Hey team - the new deploy is live rollback is `make rollback` "
-        'dashboard: quoted: "we should watch p99 for an hour" Sounds right. '
+        'quoted: "we should watch p99 for an hour" Sounds right. '
         "I'll keep an eye on it and post at noon if anything drifts."
     )
     spoken = markdown_to_speech(cleaned)
@@ -951,9 +952,20 @@ def test_strip_chrome_header_is_first_line_only() -> None:
 
 
 def test_strip_chrome_same_line_reaction_counts_not_cross_line_replies() -> None:
-    """`:tada: 2` on one line must not swallow the next line's ``3 replies``."""
+    """`:tada: 2` on one line must not swallow the next line's prose replies."""
     text = "Live:tada: 2\n3 replies left in the thread."
-    assert strip_chrome(text) == "Live left in the thread."
+    assert strip_chrome(text) == "Live 3 replies left in the thread."
+
+
+def test_strip_chrome_preserves_ordinary_prose() -> None:
+    """Anchored chrome rules must leave clocks, reply phrases, and Edited intact."""
+    prose = (
+        "The build finished at 10:30:45 and we shipped. "
+        "Aspect ratio is 16:9:1 in the export. "
+        "She got 3 replies within a minute. "
+        "The contract was Edited by counsel before signing."
+    )
+    assert strip_chrome(prose) == prose
 
 
 def test_markdown_to_speech_url_punctuation_stays_with_the_sentence() -> None:

@@ -1414,6 +1414,8 @@ def test_speech_read_selection_speaks_cleaned_text_and_echoes() -> None:
         assert isinstance(outcome, Accepted)
         event = _await_terminal(subscription, outcome.request_id)
         assert event.name == "action.applied"
+        # Selection text must not ride action.applied into the EventLog.
+        assert event.payload.get("effective") is None
         assert any("deploy is live" in chunk for chunk in tts.spoken)
         assert ":tada:" not in " ".join(tts.spoken)
         assert "Gabriel Silva" not in " ".join(tts.spoken)

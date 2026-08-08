@@ -208,12 +208,20 @@ def markdown_to_speech(text: str) -> str:
 # Selection chrome (#128b). Kept out of markdown_to_speech — that path is on
 # every Codex reply (codex.py → speech_sink), and chrome rules must not strip
 # Taga quoting a Slack header back to the user.
-_EMOJI_SHORTCODE = re.compile(r":[a-zA-Z0-9_+-]+:")
+#
+# Chrome occupies structural positions (own line / trailing metadata). Whole-
+# body substitutions would delete ordinary English — clocks (`10:30:45`),
+# "3 replies", capitalized "Edited" — so each rule is anchored like
+# ``_LEADING_NAME_TIME`` below. Shortcodes require a letter so ``:30:`` inside
+# a timestamp never matches.
+_EMOJI_SHORTCODE = re.compile(r":[a-zA-Z][a-zA-Z0-9_+-]*:")
 # Reaction clusters like ``:eyes: 4`` / ``:tada: 2`` (same line only — do not
 # eat a following line's ``3 replies`` count across a newline).
-_REACTION_CLUSTER = re.compile(r"(?::[a-zA-Z0-9_+-]+:[ \t]*)+\d+")
-_REPLY_COUNT = re.compile(r"\b\d+\s+replies\b", re.IGNORECASE)
-_EDITED_TOKEN = re.compile(r"\bEdited\b")
+_REACTION_CLUSTER = re.compile(r"(?::[a-zA-Z][a-zA-Z0-9_+-]*:[ \t]*)+\d+")
+# Slack reply chrome is its own line ("3 replies"), never mid-sentence.
+_REPLY_COUNT_LINE = re.compile(r"(?m)^[ \t]*\d+[ \t]+replies?[ \t]*$")
+# Slack edit marker is parenthesised and trailing, not the word "Edited".
+_EDITED_TRAILING = re.compile(r"[ \t]*\(edited\)[ \t]*(?=\n|$)", re.IGNORECASE)
 # First-line-only Slack-ish header: Capitalized Name(s) then HH:MM AM/PM.
 # Unanchored would eat mid-paragraph "we shipped it at 10:42 AM".
 _LEADING_NAME_TIME = re.compile(
@@ -236,8 +244,8 @@ def strip_chrome(text: str) -> str:
     body = first + "".join(lines[1:])
     body = _REACTION_CLUSTER.sub(" ", body)
     body = _EMOJI_SHORTCODE.sub(" ", body)
-    body = _REPLY_COUNT.sub(" ", body)
-    body = _EDITED_TOKEN.sub(" ", body)
+    body = _REPLY_COUNT_LINE.sub(" ", body)
+    body = _EDITED_TRAILING.sub(" ", body)
     body = _SPEECH_WHITESPACE.sub(" ", body)
     body = _SPACE_BEFORE_PUNCT.sub(r"\1", body)
     return body.strip()

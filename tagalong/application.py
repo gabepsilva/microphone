@@ -619,7 +619,9 @@ def bind_read_aloud_slice(
                 chunker = SentenceChunker(tts.speak)
                 chunker.feed(cleaned)
                 chunker.flush()
-                controller.settle(request.id, cleaned)
+                # No effective payload — settle would publish it on action.applied
+                # into the shared EventLog (#128b S3); nobody reads it.
+                controller.settle(request.id)
             except Exception as error:
                 controller.fail(request.id, str(error))
 
