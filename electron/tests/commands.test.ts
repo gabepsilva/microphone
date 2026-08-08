@@ -180,14 +180,31 @@ describe("submit decision", () => {
     });
   });
 
-  it("leaves bare /help as a command so the menu can stay open", () => {
-    const decision = decideSubmit("/help", CATALOG);
-    expect(decision.kind).toBe("command");
-    if (decision.kind === "command") {
-      expect(decision.spec.name).toBe("help");
-      expect(decision.args).toEqual([]);
-    }
-    expect(decideSubmit("/?", CATALOG).kind).toBe("command");
+  it("asks for the full listing on bare /help, its alias, and bare /", () => {
+    // Bare help is not a dispatchable command: it has no action_id, and
+    // routing it as one drove completeSelectedCommand, which rewrote the
+    // prompt to `/help` and collapsed the menu to the `/help` row itself.
+    expect(decideSubmit("/help", CATALOG)).toEqual({ kind: "help" });
+    expect(decideSubmit("/?", CATALOG)).toEqual({ kind: "help" });
+    // `/` is bare help too, so "type /, read the menu, press Enter" is
+    // idempotent rather than `unknown command: /`.
+    expect(decideSubmit("/", CATALOG)).toEqual({ kind: "help" });
+    expect(decideSubmit("  /  ", CATALOG)).toEqual({ kind: "help" });
+  });
+
+  it("lists the whole catalog for the query bare help parks on", () => {
+    // The decision is only useful if `/` is the query that matches
+    // everything: showBareHelp writes `/`, and syncPalette recomputes rows
+    // from commandQuery of the prompt.
+    const query = commandQuery("/");
+    expect(query).toBe("");
+    expect(matchCommands(CATALOG, query ?? "x").map((row) => row.name)).toEqual([
+      "new",
+      "help",
+      "newer",
+    ]);
+    // What the old routing collapsed to, for contrast.
+    expect(matchCommands(CATALOG, "help").map((row) => row.name)).toEqual(["help"]);
   });
 
   it("answers /help <topic> with a detail line (info, not palette)", () => {

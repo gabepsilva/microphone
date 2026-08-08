@@ -27,6 +27,7 @@ export type SubmitDecision =
   | { kind: "command"; spec: CommandSpec; args: string[] }
   | { kind: "message"; text: string }
   | { kind: "info"; text: string }
+  | { kind: "help" }
   | { kind: "error"; text: string };
 
 export function decideSubmit(rawText: string, catalog: CommandSpec[]): SubmitDecision;
