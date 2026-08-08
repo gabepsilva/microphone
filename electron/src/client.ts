@@ -41,6 +41,7 @@ type SnapshotResult = {
 export type TranscriptWireEvent =
   | { name: "transcript.entry_added"; row: TranscriptRow }
   | { name: "transcript.entry_updated"; row: TranscriptRow }
+  | { name: "transcript.entry_removed"; id: number }
   | { name: "transcript.cleared" };
 
 /** JSON-RPC client for one TagAlong Unix socket. Injectable connect for tests. */
@@ -257,6 +258,15 @@ export class SessionEvents {
       this.onTranscriptEvent({ name: "transcript.cleared" });
       return;
     }
+    if (event.name === "transcript.entry_removed") {
+      const id = event.payload.id;
+      if (typeof id !== "number" || !Number.isFinite(id)) {
+        return;
+      }
+      this._transcript = this._transcript.filter((row) => row.id !== id);
+      this.onTranscriptEvent({ name: "transcript.entry_removed", id });
+      return;
+    }
     if (
       event.name !== "transcript.entry_added" &&
       event.name !== "transcript.entry_updated"
@@ -264,7 +274,11 @@ export class SessionEvents {
       return;
     }
     const rows = parseTranscriptRows([
-      { id: event.payload.id, entry: event.payload.entry },
+      {
+        id: event.payload.id,
+        provisional: event.payload.provisional,
+        entry: event.payload.entry,
+      },
     ]);
     const row = rows[0];
     if (row === undefined) {

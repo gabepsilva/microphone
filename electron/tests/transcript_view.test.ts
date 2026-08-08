@@ -122,6 +122,20 @@ describe("transcript_view hostile text", () => {
     applyTranscriptDomEvent(root, document, { name: "transcript.cleared" });
     expect(root.children).toHaveLength(0);
   });
+
+  it("removes a row on transcript.entry_removed", () => {
+    const { document, root } = makeDocument();
+    renderTranscriptSnapshot(root, document, [
+      { id: 1, entry: { kind: "speech", source: "Voice", text: "kept" } },
+      { id: 2, entry: { kind: "speech", source: "Voice", text: "echo" } },
+    ]);
+    applyTranscriptDomEvent(root, document, {
+      name: "transcript.entry_removed",
+      id: 2,
+    });
+    expect(root.children).toHaveLength(1);
+    expect(bodyText(root.children[0]!)).toBe("kept");
+  });
 });
 
 describe("transcript_view entry model", () => {

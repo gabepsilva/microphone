@@ -7,6 +7,7 @@ export type TranscriptRowLike = {
 
 export type TranscriptDomEvent = {
   name: string;
+  id?: number;
   row?: TranscriptRowLike;
 };
 
@@ -29,6 +30,7 @@ export type DomElement = {
   appendChild(child: DomElement): DomElement;
   replaceChildren(...nodes: DomElement[]): void;
   replaceWith(next: DomElement): void;
+  remove(): void;
 };
 
 export const CUT_OFF_LINE: string;

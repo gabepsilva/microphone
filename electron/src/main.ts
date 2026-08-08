@@ -1,3 +1,4 @@
+import { watch } from "node:fs";
 import path from "node:path";
 
 import { app, BrowserWindow, Menu, ipcMain } from "electron";
@@ -55,6 +56,25 @@ const sessionEvents = new SessionEvents(events, {
   },
 });
 
+/** Renderer soft-reload for `bun run dev` only — never in a normal start. */
+function enableDevRendererReload(): void {
+  if (process.env.TAGALONG_ELECTRON_DEV !== "1") {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  watch(path.join(__dirname, "..", "renderer"), { recursive: true }, () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      if (mainWindow !== null && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.reloadIgnoringCache();
+      }
+    }, 50);
+  });
+}
+
 async function createWindow(): Promise<void> {
   // No File/Edit/View/Window/Help: every entry it would offer is either a
   // lifecycle the TUI owns or a browser affordance this surface does not use.
@@ -86,6 +106,7 @@ void app.whenReady().then(async () => {
   // Show the window even when the TUI/socket is unhealthy — attach-only means
   // that case is expected, and an unbounded handshake must not hide the UI.
   await createWindow();
+  enableDevRendererReload();
   void sessionEvents.start().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error("tagalong subscribe failed:", message);

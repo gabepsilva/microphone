@@ -1016,7 +1016,9 @@ def test_snapshot_payload_includes_protocol_cursor() -> None:
     assert payload["instance"]
 
 
-def test_subscribe_snapshot_includes_accepted_transcript_rows(tmp_path: Path) -> None:
+def test_subscribe_snapshot_includes_provisional_transcript_rows(
+    tmp_path: Path,
+) -> None:
     from tagalong.presentation import Entry
 
     controller, server, client = wired(tmp_path)
@@ -1030,11 +1032,51 @@ def test_subscribe_snapshot_includes_accepted_transcript_rows(tmp_path: Path) ->
         client.call("initialize", {"client": "electron"})
         subscribed = client.call("subscribe")
         rows = cast(list[object], subscribed["transcript"])
-        assert len(rows) == 1
-        row = cast(dict[str, object], rows[0])
-        entry = cast(dict[str, object], row["entry"])
-        assert row["id"] == 1
-        assert entry["text"] == "kept"
+        assert len(rows) == 2
+        first = cast(dict[str, object], rows[0])
+        second = cast(dict[str, object], rows[1])
+        assert first["id"] == 1
+        assert first["provisional"] is False
+        assert cast(dict[str, object], first["entry"])["text"] == "kept"
+        assert second["id"] == 2
+        assert second["provisional"] is True
+        assert cast(dict[str, object], second["entry"])["text"] == "pending"
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_poll_delivers_provisional_commit_before_finish_turn(tmp_path: Path) -> None:
+    """Moonshine line breaks reach socket clients immediately (#Electron parity)."""
+    from tagalong.presentation import Entry
+
+    controller, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        entry = Entry(kind="speech", source="Voice", text="first phrase", stamp="1")
+        controller.transcript.append(entry, provisional=True)
+
+        polled = client.call("poll")
+        added = [
+            event
+            for event in polled["events"]
+            if event["name"] == "transcript.entry_added"
+        ]
+        assert len(added) == 1
+        payload = cast(dict[str, object], added[0]["payload"])
+        assert payload["provisional"] is True
+        assert cast(dict[str, object], payload["entry"])["text"] == "first phrase"
+
+        controller.transcript.accept([entry])
+        accepted = client.call("poll")
+        updated = [
+            event
+            for event in accepted["events"]
+            if event["name"] == "transcript.entry_updated"
+        ]
+        assert len(updated) == 1
+        assert cast(dict[str, object], updated[0]["payload"])["provisional"] is False
     finally:
         client.close()
         server.stop()

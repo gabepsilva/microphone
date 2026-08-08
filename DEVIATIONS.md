@@ -154,11 +154,12 @@ same opaque-id discipline as attachments. The file still lands under the
 configured transcript directory.
 
 ``transcript.save`` exports the **accepted-only** store view (issue #102 F5).
-Provisional speech (committed, not yet ``finish_turn``-accepted) stays visible
-in the TUI but is omitted from the export, matching the session recorder and
-the socket wire. Previously a save during the provisional window could write
-rows the session file would never contain after an echo reject — a bug fix,
-not a product change.
+Provisional speech (committed, not yet ``finish_turn``-accepted) is visible in
+the TUI and on the socket wire (``provisional: true``, retracted by
+``transcript.entry_removed`` on echo reject) so Electron matches live commits,
+but it is omitted from the export and the session recorder. Previously a save
+during the provisional window could write rows the session file would never
+contain after an echo reject — a bug fix, not a product change.
 
 The attachment registry is session-scoped, not actor-scoped: an id uploaded by
 one actor resolves for another. Milestone 8 records that as the intentional

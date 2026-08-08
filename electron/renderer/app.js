@@ -24,6 +24,7 @@ import {
   modelOptions,
   parseCodexCatalog,
 } from "./codex_catalog.js";
+import { bindSidebarResize } from "./sidebar_resize.js";
 import { parseSpeechCatalog, voiceOptionsIncluding } from "./speech_catalog.js";
 import {
   selectedProviderId,
@@ -136,14 +137,7 @@ function fillSelect(select, options, selected) {
   }
 }
 
-function syncEffective(state) {
-  document.getElementById("microphone-effective").textContent = state.microphone
-    ?.effective
-    ? `effective: ${state.microphone.effective}`
-    : "";
-  document.getElementById("audio-effective").textContent = state.audio_stream?.effective
-    ? `effective: ${state.audio_stream.effective}`
-    : "";
+function syncChannelDots(state) {
   document.getElementById("tts-voice-effective").textContent =
     voiceEffectiveText(state);
   document.getElementById("tts-provider-effective").textContent =
@@ -223,7 +217,7 @@ async function refreshDevices(state) {
     audioOptions,
     state.audio_stream?.desired ?? NO_AUDIO,
   );
-  syncEffective(state);
+  syncChannelDots(state);
 }
 
 async function refreshSpeechCatalog() {
@@ -270,7 +264,7 @@ function applyState(state) {
     audio.appendChild(opt);
   }
   audio.value = wanted;
-  syncEffective(state);
+  syncChannelDots(state);
   renderPartialLine(partialLine, state);
   applying = false;
   setBannerLive();
@@ -608,6 +602,10 @@ function bind() {
       commands["view.toggle_sidebar"]();
     });
   }
+  bindSidebarResize({
+    body: document.getElementById("body"),
+    handle: document.getElementById("sidebar-resize"),
+  });
   const fileInput = document.getElementById("compose-image");
   document.getElementById("attach-button").addEventListener("click", () => {
     fileInput.click();

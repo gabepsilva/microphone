@@ -11,6 +11,10 @@ ELECTRON_SKIP_BINARY_DOWNLOAD=1 bun install --frozen-lockfile
 
 # Local run: omit the skip flag once so the binary is present, then:
 bun run start
+
+# Live reload while editing: renderer/ soft-reloads the window; src/ rebuilds
+# and restarts Electron. Same socket prerequisites as start.
+bun run dev
 ```
 
 `bun run start` puts `node_modules/.bin` on `PATH` (a bare `electron` in the shell
@@ -18,7 +22,8 @@ will fail with `command not found`). On Linux the start script passes
 `--no-sandbox` so Chromium does not require a root-owned `chrome-sandbox`, and
 `--disable-gpu --disable-gpu-sandbox --in-process-gpu` (mirrored in main via
 `disableHardwareAcceleration()` / `commandLine.appendSwitch`) so a flaky GPU
-process cannot abort the window.
+process cannot abort the window. `bun run dev` sets `TAGALONG_ELECTRON_DEV=1`
+so main watches `renderer/` and reloads without a full process restart.
 
 Make targets from the repo root: `electron-typecheck`, `electron-lint`,
 `electron-format-check`, `electron-test`, `electron-coverage` (all use the
@@ -90,7 +95,7 @@ far-end applications), and Codex credentials as for a normal TUI session.
 5. **Device pickers**
    - Open **Microphone** / **Audio stream** selects — options come from
      `devices.list` (inputs via PortAudio, applications via PipeWire graph).
-   - Choose a mic; confirm TUI effective/desired update. Toggle mute both ways.
+   - Choose a mic; confirm the picker and live dot update. Toggle mute both ways.
 
 6. **Session actions**
    - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save

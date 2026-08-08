@@ -70,6 +70,12 @@
       </button>
 
       <aside id="sidebar">
+        <button
+          type="button"
+          id="sidebar-resize"
+          title="Drag to resize · double-click to reset"
+          aria-label="Resize settings panel"
+        ></button>
         <header class="sidebar-head">
           <button
             type="button"
@@ -111,7 +117,6 @@
               <select id="microphone"></select>
             </div>
             <div class="field-foot">
-              <span class="eff" id="microphone-effective"></span>
               <label class="switch"
                 ><input id="mic-mute" type="checkbox" /><span class="track"></span
                 ><span class="switch-label">mute</span></label
@@ -127,7 +132,6 @@
               <select id="audio-stream"></select>
             </div>
             <div class="field-foot">
-              <span class="eff" id="audio-effective"></span>
               <label class="switch"
                 ><input id="audio-mute" type="checkbox" /><span class="track"></span
                 ><span class="switch-label">mute</span></label

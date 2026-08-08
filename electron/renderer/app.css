@@ -27,7 +27,7 @@
   --radius: 12px;
   --radius-sm: 8px;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --mono: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  --sidebar-width: 22rem;
 }
 * {
   box-sizing: border-box;
@@ -44,14 +44,14 @@ body {
 body {
   margin: 0;
   font-family: var(--sans);
-  font-size: 19px;
+  font-size: 20px;
   line-height: 1.6;
   background: var(--bg);
   color: var(--text);
   /* Deliberately no -webkit-font-smoothing: on Linux it replaces subpixel
      rendering with grayscale antialiasing, which is what reads as blur.
-     Every size below is a whole pixel for the same reason — a half pixel
-     lands glyph stems off the pixel grid. */
+     The app uses one whole-pixel size (20px) for the same reason — a half
+     pixel lands glyph stems off the pixel grid. */
 }
 ::selection {
   background: var(--accent-soft);
@@ -69,7 +69,7 @@ body {
 
 #body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22rem;
+  grid-template-columns: minmax(0, 1fr) var(--sidebar-width);
   height: 100vh;
 }
 #body.sidebar-hidden {
@@ -77,6 +77,16 @@ body {
 }
 #body.sidebar-hidden #sidebar {
   display: none;
+}
+/* While dragging the divider, kill text selection and show the resize cursor
+   everywhere so the pointer does not flicker as it crosses the chat. */
+#body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+#body.sidebar-resizing * {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* -- chat column ----------------------------------------------------- */
@@ -123,7 +133,6 @@ body {
 }
 .status {
   color: var(--faint);
-  font-size: 16px;
   padding-bottom: 0.35rem;
   overflow-wrap: anywhere;
 }
@@ -157,7 +166,6 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 15px;
   color: var(--faint);
 }
 .msg-source {
@@ -188,8 +196,6 @@ body {
 }
 .msg-output {
   margin: 0.35rem 0 0;
-  font-family: var(--mono);
-  font-size: 16px;
   line-height: 1.45;
   color: var(--muted);
   white-space: pre-wrap;
@@ -200,7 +206,6 @@ body {
 }
 .msg-cutoff {
   margin-top: 0.4rem;
-  font-size: 16px;
   color: var(--danger);
 }
 
@@ -224,18 +229,6 @@ body {
   font-weight: 650;
   letter-spacing: -0.01em;
   line-height: 1.35;
-}
-.md-h1 {
-  font-size: 1.5rem;
-}
-.md-h2 {
-  font-size: 1.3rem;
-}
-.md-h3,
-.md-h4,
-.md-h5,
-.md-h6 {
-  font-size: 1.15rem;
 }
 .md-list {
   margin: 0 0 0.7rem;
@@ -269,8 +262,6 @@ body {
   overflow-x: auto;
 }
 .md-code code {
-  font-family: var(--mono);
-  font-size: 16px;
   line-height: 1.55;
   color: var(--text);
   white-space: pre;
@@ -280,7 +271,6 @@ body {
   position: absolute;
   top: 0.35rem;
   right: 0.6rem;
-  font-size: 14px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--faint);
@@ -298,8 +288,6 @@ body {
 }
 .md-code-inline {
   padding: 0.05rem 0.3rem;
-  font-family: var(--mono);
-  font-size: 16px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -321,7 +309,6 @@ body {
   display: block;
   overflow-x: auto;
   max-width: 100%;
-  font-size: 15px;
 }
 .md-table th,
 .md-table td {
@@ -360,7 +347,6 @@ body {
 
 .msg-note .msg-bubble {
   color: var(--faint);
-  font-size: 15px;
 }
 .msg-note .msg-meta {
   display: none;
@@ -373,8 +359,6 @@ body {
   padding: 0.55rem 0.8rem;
 }
 .msg-command .msg-body {
-  font-family: var(--mono);
-  font-size: 16px;
   color: var(--muted);
 }
 
@@ -401,13 +385,11 @@ body {
   border-radius: 14px;
   background: var(--surface-2);
   border: 1px solid var(--line);
-  font-size: 1.3rem;
   line-height: 1;
   white-space: nowrap;
 }
 .splash-title {
   margin: 0;
-  font-size: 1.6rem;
   font-weight: 650;
   letter-spacing: -0.01em;
 }
@@ -423,7 +405,6 @@ body {
 }
 .splash-col-head {
   margin: 0 0 0.5rem;
-  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -443,7 +424,6 @@ body {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 15px;
   text-align: center;
 }
 
@@ -457,7 +437,6 @@ body {
   max-width: 46rem;
   margin: 0 auto;
   width: 100%;
-  font-size: 16px;
   color: var(--faint);
   min-height: 1.9rem;
 }
@@ -551,7 +530,6 @@ body {
   border: none;
   background: var(--surface-3);
   color: var(--muted);
-  font-size: 18px;
   line-height: 1;
   cursor: pointer;
 }
@@ -579,7 +557,6 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 16px;
 }
 /* Above the prompt: the list opens upward, so the gap belongs underneath it. */
 #command-palette {
@@ -616,12 +593,10 @@ body {
 }
 .command-aliases {
   color: var(--faint);
-  font-size: 15px;
   white-space: nowrap;
 }
 .command-summary {
   color: var(--muted);
-  font-size: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -629,7 +604,6 @@ body {
 .command-empty {
   padding: 0.3rem 0.6rem;
   color: var(--faint);
-  font-size: 16px;
 }
 
 #promptfoot {
@@ -639,7 +613,6 @@ body {
   max-width: 46rem;
   margin: 0.45rem auto 0;
   padding: 0 0.9rem;
-  font-size: 15px;
   color: var(--faint);
 }
 #policy-chip {
@@ -650,13 +623,13 @@ body {
 
 /* Fixed to the window, not to the document: the panel is the full height of
    the screen and cannot move, whatever the transcript does. The grid track
-   beside it stays 22rem wide, so the chat never runs underneath it. */
+   beside it shares --sidebar-width, so the chat never runs underneath it. */
 #sidebar {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
-  width: 22rem;
+  width: var(--sidebar-width);
   height: 100vh;
   border-left: 1px solid var(--line);
   background: var(--surface);
@@ -664,6 +637,41 @@ body {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0.5rem 1rem 1.5rem;
+}
+/* Hit target glued to the panel's left edge (fixed, so scroll inside the
+   panel cannot carry it away). A hairline appears on hover. */
+#sidebar-resize {
+  position: fixed;
+  top: 0;
+  right: calc(var(--sidebar-width) - 3px);
+  width: 6px;
+  height: 100vh;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  z-index: 3;
+}
+#sidebar-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+#sidebar-resize:hover::after,
+#sidebar-resize.active::after,
+#sidebar-resize:focus-visible::after {
+  background: var(--accent);
+}
+#sidebar-resize:focus-visible {
+  outline: none;
+}
+#body.sidebar-hidden #sidebar-resize {
+  display: none;
 }
 .panel {
   padding: 0.9rem 0;
@@ -674,8 +682,9 @@ body {
 }
 .panel-head {
   margin: 0 0 0.6rem;
-  font-size: 14px;
-  font-weight: 600;
+  /* Half of the h2 UA size (~30px at the 20px app face). */
+  font-size: 20px;
+  font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--faint);
@@ -700,22 +709,21 @@ body {
 }
 .field-label {
   color: var(--muted);
-  font-size: 16px;
 }
 .field-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.35rem;
   min-height: 1.25rem;
 }
 .eff {
   color: var(--faint);
-  font-size: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-right: auto;
 }
 .dot {
   width: 7px;
@@ -743,7 +751,6 @@ input[type="number"] {
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
-  font-size: 16px;
 }
 select:hover,
 input:hover {
@@ -784,7 +791,6 @@ textarea:focus {
 }
 .unit {
   color: var(--faint);
-  font-size: 15px;
 }
 
 .switch {
@@ -834,7 +840,6 @@ textarea:focus {
 }
 .switch-label {
   color: var(--faint);
-  font-size: 15px;
 }
 
 .actions {
@@ -844,7 +849,6 @@ textarea:focus {
 }
 button {
   font: inherit;
-  font-size: 16px;
   color: var(--muted);
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -870,7 +874,6 @@ button:hover {
   height: 1.75rem;
   padding: 0;
   border-radius: 50%;
-  font-size: 18px;
   line-height: 1;
 }
 #sidebar-restore {

@@ -3,7 +3,9 @@
 The Textual app may still paint from the same ``Entry`` objects, but this store
 is the source of truth for save, the session recorder's accepted view, and the
 socket wire. Provisional speech (committed, not yet ``finish_turn``-accepted)
-stays in-process until accept; rejected provisionals never publish.
+is published immediately so socket clients match the TUI's live commits; a
+``provisional`` flag marks them, and ``entry_removed`` retracts an echo reject.
+Save and the session recorder still read the accepted-only view.
 
 Streaming deltas are accepted synchronously so the Codex worker never waits on
 clients. ``entry_updated`` publishes are coalesced: at most one per open row
@@ -30,11 +32,12 @@ FLUSH_INTERVAL_SECONDS = 0.05
 
 @dataclass
 class TranscriptRow:
-    """One store-owned row: optional wire id, live ``Entry``, provisional flag.
+    """One store-owned row: wire id, live ``Entry``, provisional flag.
 
-    Monotonic ids are assigned when a row becomes accepted (non-provisional
-    ``append``, or ``accept``), so id order matches ``entry_added`` publish
-    order. Provisionals are identity-keyed only until then.
+    Monotonic ids are assigned on ``append`` (accepted or provisional) so
+    ``entry_added`` order matches insertion order for every socket client.
+    ``accept`` only clears the provisional flag; ``reject`` publishes
+    ``entry_removed``.
     """
 
     entry: Entry
@@ -107,21 +110,16 @@ class TranscriptStore:
             thread.join(timeout=1.0)
 
     def append(self, entry: Entry, *, provisional: bool = False) -> int | None:
-        """Append *entry*; assign a wire id and publish only when accepted."""
+        """Append *entry*, assign a wire id, and publish ``entry_added``."""
         with self._lock:
-            if provisional:
-                row = TranscriptRow(entry=entry, provisional=True)
-                self._rows.append(row)
-                self._by_entry[id(entry)] = row
-                return None
             row_id = self._allocate_id_unlocked()
-            row = TranscriptRow(entry=entry, id=row_id, provisional=False)
+            row = TranscriptRow(entry=entry, id=row_id, provisional=provisional)
             self._rows.append(row)
             self._by_id[row_id] = row
             self._by_entry[id(entry)] = row
             self._emit_unlocked(
                 "transcript.entry_added",
-                {"id": row_id, "entry": self._payload_unlocked(row)},
+                self._row_event_unlocked(row),
             )
             return row_id
 
@@ -132,7 +130,7 @@ class TranscriptStore:
         with self._lock:
             row = self._row_for_entry_unlocked(entry)
             row.entry.text += delta
-            if not row.provisional and row.id is not None:
+            if row.id is not None:
                 self._dirty.add(row.id)
 
     def finalize(
@@ -153,7 +151,7 @@ class TranscriptStore:
                 row.entry.seconds = seconds
             if exit_code is not None:
                 row.entry.exit_code = exit_code
-            if not row.provisional and row.id is not None:
+            if row.id is not None:
                 self._dirty.add(row.id)
             self._flush_updates_unlocked()
 
@@ -164,39 +162,33 @@ class TranscriptStore:
         with self._lock:
             row = self._row_for_entry_unlocked(entry)
             row.entry.output.append(delta)
-            if not row.provisional and row.id is not None:
+            if row.id is not None:
                 self._dirty.add(row.id)
 
     def accept(self, entries: Iterable[Entry]) -> None:
-        """Assign wire ids to provisional rows and publish ``entry_added``.
+        """Clear the provisional flag and publish ``entry_updated``.
 
-        Accepted rows move to the end of the store so store order matches
-        publish / append-blind client order (a note may have landed while the
-        speech was still provisional). That reorder is load-bearing for F5:
-        save, the session recorder, and the wire all read this accepted order,
-        so a cosmetic "restore insertion order" change would re-diverge them.
+        Ids and store order stay as inserted: clients already saw the
+        provisional ``entry_added``, so reordering on accept would desync
+        every append-blind socket view from the live transcript.
         """
         with self._lock:
             for entry in entries:
                 row = self._by_entry.get(id(entry))
                 if row is None or not row.provisional:
                     continue
-                self._rows.remove(row)
-                row_id = self._allocate_id_unlocked()
-                row.id = row_id
                 row.provisional = False
-                self._rows.append(row)
-                self._by_id[row_id] = row
-                self._emit_unlocked(
-                    "transcript.entry_added",
-                    {"id": row_id, "entry": self._payload_unlocked(row)},
-                )
+                if row.id is not None:
+                    self._emit_unlocked(
+                        "transcript.entry_updated",
+                        self._row_event_unlocked(row),
+                    )
 
     def reject(self, entries: Iterable[Entry]) -> None:
-        """Drop provisional rows. They were never on the wire.
+        """Drop provisional rows and publish ``entry_removed`` for each.
 
-        Non-provisional matches are kept: removing a published row without an
-        ``entry_removed`` event would desync every socket client.
+        Non-provisional matches are kept: removing an accepted row without a
+        matching product path would desync every socket client.
         """
         with self._lock:
             rejected = {id(entry) for entry in entries}
@@ -210,6 +202,10 @@ class TranscriptStore:
                     if row.id is not None:
                         self._by_id.pop(row.id, None)
                         self._dirty.discard(row.id)
+                        self._emit_unlocked(
+                            "transcript.entry_removed",
+                            {"id": row.id},
+                        )
                     continue
                 kept.append(row)
             self._rows = kept
@@ -258,12 +254,12 @@ class TranscriptStore:
             return self._payload_unlocked(self._by_id[row_id])
 
     def snapshot_rows(self) -> tuple[Mapping[str, object], ...]:
-        """Accepted rows as ``{id, entry}`` dicts for a subscribe snapshot."""
+        """All wired rows as ``{id, provisional, entry}`` for subscribe."""
         with self._lock:
             return tuple(
-                {"id": row.id, "entry": self._payload_unlocked(row)}
+                self._row_event_unlocked(row)
                 for row in self._rows
-                if not row.provisional and row.id is not None
+                if row.id is not None
             )
 
     def _allocate_id_unlocked(self) -> int:
@@ -293,16 +289,23 @@ class TranscriptStore:
         self._dirty.clear()
         for row_id in dirty:
             row = self._by_id.get(row_id)
-            if row is None or row.provisional:
+            if row is None:
                 continue
             self._emit_unlocked(
                 "transcript.entry_updated",
-                {"id": row_id, "entry": self._payload_unlocked(row)},
+                self._row_event_unlocked(row),
             )
 
     def _emit_unlocked(self, name: str, payload: Mapping[str, object]) -> None:
         if self._publish is not None:
             self._publish(name, payload)
+
+    def _row_event_unlocked(self, row: TranscriptRow) -> dict[str, object]:
+        return {
+            "id": row.id,
+            "provisional": row.provisional,
+            "entry": self._payload_unlocked(row),
+        }
 
     @staticmethod
     def _payload_unlocked(row: TranscriptRow) -> dict[str, object]:

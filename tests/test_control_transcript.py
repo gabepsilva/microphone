@@ -34,63 +34,87 @@ def test_accepted_view_excludes_provisional_rows() -> None:
     assert [entry.text for entry in store.transcript_entries()] == ["kept"]
 
 
-def test_provisional_append_assigns_no_id_until_accept() -> None:
+def test_provisional_append_publishes_immediately() -> None:
     published: list[tuple[str, dict[str, object]]] = []
     store = TranscriptStore(
         publish=lambda name, payload: published.append((name, dict(payload)))
     )
     entry = Entry(kind="speech", source="Voice", text="hi")
-    assert store.append(entry, provisional=True) is None
-    assert store.id_for(entry) is None
-    assert published == []
-
-    store.accept([entry])
-    row_id = store.id_for(entry)
+    row_id = store.append(entry, provisional=True)
     assert row_id == 1
+    assert store.id_for(entry) == 1
     assert published == [
         (
             "transcript.entry_added",
-            {"id": row_id, "entry": store.row_payload(row_id)},
+            {
+                "id": 1,
+                "provisional": True,
+                "entry": store.row_payload(1),
+            },
+        )
+    ]
+
+    published.clear()
+    store.accept([entry])
+    assert published == [
+        (
+            "transcript.entry_updated",
+            {
+                "id": 1,
+                "provisional": False,
+                "entry": store.row_payload(1),
+            },
         )
     ]
 
 
-def test_accept_after_interleaved_note_publishes_in_store_order() -> None:
-    """Wire id order matches store order even when a note lands mid-turn."""
-    published: list[tuple[int, str]] = []
+def test_accept_keeps_insertion_order_when_a_note_lands_mid_turn() -> None:
+    """Live wire order matches insertion; accept only clears provisional."""
+    published: list[tuple[int, str, bool | None]] = []
 
     def capture(name: str, payload: object) -> None:
         data = dict(payload) if isinstance(payload, dict) else {}
         raw_id = data.get("id")
-        published.append((raw_id if isinstance(raw_id, int) else -1, name))
+        flag = data.get("provisional")
+        published.append(
+            (
+                raw_id if isinstance(raw_id, int) else -1,
+                name,
+                flag if isinstance(flag, bool) else None,
+            )
+        )
 
     store = TranscriptStore(publish=capture)
-    echo = Entry(kind="speech", source="Voice", text="hello")
-    store.append(echo, provisional=True)
-    store.append(Entry(kind="note", text="echo suppressed"))
-    store.accept([echo])
+    speech = Entry(kind="speech", source="Voice", text="hello")
+    store.append(speech, provisional=True)
+    store.append(Entry(kind="note", text="still listening"))
+    store.accept([speech])
 
-    assert [row.entry.text for row in store.rows()] == ["echo suppressed", "hello"]
+    assert [row.entry.text for row in store.rows()] == ["hello", "still listening"]
     assert [row.id for row in store.rows()] == [1, 2]
     assert published == [
-        (1, "transcript.entry_added"),
-        (2, "transcript.entry_added"),
+        (1, "transcript.entry_added", True),
+        (2, "transcript.entry_added", False),
+        (1, "transcript.entry_updated", False),
     ]
 
 
-def test_reject_removes_provisional_without_publishing() -> None:
-    published: list[str] = []
-    store = TranscriptStore(publish=lambda name, _payload: published.append(name))
+def test_reject_publishes_entry_removed() -> None:
+    published: list[tuple[str, dict[str, object]]] = []
+    store = TranscriptStore(
+        publish=lambda name, payload: published.append((name, dict(payload)))
+    )
     kept = Entry(kind="note", text="kept")
     store.append(kept)
     published.clear()
     entry = Entry(kind="speech", source="Voice", text="echo")
     store.append(entry, provisional=True)
+    published.clear()
 
     store.reject([entry])
 
     assert [row.text for row in store.entries(include_provisional=True)] == ["kept"]
-    assert published == []
+    assert published == [("transcript.entry_removed", {"id": 2})]
 
 
 def test_reject_keeps_already_accepted_rows() -> None:
