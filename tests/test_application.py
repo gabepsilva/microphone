@@ -1400,7 +1400,7 @@ def test_speech_read_selection_speaks_cleaned_text_and_echoes() -> None:
         controller,
         tts=tts,
         read_selection=lambda: (
-            "Gabriel Silva 10:42 AM Hello **team** — the deploy is live :tada:"
+            "Gabriel Silva 10:42 AM Hello **team** — the deploy is live:tada:"
         ),
     )
     # Simulate Codex mid-reply: its queued text will be orphaned by begin_turn.

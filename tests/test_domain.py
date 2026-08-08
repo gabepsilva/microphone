@@ -953,7 +953,7 @@ def test_strip_chrome_header_is_first_line_only() -> None:
 
 def test_strip_chrome_same_line_reaction_counts_not_cross_line_replies() -> None:
     """`:tada: 2` on one line must not swallow the next line's prose replies."""
-    text = "Live :tada: 2\n3 replies left in the thread."
+    text = "Live:tada: 2\n3 replies left in the thread."
     assert strip_chrome(text) == "Live 3 replies left in the thread."
 
 
