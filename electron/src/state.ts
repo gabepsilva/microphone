@@ -64,6 +64,7 @@ export type TranscriptEntry = {
 
 export type TranscriptRow = {
   id: number;
+  provisional: boolean;
   entry: TranscriptEntry;
 };
 
@@ -245,6 +246,7 @@ export function parseTranscriptRows(value: unknown): TranscriptRow[] {
     const fields = entry as Record<string, unknown>;
     rows.push({
       id,
+      provisional: Boolean(record.provisional),
       entry: {
         kind: typeof fields.kind === "string" ? fields.kind : "",
         source: typeof fields.source === "string" ? fields.source : "",

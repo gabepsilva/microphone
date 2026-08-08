@@ -45,6 +45,9 @@ export function makeDocument(): { document: FakeDocument; root: FakeNode } {
       replaceWith(_next: DomElement) {
         void _next;
       },
+      remove() {
+        /* parent wiring fills this in via patchTree */
+      },
     };
     return node;
   };
@@ -63,6 +66,12 @@ export function makeDocument(): { document: FakeDocument; root: FakeNode } {
           parent.children[index] = next as FakeNode;
         }
         patchTree(parent);
+      };
+      child.remove = () => {
+        const index = parent.children.indexOf(child);
+        if (index >= 0) {
+          parent.children.splice(index, 1);
+        }
       };
       patchTree(child);
     }

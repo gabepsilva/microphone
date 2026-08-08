@@ -241,6 +241,7 @@ describe("parseTranscriptRows", () => {
     ).toEqual([
       {
         id: 2,
+        provisional: false,
         entry: {
           kind: "Voice",
           source: "mic",
@@ -252,6 +253,35 @@ describe("parseTranscriptRows", () => {
           exit_code: 0,
           streaming: false,
           seconds: 1.5,
+        },
+      },
+    ]);
+  });
+
+  it("keeps the provisional flag from the wire envelope", () => {
+    expect(
+      parseTranscriptRows([
+        {
+          id: 1,
+          provisional: true,
+          entry: { kind: "speech", source: "Voice", text: "pending" },
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 1,
+        provisional: true,
+        entry: {
+          kind: "speech",
+          source: "Voice",
+          text: "pending",
+          stamp: "",
+          reply_to: "",
+          interrupted: false,
+          output: [],
+          exit_code: null,
+          streaming: false,
+          seconds: null,
         },
       },
     ]);
@@ -543,9 +573,23 @@ describe("SessionEvents", () => {
 
     fake.respondTo("poll", {
       lost: false,
-      events: [{ sequence: 4, name: "transcript.cleared", payload: {} }],
+      events: [
+        {
+          sequence: 4,
+          name: "transcript.entry_removed",
+          payload: { id: 2 },
+        },
+      ],
     });
     await waitForMethodCount(fake, "poll", 3);
+    expect(session.transcript.map((row) => row.entry.text)).toEqual(["hi"]);
+    expect(wireEvents.at(-1)?.name).toBe("transcript.entry_removed");
+
+    fake.respondTo("poll", {
+      lost: false,
+      events: [{ sequence: 5, name: "transcript.cleared", payload: {} }],
+    });
+    await waitForMethodCount(fake, "poll", 4);
     expect(session.transcript).toEqual([]);
     expect(wireEvents.at(-1)?.name).toBe("transcript.cleared");
 
@@ -553,11 +597,11 @@ describe("SessionEvents", () => {
     fake.respondTo("poll", {
       lost: false,
       events: [
-        { sequence: 5, name: "transcript.entry_added", payload: { id: "bad" } },
-        { sequence: 6, name: "transcript.other", payload: {} },
+        { sequence: 6, name: "transcript.entry_added", payload: { id: "bad" } },
+        { sequence: 7, name: "transcript.other", payload: {} },
       ],
     });
-    await waitForMethodCount(fake, "poll", 4);
+    await waitForMethodCount(fake, "poll", 5);
     expect(session.transcript).toEqual([]);
 
     session.stop();

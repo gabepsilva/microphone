@@ -100,7 +100,7 @@ class Snapshot:
     instance: str
     sequence: int
     state: AppState
-    # Accepted transcript rows (issue #102 B1); provisionals stay off the wire.
+    # Live transcript rows (issue #102 B1), including provisional speech.
     transcript: tuple[Mapping[str, object], ...] = ()
     protocol_version: int = PROTOCOL_VERSION
 

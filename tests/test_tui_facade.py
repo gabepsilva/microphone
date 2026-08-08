@@ -117,7 +117,7 @@ def test_transcript_save_view_excludes_provisional_rows(tui) -> None:
     assert [entry.text for entry in facade.transcript_entries()] == ["maybe echo"]
 
 
-def test_controller_adopts_tui_store_and_publishes_accept(tui) -> None:
+def test_controller_adopts_tui_store_and_publishes_commit(tui) -> None:
     from tagalong.control import Controller
 
     facade = tui.VoiceCodexTUI()
@@ -127,14 +127,17 @@ def test_controller_adopts_tui_store_and_publishes_accept(tui) -> None:
     async def body(pilot):
         facade.commit(tui.VOICE, "hi")
         await pilot.pause()
-        assert [event.name for event in subscription.drain()] == []
+        assert [event.name for event in subscription.drain()] == [
+            "transcript.entry_added"
+        ]
         facade.finish_turn(tui.VOICE, accepted=True)
         await pilot.pause()
 
     drive(facade, body)
 
     names = [event.name for event in subscription.drain()]
-    assert names == ["transcript.entry_added"]
+    assert names == ["transcript.entry_updated"]
+    assert controller.transcript.rows()[0].provisional is False
 
 
 def test_partials_mirror_onto_controller_app_state(tui) -> None:

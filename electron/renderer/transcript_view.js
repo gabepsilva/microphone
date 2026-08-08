@@ -214,11 +214,19 @@ export function renderTranscriptSnapshot(list, document, rows) {
  * Apply an incremental transcript event to a list already on screen.
  * @param {HTMLElement} list
  * @param {Document} document
- * @param {{ name: string, row?: { id: number, entry: Record<string, unknown> } }} event
+ * @param {{ name: string, id?: number, row?: { id: number, entry: Record<string, unknown> } }} event
  */
 export function applyTranscriptDomEvent(list, document, event) {
   if (event.name === "transcript.cleared") {
     list.replaceChildren();
+    return;
+  }
+  if (event.name === "transcript.entry_removed") {
+    const wanted = String(event.id);
+    const existing = [...list.children].find((child) => child.dataset?.id === wanted);
+    if (existing !== undefined) {
+      existing.remove();
+    }
     return;
   }
   const row = event.row;
