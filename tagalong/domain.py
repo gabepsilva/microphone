@@ -213,11 +213,12 @@ def markdown_to_speech(text: str) -> str:
 # body substitutions would delete ordinary English — clocks (`10:30:45`),
 # "3 replies", capitalized "Edited" — so each rule is anchored like
 # ``_LEADING_NAME_TIME`` below. Shortcodes require a letter so ``:30:`` inside
-# a timestamp never matches.
-_EMOJI_SHORTCODE = re.compile(r":[a-zA-Z][a-zA-Z0-9_+-]*:")
+# a timestamp never matches, and ``(?<!\w)`` so namespaced keys like ``a:b:c``
+# survive (Slack shortcodes are whitespace- or line-start-preceded).
+_EMOJI_SHORTCODE = re.compile(r"(?<!\w):[a-zA-Z][a-zA-Z0-9_+-]*:")
 # Reaction clusters like ``:eyes: 4`` / ``:tada: 2`` (same line only — do not
 # eat a following line's ``3 replies`` count across a newline).
-_REACTION_CLUSTER = re.compile(r"(?::[a-zA-Z][a-zA-Z0-9_+-]*:[ \t]*)+\d+")
+_REACTION_CLUSTER = re.compile(r"(?:(?<!\w):[a-zA-Z][a-zA-Z0-9_+-]*:[ \t]*)+\d+")
 # Slack reply chrome is its own line ("3 replies"), never mid-sentence.
 _REPLY_COUNT_LINE = re.compile(r"(?m)^[ \t]*\d+[ \t]+replies?[ \t]*$")
 # Slack edit marker is parenthesised and trailing, not the word "Edited".

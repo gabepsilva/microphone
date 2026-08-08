@@ -953,7 +953,7 @@ def test_strip_chrome_header_is_first_line_only() -> None:
 
 def test_strip_chrome_same_line_reaction_counts_not_cross_line_replies() -> None:
     """`:tada: 2` on one line must not swallow the next line's prose replies."""
-    text = "Live:tada: 2\n3 replies left in the thread."
+    text = "Live :tada: 2\n3 replies left in the thread."
     assert strip_chrome(text) == "Live 3 replies left in the thread."
 
 
@@ -962,6 +962,7 @@ def test_strip_chrome_preserves_ordinary_prose() -> None:
     prose = (
         "The build finished at 10:30:45 and we shipped. "
         "Aspect ratio is 16:9:1 in the export. "
+        "Use the key path a:b:c in the config. "
         "She got 3 replies within a minute. "
         "The contract was Edited by counsel before signing."
     )
