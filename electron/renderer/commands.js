@@ -272,11 +272,10 @@ export function decideSubmit(rawText, catalog) {
     return { kind: "message", text };
   }
   const specs = Array.isArray(catalog) ? catalog : [];
-  // A bare `/` lists the catalog rather than failing, so "type `/`, read the
-  // menu, press Enter" is idempotent instead of `unknown command: /`.
-  if (text === "/") {
-    return { kind: "help" };
-  }
+  // No bare-`/` case on purpose. A `/` always leaves the menu open, and Enter
+  // then takes the highlighted row, so this function is not on that journey --
+  // the TUI does the same (tui.py on_prompt_input_submitted), which is the
+  // parity this issue is about.
   const spec = findCommand(specs, text);
   if (spec === null) {
     return { kind: "error", text: `unknown command: ${text}` };

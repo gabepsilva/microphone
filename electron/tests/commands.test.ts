@@ -180,16 +180,24 @@ describe("submit decision", () => {
     });
   });
 
-  it("asks for the full listing on bare /help, its alias, and bare /", () => {
+  it("asks for the full listing on bare /help and its alias", () => {
     // Bare help is not a dispatchable command: it has no action_id, and
     // routing it as one drove completeSelectedCommand, which rewrote the
     // prompt to `/help` and collapsed the menu to the `/help` row itself.
     expect(decideSubmit("/help", CATALOG)).toEqual({ kind: "help" });
     expect(decideSubmit("/?", CATALOG)).toEqual({ kind: "help" });
-    // `/` is bare help too, so "type /, read the menu, press Enter" is
-    // idempotent rather than `unknown command: /`.
-    expect(decideSubmit("/", CATALOG)).toEqual({ kind: "help" });
-    expect(decideSubmit("  /  ", CATALOG)).toEqual({ kind: "help" });
+  });
+
+  it("does not special-case a bare /, which never reaches here", () => {
+    // A `/` keeps the menu open, and app.js prompt.send prefers the
+    // highlighted row, so Enter runs `/new` and decideSubmit is not called.
+    // The TUI does the same -- driving its prompt with "/" then Enter runs
+    // `/new` -- so this is the parity the issue asks for, not a gap to patch.
+    // Reachable only with an empty catalog, where an error beats an empty menu.
+    expect(decideSubmit("/", CATALOG)).toEqual({
+      kind: "error",
+      text: "unknown command: /",
+    });
   });
 
   it("lists the whole catalog for the query bare help parks on", () => {
