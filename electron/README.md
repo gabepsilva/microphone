@@ -25,6 +25,12 @@ will fail with `command not found`). On Linux the start script passes
 process cannot abort the window. `bun run dev` sets `TAGALONG_ELECTRON_DEV=1`
 so main watches `renderer/` and reloads without a full process restart.
 
+**System tray (#128a):** mute toggles live in a StatusNotifier tray menu when the
+session owns `org.kde.StatusNotifierWatcher` (e.g. Ubuntu with
+`ubuntu-appindicators`). On stock GNOME without that host, Electron's `Tray`
+silently shows no icon — that is expected, not a crash. Closing the window still
+quits the app; the tray does not keep a headless session alive.
+
 Make targets from the repo root: `electron-typecheck`, `electron-lint`,
 `electron-format-check`, `electron-test`, `electron-coverage` (all use the
 skip-download install). `VERIFY_ELECTRON` runs `electron-coverage`, which is
@@ -96,6 +102,13 @@ far-end applications), and Codex credentials as for a normal TUI session.
    - Open **Microphone** / **Audio stream** selects — options come from
      `devices.list` (inputs via PortAudio, applications via PipeWire graph).
    - Choose a mic; confirm the picker and live dot update. Toggle mute both ways.
+
+5b. **System tray** (#128a)
+
+- On a StatusNotifier-hosted session, expect a tray icon after start. Mute /
+  unmute from the tray menu and confirm the sidebar checkboxes track the same
+  `microphone_muted` / `audio_stream_muted` state (and the reverse). Closing the
+  window still quits — no Quit item, no background-only tray.
 
 6. **Session actions**
    - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save
