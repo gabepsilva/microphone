@@ -93,6 +93,23 @@ are connected, so an input can be selected later without restarting.
 and the exclusive flock; Textual is optional in-process; clients attach over the
 Unix socket; the session exits with the process (SIGINT/SIGTERM).
 
+Make targets wrap the combinations, waiting for the socket before they attach a
+window and stopping what they started (`tools/start.sh`):
+
+```bash
+make start          # the everyday one — same as start-ui
+make start-tui      # TUI only
+make start-ui       # Electron over a live session, or a --headless one it starts
+make start-ui-tui   # TUI in this terminal, Electron alongside it
+make start DEV=0    # plain launch instead of the hot-reload watcher
+```
+
+`DEV=1` (the default) runs Electron under `bun run dev`: renderer edits
+soft-reload the window, `electron/src/` edits rebuild and restart it. Python
+changes need a session restart either way, since the client only attaches.
+Stop these with Ctrl-C in the terminal that started them — closing the Electron
+window leaves the dev watcher running.
+
 ## Session transcripts
 
 Every finished transcript row — Voice, Text, Audio, Taga answers, reasoning,
