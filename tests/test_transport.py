@@ -275,7 +275,7 @@ def test_speech_catalog_offers_curated_voices_with_download_flags(
                 "downloaded": True,
             },
             {
-                "id": "en_US-amy-medium",
+                "id": "en_US-sam-medium",
                 "label": "Amy medium",
                 "downloaded": False,
             },
@@ -292,7 +292,7 @@ def test_speech_catalog_offers_curated_voices_with_download_flags(
                     "downloaded": True,
                 },
                 {
-                    "id": "en_US-amy-medium",
+                    "id": "en_US-sam-medium",
                     "label": "Amy medium",
                     "downloaded": False,
                 },
@@ -904,16 +904,16 @@ def test_apply_state_fragment_accepts_voice_mappings_and_remembered_ids() -> Non
     apply_state_fragment(
         state,
         {
-            "tts_voice": {"desired": "en_US-amy-medium", "effective": None},
-            "piper_voice": "en_US-amy-medium",
+            "tts_voice": {"desired": "en_US-sam-medium", "effective": None},
+            "piper_voice": "en_US-sam-medium",
             "edge_voice": "en-US-JennyNeural",
         },
     )
-    assert state.tts_voice == "en_US-amy-medium"
-    assert state.piper_voice == "en_US-amy-medium"
+    assert state.tts_voice == "en_US-sam-medium"
+    assert state.piper_voice == "en_US-sam-medium"
     assert state.edge_voice == "en-US-JennyNeural"
-    apply_state_fragment(state, {"tts_voice": "en_US-joe-medium"})
-    assert state.tts_voice == "en_US-joe-medium"
+    apply_state_fragment(state, {"tts_voice": "en_US-bryce-medium"})
+    assert state.tts_voice == "en_US-bryce-medium"
 
 
 def test_json_ready_turns_selection_values_into_dicts() -> None:

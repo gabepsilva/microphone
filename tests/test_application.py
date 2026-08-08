@@ -796,19 +796,19 @@ def test_tts_set_voice_persists_only_after_success() -> None:
     prior = controller.state.tts_voice.effective
 
     outcome = controller.dispatch(
-        "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+        "tts.set_voice", {"voice": "en_US-sam-medium"}, actor=OWNER
     )
     assert isinstance(outcome, Accepted)
     assert recorded == []
-    assert controller.state.tts_voice.desired == "en_US-amy-medium"
+    assert controller.state.tts_voice.desired == "en_US-sam-medium"
     assert controller.state.tts_voice.effective == prior
 
     tts.complete_voice()
     assert controller.state.tts_voice == Selection(
-        desired="en_US-amy-medium", effective="en_US-amy-medium"
+        desired="en_US-sam-medium", effective="en_US-sam-medium"
     )
-    assert controller.state.piper_voice == "en_US-amy-medium"
-    assert recorded == [("piper_voice", "en_US-amy-medium")]
+    assert controller.state.piper_voice == "en_US-sam-medium"
+    assert recorded == [("piper_voice", "en_US-sam-medium")]
 
 
 def test_tts_set_voice_failure_does_not_persist() -> None:
@@ -821,7 +821,7 @@ def test_tts_set_voice_failure_does_not_persist() -> None:
 
     assert isinstance(
         controller.dispatch(
-            "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+            "tts.set_voice", {"voice": "en_US-sam-medium"}, actor=OWNER
         ),
         Accepted,
     )
@@ -855,7 +855,7 @@ def test_a_late_tts_voice_applied_callback_does_not_persist() -> None:
     before = controller.state.piper_voice
 
     outcome = controller.dispatch(
-        "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+        "tts.set_voice", {"voice": "en_US-sam-medium"}, actor=OWNER
     )
     assert isinstance(outcome, Accepted)
     assert controller.fail(outcome.request_id, "cancelled") is not None
@@ -1346,7 +1346,7 @@ def test_a_refused_voice_change_fails_without_persisting() -> None:
 
     assert isinstance(
         controller.dispatch(
-            "tts.set_voice", {"voice": "en_US-amy-medium"}, actor=OWNER
+            "tts.set_voice", {"voice": "en_US-sam-medium"}, actor=OWNER
         ),
         Failed,
     )
