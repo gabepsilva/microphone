@@ -16,9 +16,10 @@ type IpcHandle = {
  *
  * Semgrep forbids bare ``call("dispatch", ...)`` outside this file. Tray mute
  * (#128a) and the IPC handler both enter here so the allowlist cannot be
- * bypassed by a second call site.
+ * bypassed by a second call site. Marked ``async`` so validateDispatch throws
+ * become rejected promises rather than sync main-process crashes (R4).
  */
-export function dispatchAction(
+export async function dispatchAction(
   client: Pick<TagAlongClient, "call">,
   action: unknown,
   payload: unknown = {},
@@ -58,13 +59,9 @@ export function registerIpcHandlers(
   handle(CHANNELS.capabilities, () => client.call("capabilities"));
 
   // Single dispatch door: allowlist + per-action payload checks (#96 D3c).
-  handle(CHANNELS.dispatch, (_event, action, payload) => {
-    try {
-      return dispatchAction(client, action, payload);
-    } catch (error) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
+  handle(CHANNELS.dispatch, (_event, action, payload) =>
+    dispatchAction(client, action, payload),
+  );
 
   return registered;
 }

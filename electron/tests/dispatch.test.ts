@@ -180,7 +180,7 @@ describe("dispatchAction", () => {
         },
       },
     ]);
-    expect(() => dispatchAction(client, ACTIONS.session_quit, {})).toThrow(
+    await expect(dispatchAction(client, ACTIONS.session_quit, {})).rejects.toThrow(
       "action not allowed",
     );
     expect(calls).toHaveLength(1);

@@ -106,10 +106,12 @@ far-end applications), and Codex credentials as for a normal TUI session.
 
 5b. **System tray** (#128a)
 
-- On a StatusNotifier-hosted session, expect a tray icon after start. Mute /
-  unmute from the tray menu and confirm the sidebar checkboxes track the same
-  `microphone_muted` / `audio_stream_muted` state (and the reverse). Closing the
-  window still quits — no Quit item, no background-only tray.
+- On a StatusNotifier-hosted session, expect a **legible** tray icon after start
+  (light glyph on the dark Ubuntu panel). Mute / unmute from the tray menu and
+  confirm the sidebar checkboxes track the same `microphone_muted` /
+  `audio_stream_muted` state (and the reverse). Closing the window still quits —
+  no Quit item, no background-only tray. A failed mute shows a desktop
+  Notification while the window is covered.
 
 6. **Session actions**
    - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save

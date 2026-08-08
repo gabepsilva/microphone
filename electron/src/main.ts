@@ -1,14 +1,22 @@
 import { watch } from "node:fs";
 import path from "node:path";
 
-import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from "electron";
+import {
+  Notification,
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  ipcMain,
+  nativeImage,
+} from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
 import { dispatchAction, registerIpcHandlers } from "./ipc";
 import { ACTIONS } from "./protocol/actions";
 import { CHANNELS } from "./protocol/channels";
 import type { AppState, TranscriptRow } from "./state";
-import { buildTrayMenu } from "./tray_menu";
+import { buildTrayMenu, trayMenuKey } from "./tray_menu";
 
 // Control surface needs no WebGL. On some Linux GPU/driver stacks the GPU
 // process dies (error_code=1002) and Chromium aborts the whole app. Set these
@@ -32,6 +40,16 @@ const events = new TagAlongClient();
 let mainWindow: BrowserWindow | null = null;
 /** Session tray — null when the icon asset is missing or Tray no-ops. */
 let tray: Tray | null = null;
+/** Last rendered menu identity — skip rebuild on partial-only state.changed. */
+let lastTrayMenuKey: string | null = null;
+
+function showTrayNotification(title: string, body: string): void {
+  if (!Notification.isSupported()) {
+    console.error("tray notification unsupported:", title, body);
+    return;
+  }
+  new Notification({ title, body }).show();
+}
 
 function broadcastState(state: AppState): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
@@ -70,7 +88,8 @@ async function dispatchMuted(
     await dispatchAction(commands, action, { muted });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("tray mute dispatch:", message);
+    // Window may be covered — console alone is silent for the tray use case (R3).
+    showTrayNotification("Mute", message);
   }
 }
 
@@ -79,6 +98,11 @@ function rebuildTrayMenu(state: AppState): void {
     return;
   }
   // Read aloud stays absent until #128b wires speech.read_selection.
+  const key = trayMenuKey(state, false);
+  if (key === lastTrayMenuKey) {
+    return;
+  }
+  lastTrayMenuKey = key;
   tray.setContextMenu(
     Menu.buildFromTemplate(
       buildTrayMenu(state, {
@@ -108,6 +132,7 @@ function createTray(): void {
   }
   tray = new Tray(icon);
   tray.setToolTip("TagAlong");
+  lastTrayMenuKey = null;
   rebuildTrayMenu(sessionEvents.state);
 }
 

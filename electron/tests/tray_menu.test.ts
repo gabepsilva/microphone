@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 
-import { buildTrayMenu } from "../src/tray_menu";
+import { buildTrayMenu, trayMenuKey } from "../src/tray_menu";
 
 describe("buildTrayMenu", () => {
   it("labels mute items unmuted when both streams are live", () => {
@@ -66,5 +66,15 @@ describe("buildTrayMenu", () => {
     expect(onToggleMicrophoneMute).toHaveBeenCalledTimes(1);
     expect(onToggleAudioStreamMute).toHaveBeenCalledTimes(1);
     expect(onReadAloud).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("trayMenuKey", () => {
+  it("changes only when mute flags or read-aloud presence change", () => {
+    const live = { microphone_muted: false, audio_stream_muted: false };
+    const micMuted = { microphone_muted: true, audio_stream_muted: false };
+    expect(trayMenuKey(live)).toBe(trayMenuKey({ ...live }));
+    expect(trayMenuKey(live)).not.toBe(trayMenuKey(micMuted));
+    expect(trayMenuKey(live, false)).not.toBe(trayMenuKey(live, true));
   });
 });
