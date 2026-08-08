@@ -105,9 +105,10 @@ addopts = [
     "--strict-markers",
     "--tb=short",
     "--cov-fail-under=95",
-    # Use every core. Override with -n0 for a serial run (debugger, mutmut).
+    # Cap workers so local runs do not thrash the machine. Override with
+    # -n0 for a serial run (debugger, mutmut) or -n auto for every core.
     "-n",
-    "auto",
+    "12",
 ]
 testpaths = ["tests"]
 filterwarnings = ["error"]
