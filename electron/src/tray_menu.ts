@@ -62,7 +62,7 @@ export function buildTrayMenu(
  */
 export function trayMenuKey(
   state: Pick<AppState, "microphone_muted" | "audio_stream_muted">,
-  handlers: TrayMenuHandlers | Pick<TrayMenuHandlers, "onReadAloud"> = {},
+  handlers: TrayMenuHandlers | Pick<TrayMenuHandlers, "onReadAloud">,
 ): string {
   const includeReadAloud = handlers.onReadAloud !== undefined;
   return `${state.microphone_muted ? 1 : 0}:${state.audio_stream_muted ? 1 : 0}:${includeReadAloud ? 1 : 0}`;
