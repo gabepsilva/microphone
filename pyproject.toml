@@ -188,6 +188,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_control_actions.py",
     "tests/test_control_controller.py",
     "tests/test_control_events.py",
+    "tests/test_control_policy.py",
     "tests/test_control_state.py",
     "tests/test_domain.py",
     "tests/test_config.py",

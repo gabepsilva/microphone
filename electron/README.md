@@ -104,14 +104,16 @@ far-end applications), and Codex credentials as for a normal TUI session.
      `devices.list` (inputs via PortAudio, applications via PipeWire graph).
    - Choose a mic; confirm the picker and live dot update. Toggle mute both ways.
 
-5b. **System tray** (#128a)
+5b. **System tray** (#128a / #128b)
 
 - On a StatusNotifier-hosted session, expect a **legible** tray icon after start
   (light glyph on the dark Ubuntu panel). Mute / unmute from the tray menu and
   confirm the sidebar checkboxes track the same `microphone_muted` /
-  `audio_stream_muted` state (and the reverse). Closing the window still quits —
-  no Quit item, no background-only tray. A failed mute shows a desktop
-  Notification while the window is covered.
+  `audio_stream_muted` state (and the reverse). **Read aloud** reads the
+  primary selection, strips source chrome, and speaks via session TTS — empty
+  selection / helper failure / TTS-off / mute failure shows a desktop
+  `Notification` (visible with the window covered). Closing the window still
+  quits — no Quit item, no background-only tray.
 
 6. **Session actions**
    - Interrupt (`^X`), end voice turn (`^D`), new session (`^N`), save

@@ -47,6 +47,9 @@ class Actor:
     id: str
     kind: ActorKind = ActorKind.HUMAN
     scopes: frozenset[Scope] = field(default_factory=frozenset)
+    # Grant-time denials keyed by connection class (e.g. mcp vs electron).
+    # Populated at actor construction — never re-parsed from a self-asserted id.
+    denied: frozenset[str] = field(default_factory=frozenset)
 
 
 def local_user(id: str = "local") -> Actor:
@@ -54,11 +57,16 @@ def local_user(id: str = "local") -> Actor:
     return Actor(id, ActorKind.HUMAN, frozenset(Scope))
 
 
-def agent(id: str, scopes: frozenset[Scope] | set[Scope]) -> Actor:
+def agent(
+    id: str,
+    scopes: frozenset[Scope] | set[Scope],
+    denied: frozenset[str] | set[str] = frozenset(),
+) -> Actor:
     """An external agent, holding only the scopes it was granted.
 
     There is no default here on purpose. An agent's authority is a decision
     someone made, and a signature that supplies one silently would make the
-    unconsidered case the permissive one.
+    unconsidered case the permissive one. *denied* is the same grant-time
+    decision for individual action ids (#128 D12).
     """
-    return Actor(id, ActorKind.AGENT, frozenset(scopes))
+    return Actor(id, ActorKind.AGENT, frozenset(scopes), frozenset(denied))

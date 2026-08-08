@@ -311,6 +311,11 @@ CATALOG: tuple[ActionSpec, ...] = (
         (Parameter("voice", Kind.NAME, choices=PIPER_VOICE_IDS),),
     ),
     ActionSpec(
+        "speech.read_selection",
+        "Read the primary selection aloud after chrome cleanup",
+        Scope.SETTINGS,
+    ),
+    ActionSpec(
         "codex.set_model",
         "Choose the Codex model",
         Scope.SETTINGS,

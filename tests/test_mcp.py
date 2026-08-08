@@ -134,6 +134,7 @@ def test_mcp_bridge_omits_tools_capability_policy_denies(tmp_path: Path) -> None
     try:
         names = {tool["name"] for tool in bridge.list_tools()}
         assert tool_name("session.quit") not in names
+        assert tool_name("speech.read_selection") not in names
         assert tool_name("message.send") in names
         assert frozenset(bridge.scopes) == frozenset(
             scope.value for scope in SOCKET_AGENT_SCOPES
@@ -141,6 +142,9 @@ def test_mcp_bridge_omits_tools_capability_policy_denies(tmp_path: Path) -> None
         denied = bridge.call_tool("tagalong_session_quit", {})
         assert denied["type"] == "rejected"
         assert denied["reason"] == "forbidden"
+        selection = bridge.call_tool("tagalong_speech_read_selection", {})
+        assert selection["type"] == "rejected"
+        assert selection["reason"] == "forbidden"
     finally:
         bridge.close()
         server.stop()

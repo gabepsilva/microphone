@@ -20,6 +20,7 @@ export const DISPATCH_ALLOWLIST = [
   ACTIONS.tts_set_enabled,
   ACTIONS.tts_set_provider,
   ACTIONS.tts_set_voice,
+  ACTIONS.speech_read_selection,
   ACTIONS.codex_set_model,
   ACTIONS.codex_set_reasoning,
   ACTIONS.turn_silence_set,

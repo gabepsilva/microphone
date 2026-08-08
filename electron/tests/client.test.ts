@@ -461,6 +461,113 @@ describe("SessionEvents", () => {
     session.stop();
   });
 
+  it("surfaces action.failed for async tray failures (#128b)", async () => {
+    const fake = new FakeSocket();
+    const events = connectOnce(fake);
+    const failures: Array<{ action: string; detail: string }> = [];
+
+    const session = new SessionEvents(events, {
+      timeoutMs: 50,
+      onState: () => undefined,
+      onActionFailed: (event) => {
+        failures.push({ action: event.action, detail: event.detail });
+      },
+    });
+
+    const started = session.start();
+    await Promise.resolve();
+    fake.emit("connect");
+    await waitForMethodCount(fake, "initialize", 1);
+    fake.respondTo("initialize", {});
+    await waitForMethodCount(fake, "subscribe", 1);
+    fake.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 0,
+      protocol_version: 1,
+      state: emptyAppState(),
+    });
+    await started;
+
+    await waitForMethodCount(fake, "poll", 1);
+    fake.respondTo("poll", {
+      lost: false,
+      events: [
+        {
+          sequence: 1,
+          name: "action.failed",
+          payload: {
+            request_id: "req-9",
+            action: "speech.read_selection",
+            actor: "electron-1",
+            detail: "Primary selection is empty",
+          },
+        },
+      ],
+    });
+    await waitForMethodCount(fake, "poll", 2);
+    expect(failures).toEqual([
+      {
+        action: "speech.read_selection",
+        detail: "Primary selection is empty",
+      },
+    ]);
+
+    // Malformed payloads must not invent a failure event.
+    fake.respondTo("poll", {
+      lost: false,
+      events: [
+        {
+          sequence: 2,
+          name: "action.failed",
+          payload: { request_id: 9, action: "speech.read_selection" },
+        },
+      ],
+    });
+    await waitForMethodCount(fake, "poll", 3);
+    expect(failures).toHaveLength(1);
+
+    session.stop();
+  });
+
+  it("ignores action.failed when no onActionFailed listener is installed", async () => {
+    const fake = new FakeSocket();
+    const events = connectOnce(fake);
+    const session = new SessionEvents(events, {
+      timeoutMs: 50,
+      onState: () => undefined,
+    });
+    const started = session.start();
+    await Promise.resolve();
+    fake.emit("connect");
+    await waitForMethodCount(fake, "initialize", 1);
+    fake.respondTo("initialize", {});
+    await waitForMethodCount(fake, "subscribe", 1);
+    fake.respondTo("subscribe", {
+      instance: "abc",
+      sequence: 0,
+      protocol_version: 1,
+      state: emptyAppState(),
+    });
+    await started;
+    await waitForMethodCount(fake, "poll", 1);
+    fake.respondTo("poll", {
+      lost: false,
+      events: [
+        {
+          sequence: 1,
+          name: "action.failed",
+          payload: {
+            request_id: "req-1",
+            action: "speech.read_selection",
+            detail: "ignored without listener",
+          },
+        },
+      ],
+    });
+    await waitForMethodCount(fake, "poll", 2);
+    session.stop();
+  });
+
   it("seeds transcript from subscribe and applies entry events", async () => {
     const fake = new FakeSocket();
     const events = connectOnce(fake);

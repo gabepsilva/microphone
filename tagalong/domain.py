@@ -205,6 +205,44 @@ def markdown_to_speech(text: str) -> str:
     return spoken.strip()
 
 
+# Selection chrome (#128b). Kept out of markdown_to_speech — that path is on
+# every Codex reply (codex.py → speech_sink), and chrome rules must not strip
+# Taga quoting a Slack header back to the user.
+_EMOJI_SHORTCODE = re.compile(r":[a-zA-Z0-9_+-]+:")
+# Reaction clusters like ``:eyes: 4`` / ``:tada: 2`` (same line only — do not
+# eat a following line's ``3 replies`` count across a newline).
+_REACTION_CLUSTER = re.compile(r"(?::[a-zA-Z0-9_+-]+:[ \t]*)+\d+")
+_REPLY_COUNT = re.compile(r"\b\d+\s+replies\b", re.IGNORECASE)
+_EDITED_TOKEN = re.compile(r"\bEdited\b")
+# First-line-only Slack-ish header: Capitalized Name(s) then HH:MM AM/PM.
+# Unanchored would eat mid-paragraph "we shipped it at 10:42 AM".
+_LEADING_NAME_TIME = re.compile(
+    r"^(?:[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*){0,5})\s+"
+    r"\d{1,2}:\d{2}\s*(?:AM|PM)\b\s*",
+)
+
+
+def strip_chrome(text: str) -> str:
+    """Drop source-UI chrome from a primary selection before TTS prep.
+
+    Compose only on the selection path: ``strip_chrome`` →
+    :func:`markdown_to_speech` → :class:`SentenceChunker`. Never call this
+    from the Codex render path.
+    """
+    if not text:
+        return ""
+    lines = text.splitlines(keepends=True)
+    first = _LEADING_NAME_TIME.sub("", lines[0], count=1)
+    body = first + "".join(lines[1:])
+    body = _REACTION_CLUSTER.sub(" ", body)
+    body = _EMOJI_SHORTCODE.sub(" ", body)
+    body = _REPLY_COUNT.sub(" ", body)
+    body = _EDITED_TOKEN.sub(" ", body)
+    body = _SPEECH_WHITESPACE.sub(" ", body)
+    body = _SPACE_BEFORE_PUNCT.sub(r"\1", body)
+    return body.strip()
+
+
 def speech_sink(speak: Callable[[str], None]) -> Callable[[str], None]:
     """Wrap a ``speak`` callback so it only receives cleaned markdown chunks.
 

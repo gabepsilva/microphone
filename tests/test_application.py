@@ -11,6 +11,7 @@ from tagalong.application import (
     app_state_from_session,
     bind_audio_slice,
     bind_first_slice,
+    bind_read_aloud_slice,
     bind_settings_slice,
     install_audio_hooks,
     install_first_slice_hooks,
@@ -31,7 +32,11 @@ from tagalong.control import (
     local_user,
 )
 from tagalong.control.actions import Scope
-from tagalong.domain import UserTextMessage
+from tagalong.control.policy import (
+    SOCKET_AGENT_SCOPES,
+    denied_actions_for_socket_client,
+)
+from tagalong.domain import EchoMemory, TurnGate, UserTextMessage
 from tagalong.tui import SessionState, TuiHooks
 
 
@@ -1352,3 +1357,149 @@ def test_a_refused_voice_change_fails_without_persisting() -> None:
     )
     assert recorded == []
     assert controller.state == before
+
+
+class _ReadAloudTTS:
+    """Minimal TTS with the real TurnGate + EchoMemory collision semantics."""
+
+    def __init__(self) -> None:
+        self.turns = TurnGate()
+        self.echo = EchoMemory()
+        self.spoken: list[str] = []
+
+    def begin_turn(self) -> None:
+        self.turns.begin_turn()
+
+    def speak(self, text: str) -> None:
+        _turn, accepting = self.turns.accepting_turn()
+        if text and accepting:
+            self.echo.remember(text, retention=120)
+            self.spoken.append(text)
+
+
+def _await_terminal(subscription, request_id: str, timeout: float = 2.0):
+    deadline = timeout
+    while deadline > 0:
+        if not subscription.wait(0.05):
+            deadline -= 0.05
+            continue
+        for event in subscription.drain():
+            if (
+                event.name in {"action.applied", "action.failed"}
+                and event.payload.get("request_id") == request_id
+            ):
+                return event
+        deadline -= 0.05
+    raise AssertionError(f"no terminal event for {request_id}")
+
+
+def test_speech_read_selection_speaks_cleaned_text_and_echoes() -> None:
+    tts = _ReadAloudTTS()
+    controller = Controller()
+    bind_read_aloud_slice(
+        controller,
+        tts=tts,
+        read_selection=lambda: (
+            "Gabriel Silva 10:42 AM Hello **team** — the deploy is live:tada:"
+        ),
+    )
+    # Simulate Codex mid-reply: its queued text will be orphaned by begin_turn.
+    tts.begin_turn()
+    tts.speak("Codex was saying something long.")
+    assert tts.echo.matches("Codex was saying something long.")
+
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("speech.read_selection", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.applied"
+        assert any("deploy is live" in chunk for chunk in tts.spoken)
+        assert ":tada:" not in " ".join(tts.spoken)
+        assert "Gabriel Silva" not in " ".join(tts.spoken)
+        # Last-wins: selection speak is on a newer turn than the Codex probe.
+        assert tts.turns.current_turn >= 2
+        # EchoMemory must hold the selection so the mic does not re-transcribe it.
+        assert tts.echo.matches(tts.spoken[-1])
+    finally:
+        subscription.close()
+
+
+def test_speech_read_selection_fails_when_empty_or_tts_disabled() -> None:
+    tts = _ReadAloudTTS()
+    controller = Controller()
+    bind_read_aloud_slice(controller, tts=tts, read_selection=lambda: None)
+    _, subscription = controller.subscribe()
+    try:
+        empty = controller.dispatch("speech.read_selection", actor=OWNER)
+        assert isinstance(empty, Accepted)
+        event = _await_terminal(subscription, empty.request_id)
+        assert event.name == "action.failed"
+        assert "empty" in str(event.payload.get("detail", "")).lower()
+    finally:
+        subscription.close()
+
+    disabled = Controller(AppState(tts_enabled=False))
+    bind_read_aloud_slice(disabled, tts=tts, read_selection=lambda: "still selected")
+    assert isinstance(
+        disabled.dispatch("speech.read_selection", actor=OWNER),
+        Failed,
+    )
+
+
+def test_speech_read_selection_fails_when_nothing_speakable_or_worker_raises() -> None:
+    tts = _ReadAloudTTS()
+    controller = Controller()
+    bind_read_aloud_slice(controller, tts=tts, read_selection=lambda: ":tada: :eyes:")
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("speech.read_selection", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.failed"
+        assert "speakable" in str(event.payload.get("detail", "")).lower()
+    finally:
+        subscription.close()
+
+    exploding = Controller()
+
+    def boom() -> str | None:
+        raise RuntimeError("selection helper crashed")
+
+    bind_read_aloud_slice(exploding, tts=tts, read_selection=boom)
+    _, subscription = exploding.subscribe()
+    try:
+        outcome = exploding.dispatch("speech.read_selection", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.failed"
+        assert "crashed" in str(event.payload.get("detail", ""))
+    finally:
+        subscription.close()
+
+
+def test_speech_read_selection_mcp_forbidden_electron_allowed() -> None:
+    tts = _ReadAloudTTS()
+    controller = Controller()
+    bind_read_aloud_slice(
+        controller, tts=tts, read_selection=lambda: "Hello from the tray."
+    )
+    mcp = agent("mcp-1", SOCKET_AGENT_SCOPES, denied_actions_for_socket_client("mcp"))
+    electron = agent(
+        "electron-1",
+        SOCKET_AGENT_SCOPES,
+        denied_actions_for_socket_client("electron"),
+    )
+    denied = controller.dispatch("speech.read_selection", actor=mcp)
+    assert isinstance(denied, Rejected)
+    assert denied.reason is Rejection.FORBIDDEN
+
+    _, subscription = controller.subscribe()
+    try:
+        allowed = controller.dispatch("speech.read_selection", actor=electron)
+        assert isinstance(allowed, Accepted)
+        event = _await_terminal(subscription, allowed.request_id)
+        assert event.name == "action.applied"
+        assert any("Hello from the tray" in chunk for chunk in tts.spoken)
+    finally:
+        subscription.close()
