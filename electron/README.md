@@ -60,7 +60,8 @@ preload, so `bun run build` bundles `src/preload.ts` into a single
 `dist/preload.js` (tsc alone leaves a relative `require("./protocol/channels")`
 that fails at runtime). Semgrep under `electron/src/` forbids non-literal
 `nodeIntegration` / `contextIsolation`, bare `.handle(...)` outside `ipc.ts`,
-and bare `call("dispatch", ...)` outside `ipc.ts`.
+and bare `call("dispatch", ...)` outside `ipc.ts` (tray mute uses
+`dispatchAction` from that file).
 
 ## Manual test plan
 

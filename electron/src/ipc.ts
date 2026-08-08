@@ -11,6 +11,25 @@ type IpcHandle = {
   ) => void;
 };
 
+/**
+ * Sole socket ``dispatch`` door: validate against DISPATCH_ALLOWLIST, then call.
+ *
+ * Semgrep forbids bare ``call("dispatch", ...)`` outside this file. Tray mute
+ * (#128a) and the IPC handler both enter here so the allowlist cannot be
+ * bypassed by a second call site.
+ */
+export function dispatchAction(
+  client: Pick<TagAlongClient, "call">,
+  action: unknown,
+  payload: unknown = {},
+): Promise<unknown> {
+  const validated = validateDispatch(action, payload ?? {});
+  return client.call("dispatch", {
+    action: validated.action,
+    payload: validated.payload,
+  });
+}
+
 /** Register every invoke CHANNELS entry on ipcMain. Returns those channels. */
 export function registerIpcHandlers(
   ipcMain: IpcHandle | Pick<IpcMain, "handle">,
@@ -41,11 +60,7 @@ export function registerIpcHandlers(
   // Single dispatch door: allowlist + per-action payload checks (#96 D3c).
   handle(CHANNELS.dispatch, (_event, action, payload) => {
     try {
-      const validated = validateDispatch(action, payload ?? {});
-      return client.call("dispatch", {
-        action: validated.action,
-        payload: validated.payload,
-      });
+      return dispatchAction(client, action, payload);
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }

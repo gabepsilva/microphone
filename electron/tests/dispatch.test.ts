@@ -6,7 +6,7 @@ import {
   isAllowedAction,
   validateDispatch,
 } from "../src/protocol/dispatch_allowlist";
-import { registerIpcHandlers } from "../src/ipc";
+import { dispatchAction, registerIpcHandlers } from "../src/ipc";
 import { CHANNELS } from "../src/protocol/channels";
 import type { IpcMainInvokeEvent } from "electron";
 
@@ -156,6 +156,34 @@ describe("DISPATCH_ALLOWLIST", () => {
       action: ACTIONS.transcript_save,
       payload: {},
     });
+  });
+});
+
+describe("dispatchAction", () => {
+  it("validates then calls socket dispatch (tray and IPC share this door)", async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client = {
+      call: async (method: string, params: Record<string, unknown> = {}) => {
+        calls.push({ method, params });
+        return { type: "applied" };
+      },
+    };
+    await expect(
+      dispatchAction(client, ACTIONS.microphone_set_muted, { muted: true }),
+    ).resolves.toEqual({ type: "applied" });
+    expect(calls).toEqual([
+      {
+        method: "dispatch",
+        params: {
+          action: ACTIONS.microphone_set_muted,
+          payload: { muted: true },
+        },
+      },
+    ]);
+    expect(() => dispatchAction(client, ACTIONS.session_quit, {})).toThrow(
+      "action not allowed",
+    );
+    expect(calls).toHaveLength(1);
   });
 });
 

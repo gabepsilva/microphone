@@ -4,10 +4,9 @@ import path from "node:path";
 import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
-import { registerIpcHandlers } from "./ipc";
+import { dispatchAction, registerIpcHandlers } from "./ipc";
 import { ACTIONS } from "./protocol/actions";
 import { CHANNELS } from "./protocol/channels";
-import { validateDispatch } from "./protocol/dispatch_allowlist";
 import type { AppState, TranscriptRow } from "./state";
 import { buildTrayMenu } from "./tray_menu";
 
@@ -67,11 +66,8 @@ async function dispatchMuted(
   muted: boolean,
 ): Promise<void> {
   try {
-    const validated = validateDispatch(action, { muted });
-    await commands.call("dispatch", {
-      action: validated.action,
-      payload: validated.payload,
-    });
+    // Goes through ipc.dispatchAction so Semgrep's allowlist chokepoint holds.
+    await dispatchAction(commands, action, { muted });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("tray mute dispatch:", message);
