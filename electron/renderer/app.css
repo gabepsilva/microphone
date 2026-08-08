@@ -484,7 +484,7 @@ body {
 }
 #prompt-shell {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.5rem;
   max-width: 46rem;
   margin: 0 auto;
