@@ -216,23 +216,6 @@ def test_lazy_open_leaves_no_file_when_nothing_is_recorded(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-def test_record_soft_fails_when_write_raises_value_error(tmp_path, monkeypatch) -> None:
-    """Closed-handle ValueError must not escape the entry thread (#136 D4)."""
-    recorder = TranscriptRecorder(
-        directory=tmp_path,
-        clock=lambda: datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC),
-    )
-    assert recorder.record(Entry(kind="note", text="seed", stamp="12:00:00")) is True
-    assert recorder._file is not None
-
-    def boom_write(_data: str) -> int:
-        raise ValueError("I/O operation on closed file")
-
-    monkeypatch.setattr(recorder._file, "write", boom_write)
-    assert recorder.record(Entry(kind="note", text="next", stamp="12:00:01")) is False
-    recorder.close()
-
-
 def test_roll_waits_for_in_flight_record(tmp_path, monkeypatch) -> None:
     """Lock serializes record and roll so a /new worker cannot close mid-write.
 

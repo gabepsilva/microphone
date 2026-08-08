@@ -198,6 +198,13 @@ describe("submit decision", () => {
       kind: "error",
       text: "unknown command: /",
     });
+    // Padded input *is* reachable with a catalog: commandQuery("  /  ") is
+    // null (it does not start with "/"), so the menu is closed and send() runs.
+    expect(commandQuery("  /  ")).toBeNull();
+    expect(decideSubmit("  /  ", CATALOG)).toEqual({
+      kind: "error",
+      text: "unknown command: /",
+    });
   });
 
   it("lists the whole catalog for the query bare help parks on", () => {

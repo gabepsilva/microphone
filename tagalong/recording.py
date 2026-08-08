@@ -140,10 +140,6 @@ class TranscriptRecorder:
             except OSError as error:
                 self._report(error)
                 return False
-            except ValueError:
-                # Handle closed between open and write (or by a concurrent roll
-                # before the lock existed). Soft-fail the way OSError does.
-                return False
             return True
 
     def roll(self) -> None:

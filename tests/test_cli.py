@@ -1262,14 +1262,22 @@ def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
 
     tui.hooks.on_user_text(UserTextMessage("hello"))
     tui.hooks.on_interrupt()
-    # session.new settles on a daemon worker; wait for the terminal outcome.
+    # session.new settles on a daemon worker. Wait for the terminal event, not
+    # for conversation.sessions: adopt_fresh_thread bumps that counter before
+    # display.reset_transcript runs (application.py settle order), so this loop
+    # used to exit with the reset still pending. announce is in the finally
+    # after roll, so action.applied is the only "settle is done" signal.
+    terminal = {"action.applied", "action.failed", "action.superseded"}
     _, subscription = controller.subscribe()
     try:
         tui.hooks.on_command("/new")
         deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and conversation.sessions == 0:
-            subscription.wait(0.05)
-            subscription.drain()
+        settled = False
+        while time.monotonic() < deadline and not settled:
+            settled = any(event.name in terminal for event in subscription.drain())
+            if not settled:
+                subscription.wait(0.05)
+        assert settled, "session.new never reached a terminal outcome"
     finally:
         subscription.close()
 

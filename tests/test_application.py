@@ -16,7 +16,6 @@ from tagalong.application import (
     install_audio_hooks,
     install_first_slice_hooks,
     install_settings_hooks,
-    run_new_session,
     settle_new_session,
 )
 from tagalong.control import (
@@ -567,11 +566,12 @@ def test_session_new_is_accepted_then_settles_on_the_worker() -> None:
         subscription.close()
 
 
-def test_run_new_session_returns_a_refusal_without_starting() -> None:
+def test_session_new_refuses_an_unscoped_caller_without_starting() -> None:
+    """A refused dispatch spawns no worker, so nothing moves off the app thread."""
     controller, conversation, display, recorder = _bound_session_new()
     caller = agent("notes-bot", {Scope.CONVERSE})
 
-    outcome = run_new_session(controller, caller, conversation, display, recorder)
+    outcome = controller.dispatch("session.new", actor=caller)
 
     assert isinstance(outcome, Rejected)
     assert outcome.reason is Rejection.FORBIDDEN

@@ -6,6 +6,7 @@ import asyncio
 import os
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -539,34 +540,54 @@ def _router(conversation, tui, recorder):
         transcript=tui,
         recorder=recorder,
     )
-    return controller, build_command_router(
-        tui, conversation, recorder, controller, actor
-    )
+    return controller, build_command_router(tui, controller, actor)
 
 
-def _await_resets(controller, tui, expected: int, timeout: float = 2.0) -> None:
+_TERMINAL = frozenset({"action.applied", "action.failed", "action.superseded"})
+
+
+@contextmanager
+def _settles(controller, timeout: float = 2.0):
+    """Run a ``session.new`` command and wait for it to actually finish.
+
+    Subscribes *before* the body so the terminal event cannot land first, and
+    waits for that event rather than for a counter the worker bumps on its way
+    through. ``announce`` is in the ``finally`` after ``roll``
+    (``application.py``), so ``action.applied`` is the only signal that means
+    settle is done — waiting on ``tui.resets`` returns while ``roll`` is still
+    pending, and waiting on ``conversation.sessions`` returns before
+    ``reset_transcript``.
+    """
     _, subscription = controller.subscribe()
+    seen: list[object] = []
     try:
+        yield seen
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and tui.resets < expected:
-            subscription.wait(0.05)
-            subscription.drain()
+        while time.monotonic() < deadline and not seen:
+            seen.extend(
+                event for event in subscription.drain() if event.name in _TERMINAL
+            )
+            if not seen:
+                subscription.wait(0.05)
     finally:
         subscription.close()
+    assert seen, "session.new never reached a terminal outcome"
 
 
 def test_reset_hook_clears_only_after_a_new_session_starts() -> None:
     tui = RouterTui()
     recorder = RouterRecorder()
-    _controller, commands = _router(RouterConversation(False), tui, recorder)
-    commands.handle("/new")
-    _await_resets(_controller, tui, expected=0)
+    controller, commands = _router(RouterConversation(False), tui, recorder)
+    # A thread that will not start still reaches a terminal outcome (failed),
+    # so this waits for real rather than falling through on a 0 < 0 compare.
+    with _settles(controller):
+        commands.handle("/new")
     assert tui.resets == 0
     assert recorder.rolls == 0
 
     controller, commands = _router(RouterConversation(True), tui, recorder)
-    commands.handle("/new")
-    _await_resets(controller, tui, expected=1)
+    with _settles(controller):
+        commands.handle("/new")
     controller, commands = _router(RouterConversation(True), tui, recorder)
     commands.handle("/new again")
 
@@ -619,8 +640,8 @@ def test_build_command_router_registers_new_and_help() -> None:
     assert "/new" in tui.notes[0]
     assert "/help" in tui.notes[0]
 
-    commands.handle("/clear")
-    _await_resets(controller, tui, expected=1)
+    with _settles(controller):
+        commands.handle("/clear")
     assert tui.resets == 1
     assert recorder.rolls == 1
 

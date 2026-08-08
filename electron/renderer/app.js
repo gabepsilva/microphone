@@ -483,8 +483,17 @@ function completeSelectedCommand() {
  */
 function showBareHelp() {
   composeText.value = "/";
-  paletteIndex = 0;
   autoGrow();
+  syncPalette();
+  // Arm the help row, not row 0. Enter takes the highlighted row, so leaving
+  // `/new` armed would make the keystroke after an informational command start
+  // a fresh thread and clear the transcript, with no confirm. The TUI does not
+  // leave you there either: it clears the draft before dispatching. Typing `/`
+  // fresh still arms `/new`, which is the TUI's behaviour.
+  const help = paletteRows.findIndex((spec) => spec.action_id === null);
+  paletteIndex = help === -1 ? 0 : help;
+  // clampIndex is modulo, so a second sync redraws the highlight rather than
+  // resetting it.
   syncPalette();
 }
 

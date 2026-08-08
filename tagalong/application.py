@@ -547,7 +547,7 @@ def bind_audio_slice(
 
     Select records desired state and wakes the channel. The reconciler reports
     back through ``settle`` or ``fail``; a newer select for the same action
-    supersedes the in-flight one the way ``run_new_session`` discards a lost
+    supersedes the in-flight one the way ``settle_new_session`` discards a lost
     reset. Mute is desired state that a later open replays, so it applies even
     when no capture channel is open yet.
     """
@@ -888,23 +888,3 @@ def settle_new_session(
     finally:
         controller.announce(request_id)
     return settled
-
-
-def run_new_session(
-    controller: Controller,
-    actor: Actor,
-    conversation: SessionReset | None = None,
-    display: TranscriptDisplayPort | None = None,
-    recorder: RecorderPort | None = None,
-) -> Outcome:
-    """Dispatch ``session.new``; settlement is handler-owned and asynchronous.
-
-    Returns :class:`~.control.Accepted` when the request is accepted, or a
-    synchronous refusal. Terminal Applied / Failed / Superseded arrive on the
-    event log — await them the way ``speech.read_selection`` tests do.
-
-    *conversation*, *display*, and *recorder* are unused; kept so older call
-    sites that still pass them continue to type-check until they migrate.
-    """
-    del conversation, display, recorder
-    return controller.dispatch("session.new", actor=actor)
