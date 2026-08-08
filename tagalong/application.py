@@ -13,12 +13,12 @@ The Textual interface still speaks through ``TuiHooks``. The hooks installed
 here dispatch, so journey tests that drive the interface without a controller
 stay valid oracles, and the live path has one execution model.
 
-``session.new`` starts a Codex thread, which is slow work. The handler only
-records that a reset was accepted. The caller opens the thread after dispatch
-returns, claims the slot if it still holds it, adopts the thread, and only
-then announces ``action.applied``. A superseded start is discarded rather
-than overwriting the newer session, and a subscriber reacting to the applied
-event sees the new thread already live.
+``session.new`` starts a Codex thread, which is slow work. The handler accepts
+the request and spawns a daemon worker (same shape as ``speech.read_selection``)
+that opens the thread, claims the slot, adopts it, clears the transcript, rolls
+the recorder, and announces ``action.applied``. A superseded start is discarded
+rather than overwriting the newer session; the UI settles on events, not on the
+dispatch return value.
 
 Microphone and far-end selection use the same accepted-then-settle shape.
 The handler records desired state, wakes the existing reconciler, and folds
@@ -37,7 +37,6 @@ from typing import Any, Protocol, cast
 
 from .attachments import read_primary_selection
 from .control import (
-    Accepted,
     Actor,
     ActorKind,
     Applied,
@@ -319,15 +318,21 @@ def _send_message(
     return Effect.applied(state, image_ids)
 
 
-def bind_first_slice(
+def bind_first_slice(  # noqa: PLR0913 - settle ports for handler-owned session.new
     controller: Controller,
     *,
     conversation: ConversationPort,
     tts: SpeechPort,
     attachments: AttachmentPort | None = None,
     display: MessageDisplayPort | None = None,
+    transcript: TranscriptDisplayPort | None = None,
+    recorder: RecorderPort | None = None,
 ) -> None:
-    """Register the four first-slice handlers on *controller*."""
+    """Register the four first-slice handlers on *controller*.
+
+    ``session.new`` settlement needs *transcript* and *recorder*. When either
+    is missing the worker fails the request rather than leaving it pending.
+    """
 
     def set_tts_enabled(request: Request, state: AppState) -> Effect:
         enabled = bool(request.payload["enabled"])
@@ -345,7 +350,21 @@ def bind_first_slice(
         conversation.interrupt()
         return Effect.applied(state, current)
 
-    def start_session(_request: Request, state: AppState) -> Effect:
+    def start_session(request: Request, state: AppState) -> Effect:
+        # Handler runs under the controller lock — only spawn work here.
+        request_id = request.id
+
+        def work() -> None:
+            if transcript is None or recorder is None:
+                controller.fail(
+                    request_id, "session reset is not available in this session"
+                )
+                return
+            settle_new_session(
+                controller, request_id, conversation, transcript, recorder
+            )
+
+        threading.Thread(target=work, name="session.new", daemon=True).start()
         return Effect.pending(state, settle=lambda current, _effective: current)
 
     controller.register(
@@ -528,7 +547,7 @@ def bind_audio_slice(
 
     Select records desired state and wakes the channel. The reconciler reports
     back through ``settle`` or ``fail``; a newer select for the same action
-    supersedes the in-flight one the way ``run_new_session`` discards a lost
+    supersedes the in-flight one the way ``settle_new_session`` discards a lost
     reset. Mute is desired state that a later open replays, so it applies even
     when no capture channel is open yet.
     """
@@ -841,28 +860,25 @@ def install_session_transcript_hooks(
     tui.hooks.on_quit = on_quit
 
 
-def run_new_session(
+def settle_new_session(
     controller: Controller,
-    actor: Actor,
+    request_id: str,
     conversation: SessionReset,
     display: TranscriptDisplayPort,
     recorder: RecorderPort,
 ) -> Outcome:
-    """Dispatch ``session.new`` and adopt the thread only if it still wins.
+    """Post-dispatch half of ``session.new``: claim, adopt, clear, roll, announce.
 
-    The Codex open happens outside the writer lock. After it finishes, claim
-    decides whether this request still holds the slot without publishing.
-    Transcript and recorder move only for the winner. ``action.applied`` is
-    announced in ``finally`` so a failed roll cannot leave a claimed request
-    without a terminal event.
+    Must not run while holding the controller lock. ``claim`` / ``fail`` /
+    ``announce`` take the lock themselves; ``adopt_fresh_thread``,
+    ``reset_transcript``, and ``roll`` must stay outside it — the controller
+    lock is also the transcript lock, and a TUI ``reset_transcript`` blocks on
+    the app thread.
     """
-    outcome = controller.dispatch("session.new", actor=actor)
-    if not isinstance(outcome, Accepted):
-        return outcome
     started = conversation.start_fresh_thread()
     if started is None:
-        return controller.fail(outcome.request_id, "could not start a new session")
-    settled = controller.claim(outcome.request_id)
+        return controller.fail(request_id, "could not start a new session")
+    settled = controller.claim(request_id)
     if not isinstance(settled, Applied):
         return settled
     try:
@@ -870,5 +886,5 @@ def run_new_session(
         display.reset_transcript()
         recorder.roll()
     finally:
-        controller.announce(outcome.request_id)
+        controller.announce(request_id)
     return settled

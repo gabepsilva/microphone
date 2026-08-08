@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -105,6 +106,10 @@ class TranscriptRecorder:
     on an empty transcript leave no stray files. A directory that cannot be
     written is reported once and then stays quiet — a transcript failing must
     not take the session down.
+
+    ``record``, ``roll``, and ``close`` share one lock so a ``session.new``
+    worker rolling the file cannot race an entry-thread write after the
+    transcript has cleared (handler-owned settle runs off the app thread).
     """
 
     def __init__(
@@ -121,28 +126,35 @@ class TranscriptRecorder:
         self.path: Path | None = None
         self._reported = False
         self._closed = False
+        self._lock = threading.Lock()
 
     def record(self, entry: Entry) -> bool:
         """Append one finished entry and flush it to disk."""
-        if self._closed:
-            return False
-        try:
-            handle = self._ensure_open()
-            handle.write(format_entry(entry))
-            handle.flush()
-        except OSError as error:
-            self._report(error)
-            return False
-        return True
+        with self._lock:
+            if self._closed:
+                return False
+            try:
+                handle = self._ensure_open()
+                handle.write(format_entry(entry))
+                handle.flush()
+            except OSError as error:
+                self._report(error)
+                return False
+            return True
 
     def roll(self) -> None:
         """Close the current file so the next entry opens a fresh one."""
-        self.close()
-        self._closed = False
-        self._reported = False
+        with self._lock:
+            self._close_unlocked()
+            self._closed = False
+            self._reported = False
 
     def close(self) -> None:
         """Close the open file, if any."""
+        with self._lock:
+            self._close_unlocked()
+
+    def _close_unlocked(self) -> None:
         handle = self._file
         self._file = None
         self._closed = True

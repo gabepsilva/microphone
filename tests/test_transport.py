@@ -79,12 +79,20 @@ class Conversation:
 def wired(
     tmp_path: Path,
     *,
-    conversation: Conversation | None = None,
+    conversation: object | None = None,
     capacity: int | None = None,
+    transcript=None,
+    recorder=None,
 ) -> tuple[Controller, LocalServer, LocalClient]:
-    talk = conversation if conversation is not None else Conversation()
+    talk = Conversation() if conversation is None else conversation
     controller = Controller() if capacity is None else Controller(capacity=capacity)
-    bind_first_slice(controller, conversation=talk, tts=Speech())
+    bind_first_slice(
+        controller,
+        conversation=talk,  # ty: ignore[invalid-argument-type]
+        tts=Speech(),
+        transcript=transcript,
+        recorder=recorder,
+    )
     server = LocalServer(controller, path=tmp_path / "tagalong.sock")
     server.start()
     client = LocalClient(server.path)
@@ -203,6 +211,90 @@ def test_a_same_uid_client_can_dispatch_tts(tmp_path: Path) -> None:
         client.close()
         server.stop()
     assert not server.path.exists()
+
+
+class _SessionResetConversation:
+    generation = 0
+
+    def __init__(self) -> None:
+        self.started: list[object] = []
+        self.adopted: list[object] = []
+        self.ingested: list[tuple] = []
+
+    def ingest(self, speaker, text, respond, timestamp=None, images=()):
+        del timestamp
+        self.ingested.append((speaker, text, respond, images))
+
+    def interrupt(self) -> None:
+        return None
+
+    def start_fresh_thread(self):
+        started = f"thread-{len(self.started) + 1}"
+        self.started.append(started)
+        return started
+
+    def adopt_fresh_thread(self, started) -> None:
+        self.generation += 1
+        self.adopted.append(started)
+
+
+class _SessionResetDisplay:
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def reset_transcript(self) -> None:
+        self.resets += 1
+
+
+class _SessionResetRecorder:
+    def __init__(self) -> None:
+        self.rolls = 0
+
+    def roll(self) -> None:
+        self.rolls += 1
+
+
+def _await_socket_applied(
+    client: LocalClient, request_id: str, timeout: float = 2.0
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        polled = client.call("poll", {"timeout_ms": 50})
+        for event in polled.get("events", []):
+            if (
+                event.get("name") == "action.applied"
+                and event.get("payload", {}).get("request_id") == request_id
+            ):
+                return True
+    return False
+
+
+def test_session_new_over_the_socket_settles_thread_transcript_and_recorder(
+    tmp_path: Path,
+) -> None:
+    """#136: socket peers get the same settle path as the TUI slash handler."""
+    conversation = _SessionResetConversation()
+    display = _SessionResetDisplay()
+    recorder = _SessionResetRecorder()
+    _controller, server, client = wired(
+        tmp_path,
+        conversation=conversation,
+        transcript=display,
+        recorder=recorder,
+    )
+    try:
+        client.call("initialize", {"client": "electron"})
+        client.call("subscribe")
+        outcome = client.call("dispatch", {"action": "session.new", "payload": {}})
+        assert outcome["type"] == "accepted"
+        assert _await_socket_applied(client, outcome["request_id"])
+        assert conversation.started == ["thread-1"]
+        assert conversation.adopted == ["thread-1"]
+        assert display.resets == 1
+        assert recorder.rolls == 1
+    finally:
+        client.close()
+        server.stop()
 
 
 def test_commands_list_is_available_over_the_socket(tmp_path: Path) -> None:

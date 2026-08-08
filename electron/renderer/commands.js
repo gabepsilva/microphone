@@ -250,6 +250,7 @@ export function detailLine(spec) {
  * @typedef {{ kind: "command", spec: CommandSpec, args: string[] }
  *   | { kind: "message", text: string }
  *   | { kind: "info", text: string }
+ *   | { kind: "help" }
  *   | { kind: "error", text: string }} SubmitDecision
  */
 
@@ -271,15 +272,23 @@ export function decideSubmit(rawText, catalog) {
     return { kind: "message", text };
   }
   const specs = Array.isArray(catalog) ? catalog : [];
+  // No bare-`/` case on purpose. A `/` always leaves the menu open, and Enter
+  // then takes the highlighted row, so this function is not on that journey --
+  // the TUI does the same (tui.py on_prompt_input_submitted), which is the
+  // parity this issue is about.
   const spec = findCommand(specs, text);
   if (spec === null) {
     return { kind: "error", text: `unknown command: ${text}` };
   }
   const args = slashArguments(text);
   // No action_id means the command is local help (today: `/help` / `/?`).
-  // With a topic, answer in-band; bare help stays a command so the menu can
-  // remain open. Palette-on-topic is wrong: it would arm a highlighted row.
-  if (spec.action_id === null && args.length > 0) {
+  // With a topic, answer in-band. Palette-on-topic is wrong: it would arm a
+  // highlighted row. Bare help lists every command, which is what the palette
+  // already draws -- the TUI prints the same three fields per row.
+  if (spec.action_id === null) {
+    if (args.length === 0) {
+      return { kind: "help" };
+    }
     const token = String(args[0]).replace(/^\//, "");
     const topicSpec = findCommand(specs, `/${token}`);
     if (topicSpec === null) {
@@ -287,7 +296,7 @@ export function decideSubmit(rawText, catalog) {
     }
     return { kind: "info", text: detailLine(topicSpec) };
   }
-  if (spec.action_id !== null && args.length > 0) {
+  if (args.length > 0) {
     return { kind: "error", text: `usage: /${spec.name}` };
   }
   return { kind: "command", spec, args };

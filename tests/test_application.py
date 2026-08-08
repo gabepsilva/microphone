@@ -16,7 +16,7 @@ from tagalong.application import (
     install_audio_hooks,
     install_first_slice_hooks,
     install_settings_hooks,
-    run_new_session,
+    settle_new_session,
 )
 from tagalong.control import (
     Accepted,
@@ -263,12 +263,36 @@ def bound(
     conversation: FakeConversation | None = None,
     tts: FakeSpeech | None = None,
     display: FakeMessageDisplay | None = None,
+    transcript: FakeDisplay | None = None,
+    recorder: FakeRecorder | None = None,
 ) -> tuple[Controller, FakeConversation, FakeSpeech]:
     conversation = FakeConversation() if conversation is None else conversation
     tts = FakeSpeech() if tts is None else tts
     controller = Controller()
-    bind_first_slice(controller, conversation=conversation, tts=tts, display=display)
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=tts,
+        display=display,
+        transcript=transcript,
+        recorder=recorder,
+    )
     return controller, conversation, tts
+
+
+def _bound_session_new(
+    conversation: FakeConversation | None = None,
+    *,
+    transcript: FakeDisplay | None = None,
+    recorder: FakeRecorder | None = None,
+) -> tuple[Controller, FakeConversation, FakeDisplay, FakeRecorder]:
+    display = FakeDisplay() if transcript is None else transcript
+    rolls = FakeRecorder() if recorder is None else recorder
+    conversation = FakeConversation() if conversation is None else conversation
+    controller, conversation, _tts = bound(
+        conversation=conversation, transcript=display, recorder=rolls
+    )
+    return controller, conversation, display, rolls
 
 
 def test_app_state_seeds_every_field_this_slice_maintains() -> None:
@@ -521,23 +545,33 @@ def test_interrupt_of_the_current_generation_is_applied() -> None:
     assert conversation.interrupts == 1
 
 
-def test_a_new_session_is_accepted_before_the_thread_starts() -> None:
-    controller, conversation, _tts = bound()
+def test_session_new_is_accepted_then_settles_on_the_worker() -> None:
+    """Replaces the old dispatch/settle split pin: Accepted, then terminal Applied.
 
-    outcome = controller.dispatch("session.new", actor=OWNER)
+    The deleted ``test_a_new_session_is_accepted_before_the_thread_starts`` pinned
+    bare dispatch as a no-op; handler-owned settle makes that obsolete.
+    """
+    controller, conversation, display, recorder = _bound_session_new()
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.applied"
+        assert conversation.sessions == 1
+        assert conversation.adopted == conversation.started
+        assert display.resets == 1
+        assert recorder.rolls == 1
+    finally:
+        subscription.close()
 
-    assert isinstance(outcome, Accepted)
-    assert conversation.started == []
-    assert conversation.sessions == 0
 
-
-def test_run_new_session_returns_a_refusal_without_starting() -> None:
-    controller, conversation, _tts = bound()
-    display = FakeDisplay()
-    recorder = FakeRecorder()
+def test_session_new_refuses_an_unscoped_caller_without_starting() -> None:
+    """A refused dispatch spawns no worker, so nothing moves off the app thread."""
+    controller, conversation, display, recorder = _bound_session_new()
     caller = agent("notes-bot", {Scope.CONVERSE})
 
-    outcome = run_new_session(controller, caller, conversation, display, recorder)
+    outcome = controller.dispatch("session.new", actor=caller)
 
     assert isinstance(outcome, Rejected)
     assert outcome.reason is Rejection.FORBIDDEN
@@ -546,40 +580,75 @@ def test_run_new_session_returns_a_refusal_without_starting() -> None:
     assert recorder.rolls == 0
 
 
-def test_run_new_session_clears_only_after_the_thread_starts() -> None:
-    controller, conversation, _tts = bound(
-        conversation=FakeConversation(new_session_ok=False)
+def test_session_new_fails_when_the_thread_cannot_start() -> None:
+    controller, conversation, display, recorder = _bound_session_new(
+        FakeConversation(new_session_ok=False)
     )
-    display = FakeDisplay()
-    recorder = FakeRecorder()
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.failed"
+        assert "could not start a new session" in str(event.payload.get("detail", ""))
+        assert display.resets == 0
+        assert recorder.rolls == 0
+        assert conversation.sessions == 0
+    finally:
+        subscription.close()
 
-    outcome = run_new_session(controller, OWNER, conversation, display, recorder)
 
-    assert outcome == Failed("req-1", "could not start a new session")
-    assert display.resets == 0
-    assert recorder.rolls == 0
+@pytest.mark.parametrize(
+    ("transcript", "recorder"),
+    [
+        (None, None),
+        (FakeDisplay(), None),
+        (None, FakeRecorder()),
+    ],
+    ids=["neither", "no-recorder", "no-transcript"],
+)
+def test_session_new_fails_when_a_settle_port_is_missing(
+    transcript: FakeDisplay | None, recorder: FakeRecorder | None
+) -> None:
+    """A peer without both settle ports gets a terminal failure, not a hung request.
+
+    Every accepted ``session.new`` must reach a terminal outcome; nothing times
+    pending requests out. Both ports are required, so each one missing on its
+    own has to fail too.
+    """
+    controller, conversation, _tts = bound(transcript=transcript, recorder=recorder)
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.failed"
+        assert "not available in this session" in str(event.payload.get("detail", ""))
+        assert conversation.sessions == 0
+    finally:
+        subscription.close()
 
 
-def test_run_new_session_settles_when_the_thread_starts() -> None:
-    controller, conversation, _tts = bound()
-    display = FakeDisplay()
-    recorder = FakeRecorder()
-
-    outcome = run_new_session(controller, OWNER, conversation, display, recorder)
-
-    assert outcome == Applied("req-1")
-    assert conversation.sessions == 1
-    assert conversation.adopted == conversation.started
-    assert display.resets == 1
-    assert recorder.rolls == 1
+def test_session_new_settles_when_the_thread_starts() -> None:
+    controller, conversation, display, recorder = _bound_session_new()
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.applied"
+        assert conversation.sessions == 1
+        assert conversation.adopted == conversation.started
+        assert display.resets == 1
+        assert recorder.rolls == 1
+    finally:
+        subscription.close()
 
 
 def test_session_new_announces_applied_after_the_thread_is_live(
     monkeypatch,
 ) -> None:
-    controller, conversation, _tts = bound()
-    display = FakeDisplay()
-    recorder = FakeRecorder()
+    controller, conversation, _display, _recorder = _bound_session_new()
     conversation.thread = "thread-0"
     seen: list[tuple[str, object | None]] = []
     publish = controller._events.publish
@@ -589,14 +658,20 @@ def test_session_new_announces_applied_after_the_thread_is_live(
         return publish(name, payload)
 
     monkeypatch.setattr(controller._events, "publish", record)
-
-    outcome = run_new_session(controller, OWNER, conversation, display, recorder)
-
-    assert outcome == Applied("req-1")
-    assert seen == [
-        ("action.accepted", "thread-0"),
-        ("action.applied", "thread-1"),
-    ]
+    _, subscription = controller.subscribe()
+    try:
+        outcome = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(outcome, Accepted)
+        event = _await_terminal(subscription, outcome.request_id)
+        assert event.name == "action.applied"
+        assert ("action.accepted", "thread-0") in seen
+        assert ("action.applied", "thread-1") in seen
+        # accepted before the worker adopts; applied after.
+        assert seen.index(("action.accepted", "thread-0")) < seen.index(
+            ("action.applied", "thread-1")
+        )
+    finally:
+        subscription.close()
 
 
 def test_a_failed_roll_still_announces_the_adopted_session(monkeypatch) -> None:
@@ -604,6 +679,8 @@ def test_a_failed_roll_still_announces_the_adopted_session(monkeypatch) -> None:
         def roll(self) -> None:
             raise OSError("No space left on device")
 
+    # Exercise settle_new_session directly so the OSError is on this thread;
+    # the daemon worker would swallow it after announce.
     controller, conversation, _tts = bound()
     conversation.thread = "thread-0"
     seen: list[tuple[str, object | None]] = []
@@ -615,14 +692,76 @@ def test_a_failed_roll_still_announces_the_adopted_session(monkeypatch) -> None:
 
     monkeypatch.setattr(controller._events, "publish", record)
 
+    # Pending-only accept via the real handler, then settle on this thread.
+    # Re-register a no-spawn handler so the worker does not race settle.
+    def accept_only(_request, state):
+        from tagalong.control import Effect
+
+        return Effect.pending(state, settle=lambda current, _effective: current)
+
+    controller.register("session.new", accept_only)
+    accepted = controller.dispatch("session.new", actor=OWNER)
+    assert isinstance(accepted, Accepted)
+
     with pytest.raises(OSError, match="No space left on device"):
-        run_new_session(controller, OWNER, conversation, FakeDisplay(), FullDisk())
+        settle_new_session(
+            controller, accepted.request_id, conversation, FakeDisplay(), FullDisk()
+        )
 
     assert conversation.adopted == ["thread-1"]
     assert seen == [
         ("action.accepted", "thread-0"),
         ("action.applied", "thread-1"),
     ]
+
+
+def test_settle_new_session_does_not_hold_the_controller_lock_for_display() -> None:
+    """Invariant: display/recorder run outside the controller (transcript) lock."""
+    controller, conversation, _tts = bound()
+
+    def accept_only(_request, state):
+        from tagalong.control import Effect
+
+        return Effect.pending(state, settle=lambda current, _effective: current)
+
+    controller.register("session.new", accept_only)
+    accepted = controller.dispatch("session.new", actor=OWNER)
+    assert isinstance(accepted, Accepted)
+
+    class LockCheckingDisplay:
+        def __init__(self) -> None:
+            self.resets = 0
+
+        def reset_transcript(self) -> None:
+            # Another thread would block; same-thread RLock is re-entrant, so
+            # acquire(False) succeeding only proves we are not mid-claim on
+            # *another* owner. Check the lock is free for a non-owner by
+            # sampling from a helper thread.
+            held = threading.Event()
+            free = threading.Event()
+
+            def probe() -> None:
+                if controller._lock.acquire(blocking=False):
+                    controller._lock.release()
+                    free.set()
+                else:
+                    held.set()
+
+            probe_thread = threading.Thread(target=probe)
+            probe_thread.start()
+            probe_thread.join(timeout=1)
+            assert free.is_set(), "controller lock held during reset_transcript"
+            assert not held.is_set()
+            self.resets += 1
+
+    display = LockCheckingDisplay()
+    recorder = FakeRecorder()
+    outcome = settle_new_session(
+        controller, accepted.request_id, conversation, display, recorder
+    )
+    assert outcome == Applied(accepted.request_id)
+    assert display.resets == 1
+    assert recorder.rolls == 1
 
 
 def test_a_superseded_new_session_does_not_replace_the_live_one() -> None:
@@ -652,30 +791,35 @@ def test_a_superseded_new_session_does_not_replace_the_live_one() -> None:
             self.adopted.append(started)
 
     conversation = SlowConversation()
-    controller = Controller()
-    bind_first_slice(controller, conversation=conversation, tts=FakeSpeech())
     display = FakeDisplay()
     recorder = FakeRecorder()
-    first: list[object] = []
-
-    def run_first() -> None:
-        first.append(
-            run_new_session(controller, OWNER, conversation, display, recorder)
+    controller = Controller()
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=FakeSpeech(),
+        transcript=display,
+        recorder=recorder,
+    )
+    _, subscription = controller.subscribe()
+    try:
+        first = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(first, Accepted)
+        assert conversation._first_started.wait(timeout=2)
+        second = controller.dispatch("session.new", actor=OWNER)
+        assert isinstance(second, Accepted)
+        conversation._block_first.set()
+        terminals = _await_terminals(
+            subscription, {first.request_id, second.request_id}
         )
-
-    worker = threading.Thread(target=run_first, daemon=True)
-    worker.start()
-    assert conversation._first_started.wait(timeout=2)
-    second = run_new_session(controller, OWNER, conversation, display, recorder)
-    conversation._block_first.set()
-    worker.join(timeout=2)
-
-    assert first == [Superseded("req-1")]
-    assert second == Applied("req-2")
-    assert conversation.started == ["T1", "T2"]
-    assert conversation.adopted == ["T2"]
-    assert display.resets == 1
-    assert recorder.rolls == 1
+        assert terminals[first.request_id].name == "action.superseded"
+        assert terminals[second.request_id].name == "action.applied"
+        assert conversation.started == ["T1", "T2"]
+        assert conversation.adopted == ["T2"]
+        assert display.resets == 1
+        assert recorder.rolls == 1
+    finally:
+        subscription.close()
 
 
 def test_the_tui_hooks_dispatch_the_first_slice() -> None:
@@ -1378,19 +1522,29 @@ class _ReadAloudTTS:
 
 
 def _await_terminal(subscription, request_id: str, timeout: float = 2.0):
+    return _await_terminals(subscription, {request_id}, timeout=timeout)[request_id]
+
+
+def _await_terminals(subscription, request_ids: set[str], timeout: float = 2.0):
+    remaining = set(request_ids)
+    found = {}
     deadline = timeout
-    while deadline > 0:
+    while deadline > 0 and remaining:
         if not subscription.wait(0.05):
             deadline -= 0.05
             continue
         for event in subscription.drain():
+            rid = event.payload.get("request_id")
             if (
-                event.name in {"action.applied", "action.failed"}
-                and event.payload.get("request_id") == request_id
+                event.name in {"action.applied", "action.failed", "action.superseded"}
+                and rid in remaining
             ):
-                return event
+                found[str(rid)] = event
+                remaining.discard(str(rid))
         deadline -= 0.05
-    raise AssertionError(f"no terminal event for {request_id}")
+    if remaining:
+        raise AssertionError(f"no terminal event for {sorted(remaining)}")
+    return found
 
 
 def test_speech_read_selection_speaks_cleaned_text_and_echoes() -> None:

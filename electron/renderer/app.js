@@ -352,6 +352,12 @@ async function send() {
     closePalette();
     return;
   }
+  if (decision.kind === "help") {
+    // Bare `/help`, `/?`, or `/`: list every command. Lifetime stays in
+    // uncovered app.js — the classification is tested in decideSubmit.
+    showBareHelp();
+    return;
+  }
   if (decision.kind === "command") {
     paletteRows = [decision.spec];
     paletteIndex = 0;
@@ -464,13 +470,40 @@ function completeSelectedCommand() {
 }
 
 /**
+ * Park the prompt on `/` and draw the whole catalog: bare help.
+ *
+ * `/help` names no action, and the listing the TUI prints for it is exactly
+ * what a palette row already shows — same three fields. So bare help is the
+ * menu with nothing filtered out.
+ *
+ * It must not go through `completeSelectedCommand`. That writes `/help` into
+ * the prompt, and `syncPalette` recomputes rows from `commandQuery` of the
+ * prompt, so the catalog collapses to the single `/help` row — the command
+ * describing itself. `/` is the query that matches everything.
+ */
+function showBareHelp() {
+  composeText.value = "/";
+  autoGrow();
+  syncPalette();
+  // Arm the help row, not row 0. Enter takes the highlighted row, so leaving
+  // `/new` armed would make the keystroke after an informational command start
+  // a fresh thread and clear the transcript, with no confirm. The TUI does not
+  // leave you there either: it clears the draft before dispatching. Typing `/`
+  // fresh still arms `/new`, which is the TUI's behaviour.
+  const help = paletteRows.findIndex((spec) => spec.action_id === null);
+  paletteIndex = help === -1 ? 0 : help;
+  // clampIndex is modulo, so a second sync redraws the highlight rather than
+  // resetting it.
+  syncPalette();
+}
+
+/**
  * Run the highlighted command.
  *
- * A command that names an action dispatches it. `/help` names none — the
- * catalog it would print is the menu already on screen — so it just leaves
- * the menu open. It says nothing in the banner either: the banner reports
- * connection state, and echoing a summary there only restates a row the
- * user is already looking at.
+ * A command that names an action dispatches it. `/help` names none, so it
+ * shows the full menu. It says nothing in the banner either: the banner
+ * reports connection state, and echoing a summary there only restates a row
+ * the user is already looking at.
  */
 async function runSelectedCommand() {
   const spec = paletteRows[paletteIndex];
@@ -478,7 +511,7 @@ async function runSelectedCommand() {
     return;
   }
   if (spec.action_id === null) {
-    completeSelectedCommand();
+    showBareHelp();
     return;
   }
   composeText.value = "";

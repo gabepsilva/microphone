@@ -49,7 +49,6 @@ from .application import (
     install_first_slice_hooks,
     install_session_transcript_hooks,
     install_settings_hooks,
-    run_new_session,
 )
 from .attachments import AttachmentRegistry, AttachmentStore
 from .capture import (
@@ -719,8 +718,13 @@ def microphone_presence(mic_activity, audio_activity, tts):
     return SpeakerPresence(mic_activity, suppressors)
 
 
-def attach_conversation_hooks(tui, conversation, tts, attachments):
-    """Point the interface's first-slice controls at the controller."""
+def attach_conversation_hooks(tui, conversation, tts, attachments, *, recorder):
+    """Point the interface's first-slice controls at the controller.
+
+    *recorder* is required: it gates ``session.new`` settle, so a caller that
+    omitted it would get a session where every ``/new``, ``/clear``, and ``^N``
+    fails with "session reset is not available in this session".
+    """
     actor = local_user("tui")
     # Adopt the TUI's transcript store so save/wire and EventLog share one lock.
     controller = Controller(
@@ -735,6 +739,9 @@ def attach_conversation_hooks(tui, conversation, tts, attachments):
         attachments=attachments,
         # Socket peers have no prompt of their own; the handler draws for them.
         display=tui,
+        # session.new worker clears the visible transcript and rolls the file.
+        transcript=tui,
+        recorder=recorder,
     )
     bind_read_aloud_slice(controller, tts=tts)
     install_first_slice_hooks(tui, controller, actor)
@@ -793,29 +800,32 @@ def attach_remote_access(controller, host):
     return pump, server
 
 
-def wire_transcript_recording(tui, conversation, recorder, controller, actor):
+def wire_transcript_recording(tui, recorder, controller, actor):
     """Attach continuous transcript recording and the slash commands that roll it."""
     tui.hooks.on_entry = recorder.record
-    commands = build_command_router(tui, conversation, recorder, controller, actor)
+    commands = build_command_router(tui, controller, actor)
     tui.hooks.on_command = commands.handle
     tui.hooks.list_commands = commands.specs
 
 
-def build_command_router(
-    tui, conversation, recorder, controller, actor
-) -> CommandRouter:
+def build_command_router(tui, controller, actor) -> CommandRouter:
     """Register slash adapters over the typed catalog and their palette copy.
 
     Registration is driven by ``list_commands()``. A listed adapter with no
     handler, or a handler with no adapter, fails here rather than advertising
     a command the router cannot run.
+
+    Takes no conversation or recorder: ``session.new`` settle is handler-owned,
+    bound on *controller* by ``bind_first_slice``, and the slash adapter here
+    only dispatches.
     """
     listing = list_commands()
     handlers = {
+        # Dispatch only — handler-owned worker settles (claim/adopt/clear/roll).
         "new": lambda command: reset_codex_session(
             command,
             tui,
-            lambda: run_new_session(controller, actor, conversation, tui, recorder),
+            lambda: controller.dispatch("session.new", actor=actor),
         ),
         "help": lambda command: tui.note(
             render_command_help(
@@ -914,7 +924,9 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
         tts,
     )
 
-    controller, actor = attach_conversation_hooks(host, conversation, tts, attachments)
+    controller, actor = attach_conversation_hooks(
+        host, conversation, tts, attachments, recorder=recorder
+    )
     host.bind_partial_publisher(controller.set_partial)
     bind_settings_slice(
         controller,
@@ -922,7 +934,7 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
         persist=parts.config.record,
     )
     install_settings_hooks(host, controller, actor)
-    wire_transcript_recording(host, conversation, recorder, controller, actor)
+    wire_transcript_recording(host, recorder, controller, actor)
     submitter = TranscriptSubmitter(
         conversation,
         parts.gate,
