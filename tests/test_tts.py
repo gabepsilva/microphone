@@ -731,3 +731,9 @@ def test_a_turn_cancelled_during_the_request_stagger_is_dropped(
         assert playback.audio == [b"audio:Sent immediately.", b"audio:A fresh turn."]
     finally:
         engine.close()
+
+
+def test_edge_wait_ready_is_a_no_op(tts) -> None:
+    """Cloud Edge has nothing to load; readiness is immediate."""
+    assert tts.wait_ready() is None
+    assert tts.wait_ready(timeout=0.0) is None

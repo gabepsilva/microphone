@@ -39,6 +39,7 @@ from .control import (
 )
 from .control.actions import PROTOCOL_VERSION
 from .discovery import list_commands
+from .piper_voices import speech_catalog as piper_speech_catalog
 from .streams import graph, offered_applications
 
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -321,6 +322,7 @@ class LocalServer:
             "capabilities": self._rpc_capabilities,
             "commands.list": self._rpc_commands,
             "codex.catalog": self._rpc_codex_catalog,
+            "speech.catalog": self._rpc_speech_catalog,
             "devices.list": self._rpc_devices_list,
             "subscribe": self._rpc_subscribe,
             "poll": self._rpc_poll,
@@ -464,6 +466,23 @@ class LocalServer:
             for option in probe_codex_models()
         ]
         return _result(rpc_id, {"models": listing})
+
+    def _rpc_speech_catalog(
+        self,
+        rpc_id: object,
+        params: Mapping[str, Any],
+        session: _Session,
+        actor: Actor,
+    ) -> dict[str, object]:
+        """Offer the curated Piper voice list a client needs for its picker.
+
+        A query, like ``codex.catalog``: which voices the session will accept
+        and which are already on disk is not session state, so a client that
+        hard-codes either would drift from the Python shortlist or hide a
+        63 MB download behind a silent click.
+        """
+        del params, session, actor
+        return _result(rpc_id, {"voices": piper_speech_catalog()})
 
     def _rpc_devices_list(
         self,

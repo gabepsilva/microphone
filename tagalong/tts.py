@@ -86,6 +86,10 @@ class EdgeSentenceTTS(QueuedSentenceTTS):
         )
         self.worker.start()
 
+    def wait_ready(self, timeout: float | None = None) -> None:
+        """Edge has no local model load; a built engine is already ready."""
+        del timeout
+
     async def _synthesize(self, turn, text):
         self.echo.remember(
             text, retention=self.SYNTHESIZING_RETENTION_SECONDS, replace=True
