@@ -254,7 +254,7 @@ describe("transcript_view entry model", () => {
   });
 
   it("says why the partial line is quiet instead of hiding it", () => {
-    expect(idlePartialText({})).toBe("listening — nothing pending");
+    expect(idlePartialText({})).toBe("Listening...");
     expect(idlePartialText({ microphone_muted: true })).toBe(
       "mic muted, audio still transcribing",
     );

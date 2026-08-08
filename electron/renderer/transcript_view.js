@@ -284,7 +284,7 @@ export function idlePartialText(state) {
   if (audioMuted) {
     return "speaker muted, mic still hot";
   }
-  return "listening — nothing pending";
+  return "Listening...";
 }
 
 /**
