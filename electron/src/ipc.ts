@@ -34,6 +34,8 @@ export function registerIpcHandlers(
 
   handle(CHANNELS.codexCatalog, () => client.call("codex.catalog"));
 
+  handle(CHANNELS.speechCatalog, () => client.call("speech.catalog"));
+
   handle(CHANNELS.capabilities, () => client.call("capabilities"));
 
   // Single dispatch door: allowlist + per-action payload checks (#96 D3c).
