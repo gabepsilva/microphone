@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -213,3 +214,78 @@ def test_lazy_open_leaves_no_file_when_nothing_is_recorded(tmp_path) -> None:
     recorder.roll()
     recorder.close()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_record_soft_fails_when_write_raises_value_error(tmp_path, monkeypatch) -> None:
+    """Closed-handle ValueError must not escape the entry thread (#136 D4)."""
+    recorder = TranscriptRecorder(
+        directory=tmp_path,
+        clock=lambda: datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    assert recorder.record(Entry(kind="note", text="seed", stamp="12:00:00")) is True
+    assert recorder._file is not None
+
+    def boom_write(_data: str) -> int:
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(recorder._file, "write", boom_write)
+    assert recorder.record(Entry(kind="note", text="next", stamp="12:00:01")) is False
+    recorder.close()
+
+
+def test_roll_waits_for_in_flight_record(tmp_path, monkeypatch) -> None:
+    """Lock serializes record and roll so a /new worker cannot close mid-write.
+
+    Note for #136: reset_transcript blocks on the app thread before roll, so
+    record_open_entries mid-clear cannot interleave with roll. The live race is
+    the *next* on_entry after clear returns — hold record() mid-format and show
+    roll() blocks until it finishes.
+    """
+    import tagalong.recording as recording_module
+
+    recorder = TranscriptRecorder(
+        directory=tmp_path,
+        clock=lambda: datetime(2026, 8, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    in_format = threading.Event()
+    release_format = threading.Event()
+    real_format = recording_module.format_entry
+
+    def slow_format(entry: Entry) -> str:
+        in_format.set()
+        assert release_format.wait(timeout=2)
+        return real_format(entry)
+
+    monkeypatch.setattr(recording_module, "format_entry", slow_format)
+    errors: list[Exception] = []
+
+    def writer() -> None:
+        try:
+            recorder.record(Entry(kind="note", text="in flight", stamp="12:00:00"))
+        except Exception as error:
+            errors.append(error)
+
+    writer_thread = threading.Thread(target=writer, name="record")
+    writer_thread.start()
+    assert in_format.wait(timeout=2)
+
+    rolled = threading.Event()
+
+    def roller() -> None:
+        try:
+            recorder.roll()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            rolled.set()
+
+    roller_thread = threading.Thread(target=roller, name="roll")
+    roller_thread.start()
+    # Without the lock, roll finishes while record still holds format_entry.
+    assert not rolled.wait(timeout=0.25), "roll completed while record was in flight"
+    release_format.set()
+    writer_thread.join(timeout=2)
+    roller_thread.join(timeout=2)
+    assert rolled.is_set()
+    assert errors == []
+    recorder.close()

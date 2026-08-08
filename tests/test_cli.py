@@ -1262,7 +1262,16 @@ def test_the_first_slice_is_bound_to_the_session_controller(wiring) -> None:
 
     tui.hooks.on_user_text(UserTextMessage("hello"))
     tui.hooks.on_interrupt()
-    tui.hooks.on_command("/new")
+    # session.new settles on a daemon worker; wait for the terminal outcome.
+    _, subscription = controller.subscribe()
+    try:
+        tui.hooks.on_command("/new")
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and conversation.sessions == 0:
+            subscription.wait(0.05)
+            subscription.drain()
+    finally:
+        subscription.close()
 
     assert conversation.ingested == [("Text", "hello", True, ())]
     assert conversation.interrupts == 1

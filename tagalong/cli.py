@@ -49,7 +49,6 @@ from .application import (
     install_first_slice_hooks,
     install_session_transcript_hooks,
     install_settings_hooks,
-    run_new_session,
 )
 from .attachments import AttachmentRegistry, AttachmentStore
 from .capture import (
@@ -719,7 +718,7 @@ def microphone_presence(mic_activity, audio_activity, tts):
     return SpeakerPresence(mic_activity, suppressors)
 
 
-def attach_conversation_hooks(tui, conversation, tts, attachments):
+def attach_conversation_hooks(tui, conversation, tts, attachments, recorder=None):
     """Point the interface's first-slice controls at the controller."""
     actor = local_user("tui")
     # Adopt the TUI's transcript store so save/wire and EventLog share one lock.
@@ -735,6 +734,9 @@ def attach_conversation_hooks(tui, conversation, tts, attachments):
         attachments=attachments,
         # Socket peers have no prompt of their own; the handler draws for them.
         display=tui,
+        # session.new worker clears the visible transcript and rolls the file.
+        transcript=tui,
+        recorder=recorder,
     )
     bind_read_aloud_slice(controller, tts=tts)
     install_first_slice_hooks(tui, controller, actor)
@@ -809,13 +811,18 @@ def build_command_router(
     Registration is driven by ``list_commands()``. A listed adapter with no
     handler, or a handler with no adapter, fails here rather than advertising
     a command the router cannot run.
+
+    *conversation* and *recorder* are bound on the controller for
+    ``session.new`` settle; the slash handler only dispatches.
     """
+    del conversation, recorder
     listing = list_commands()
     handlers = {
+        # Dispatch only — handler-owned worker settles (claim/adopt/clear/roll).
         "new": lambda command: reset_codex_session(
             command,
             tui,
-            lambda: run_new_session(controller, actor, conversation, tui, recorder),
+            lambda: controller.dispatch("session.new", actor=actor),
         ),
         "help": lambda command: tui.note(
             render_command_help(
@@ -914,7 +921,9 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
         tts,
     )
 
-    controller, actor = attach_conversation_hooks(host, conversation, tts, attachments)
+    controller, actor = attach_conversation_hooks(
+        host, conversation, tts, attachments, recorder=recorder
+    )
     host.bind_partial_publisher(controller.set_partial)
     bind_settings_slice(
         controller,

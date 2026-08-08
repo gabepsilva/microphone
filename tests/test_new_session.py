@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -531,16 +532,43 @@ class RouterRecorder:
 def _router(conversation, tui, recorder):
     controller = Controller()
     actor = local_user("tui")
-    bind_first_slice(controller, conversation=conversation, tts=RouterSpeech())
-    return build_command_router(tui, conversation, recorder, controller, actor)
+    bind_first_slice(
+        controller,
+        conversation=conversation,
+        tts=RouterSpeech(),
+        transcript=tui,
+        recorder=recorder,
+    )
+    return controller, build_command_router(
+        tui, conversation, recorder, controller, actor
+    )
+
+
+def _await_resets(controller, tui, expected: int, timeout: float = 2.0) -> None:
+    _, subscription = controller.subscribe()
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and tui.resets < expected:
+            subscription.wait(0.05)
+            subscription.drain()
+    finally:
+        subscription.close()
 
 
 def test_reset_hook_clears_only_after_a_new_session_starts() -> None:
     tui = RouterTui()
     recorder = RouterRecorder()
-    _router(RouterConversation(False), tui, recorder).handle("/new")
-    _router(RouterConversation(True), tui, recorder).handle("/new")
-    _router(RouterConversation(True), tui, recorder).handle("/new again")
+    _controller, commands = _router(RouterConversation(False), tui, recorder)
+    commands.handle("/new")
+    _await_resets(_controller, tui, expected=0)
+    assert tui.resets == 0
+    assert recorder.rolls == 0
+
+    controller, commands = _router(RouterConversation(True), tui, recorder)
+    commands.handle("/new")
+    _await_resets(controller, tui, expected=1)
+    controller, commands = _router(RouterConversation(True), tui, recorder)
+    commands.handle("/new again")
 
     assert tui.resets == 1
     assert recorder.rolls == 1
@@ -582,7 +610,7 @@ def test_build_command_router_registers_new_and_help() -> None:
     tui = RouterTui()
     recorder = RouterRecorder()
     conversation = RouterConversation()
-    commands = _router(conversation, tui, recorder)
+    controller, commands = _router(conversation, tui, recorder)
 
     assert [spec.name for spec in commands.specs()] == ["new", "help"]
     commands.handle("/help")
@@ -592,13 +620,14 @@ def test_build_command_router_registers_new_and_help() -> None:
     assert "/help" in tui.notes[0]
 
     commands.handle("/clear")
+    _await_resets(controller, tui, expected=1)
     assert tui.resets == 1
     assert recorder.rolls == 1
 
 
 def test_help_for_one_command_names_aliases_and_unknowns() -> None:
     tui = RouterTui()
-    commands = _router(RouterConversation(), tui, RouterRecorder())
+    _controller, commands = _router(RouterConversation(), tui, RouterRecorder())
 
     commands.handle("/help clear")
     commands.handle("/help /clear")
