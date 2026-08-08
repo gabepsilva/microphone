@@ -1,12 +1,22 @@
 import { watch } from "node:fs";
 import path from "node:path";
 
-import { app, BrowserWindow, Menu, ipcMain } from "electron";
+import {
+  Notification,
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  ipcMain,
+  nativeImage,
+} from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
-import { registerIpcHandlers } from "./ipc";
+import { dispatchAction, outcomeFailureDetail, registerIpcHandlers } from "./ipc";
+import { ACTIONS } from "./protocol/actions";
 import { CHANNELS } from "./protocol/channels";
 import type { AppState, TranscriptRow } from "./state";
+import { buildTrayMenu, trayMenuKey } from "./tray_menu";
 
 // Control surface needs no WebGL. On some Linux GPU/driver stacks the GPU
 // process dies (error_code=1002) and Chromium aborts the whole app. Set these
@@ -28,11 +38,24 @@ const commands = new TagAlongClient();
 const events = new TagAlongClient();
 
 let mainWindow: BrowserWindow | null = null;
+/** Session tray — null when the icon asset is missing or Tray no-ops. */
+let tray: Tray | null = null;
+/** Last rendered menu identity — skip rebuild on partial-only state.changed. */
+let lastTrayMenuKey: string | null = null;
+
+function showTrayNotification(title: string, body: string): void {
+  if (!Notification.isSupported()) {
+    console.error("tray notification unsupported:", title, body);
+    return;
+  }
+  new Notification({ title, body }).show();
+}
 
 function broadcastState(state: AppState): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(CHANNELS.stateChanged, state);
   }
+  rebuildTrayMenu(state);
 }
 
 function broadcastTranscriptSnapshot(rows: TranscriptRow[]): void {
@@ -55,6 +78,65 @@ const sessionEvents = new SessionEvents(events, {
     console.error("tagalong event loop:", error.message);
   },
 });
+
+async function dispatchMuted(
+  action: typeof ACTIONS.microphone_set_muted | typeof ACTIONS.audio_stream_set_muted,
+  muted: boolean,
+): Promise<void> {
+  try {
+    // Goes through ipc.dispatchAction so Semgrep's allowlist chokepoint holds.
+    const outcome = await dispatchAction(commands, action, { muted });
+    const detail = outcomeFailureDetail(outcome);
+    if (detail !== null) {
+      // Window may be covered — console alone is silent for the tray use case (R3).
+      showTrayNotification("Mute", detail);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Window may be covered — console alone is silent for the tray use case (R3).
+    showTrayNotification("Mute", message);
+  }
+}
+
+function rebuildTrayMenu(state: AppState): void {
+  if (tray === null) {
+    return;
+  }
+  // Read aloud stays absent until #128b wires speech.read_selection.
+  const handlers = {
+    onToggleMicrophoneMute: () => {
+      void dispatchMuted(
+        ACTIONS.microphone_set_muted,
+        !sessionEvents.state.microphone_muted,
+      );
+    },
+    onToggleAudioStreamMute: () => {
+      void dispatchMuted(
+        ACTIONS.audio_stream_set_muted,
+        !sessionEvents.state.audio_stream_muted,
+      );
+    },
+  };
+  const key = trayMenuKey(state, handlers);
+  if (key === lastTrayMenuKey) {
+    return;
+  }
+  lastTrayMenuKey = key;
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenu(state, handlers)));
+}
+
+function createTray(): void {
+  const iconPath = path.join(__dirname, "..", "assets", "tray-icon.png");
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    console.error("tray icon missing or empty:", iconPath);
+    return;
+  }
+  tray = new Tray(icon);
+  tray.setToolTip("TagAlong");
+  lastTrayMenuKey = null;
+  rebuildTrayMenu(sessionEvents.state);
+}
 
 /** Renderer soft-reload for `bun run dev` only — never in a normal start. */
 function enableDevRendererReload(): void {
@@ -106,6 +188,7 @@ void app.whenReady().then(async () => {
   // Show the window even when the TUI/socket is unhealthy — attach-only means
   // that case is expected, and an unbounded handshake must not hide the UI.
   await createWindow();
+  createTray();
   enableDevRendererReload();
   void sessionEvents.start().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -116,6 +199,10 @@ void app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   sessionEvents.stop();
   commands.close();
+  if (tray !== null) {
+    tray.destroy();
+    tray = null;
+  }
   if (process.platform !== "darwin") {
     app.quit();
   }

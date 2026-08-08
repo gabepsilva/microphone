@@ -6,7 +6,7 @@ import {
   isAllowedAction,
   validateDispatch,
 } from "../src/protocol/dispatch_allowlist";
-import { registerIpcHandlers } from "../src/ipc";
+import { dispatchAction, outcomeFailureDetail, registerIpcHandlers } from "../src/ipc";
 import { CHANNELS } from "../src/protocol/channels";
 import type { IpcMainInvokeEvent } from "electron";
 
@@ -156,6 +156,53 @@ describe("DISPATCH_ALLOWLIST", () => {
       action: ACTIONS.transcript_save,
       payload: {},
     });
+  });
+});
+
+describe("dispatchAction", () => {
+  it("validates then calls socket dispatch (tray and IPC share this door)", async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client = {
+      call: async (method: string, params: Record<string, unknown> = {}) => {
+        calls.push({ method, params });
+        return { type: "applied" };
+      },
+    };
+    await expect(
+      dispatchAction(client, ACTIONS.microphone_set_muted, { muted: true }),
+    ).resolves.toEqual({ type: "applied" });
+    expect(calls).toEqual([
+      {
+        method: "dispatch",
+        params: {
+          action: ACTIONS.microphone_set_muted,
+          payload: { muted: true },
+        },
+      },
+    ]);
+    await expect(dispatchAction(client, ACTIONS.session_quit, {})).rejects.toThrow(
+      "action not allowed",
+    );
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("outcomeFailureDetail", () => {
+  it("surfaces rejected/failed detail and ignores applied outcomes", () => {
+    expect(outcomeFailureDetail({ type: "applied" })).toBeNull();
+    expect(outcomeFailureDetail({ type: "accepted", request_id: "r1" })).toBeNull();
+    expect(outcomeFailureDetail(null)).toBeNull();
+    expect(outcomeFailureDetail("ok")).toBeNull();
+    expect(
+      outcomeFailureDetail({
+        type: "rejected",
+        detail: "microphone.set_muted forbidden",
+      }),
+    ).toBe("microphone.set_muted forbidden");
+    expect(outcomeFailureDetail({ type: "failed", detail: "device gone" })).toBe(
+      "device gone",
+    );
+    expect(outcomeFailureDetail({ type: "rejected" })).toBe("Request failed");
   });
 });
 

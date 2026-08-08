@@ -9,6 +9,7 @@
     "src/protocol/channels.ts": 100.0,
     "src/protocol/dispatch_allowlist.ts": 100.0,
     "src/state.ts": 100.0,
+    "src/tray_menu.ts": 100.0,
     "tools/coverage_gate.ts": 91.0
   },
   "func_floors": {
@@ -19,6 +20,7 @@
     "src/protocol/channels.ts": 100.0,
     "src/protocol/dispatch_allowlist.ts": 100.0,
     "src/state.ts": 100.0,
+    "src/tray_menu.ts": 100.0,
     "tools/coverage_gate.ts": 72.0
   },
   "unmeasured_entrypoints": {
