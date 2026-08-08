@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 from tagalong.application import (
     bind_audio_slice,
     bind_first_slice,
+    bind_read_aloud_slice,
     bind_session_transcript_slice,
     bind_settings_slice,
 )
@@ -49,6 +50,7 @@ REQUIRED_BINDERS: frozenset[str] = frozenset(
         "bind_audio_slice",
         "bind_settings_slice",
         "bind_session_transcript_slice",
+        "bind_read_aloud_slice",
     }
 )
 
@@ -77,6 +79,7 @@ def production_handler_ids() -> frozenset[str]:
     bind_first_slice(controller, conversation=talk, tts=speech, attachments=attachments)
     bind_settings_slice(controller, (talk, speech, MagicMock(), MagicMock()))
     bind_audio_slice(controller, microphone=MagicMock(), audio=MagicMock())
+    bind_read_aloud_slice(controller, tts=speech)
     bind_session_transcript_slice(
         controller,
         (talk, MagicMock(), attachments, MagicMock()),

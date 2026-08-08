@@ -24,6 +24,7 @@ from tagalong.attachments import (
     image_token,
     looks_like_image,
     parse_image_numbers,
+    read_primary_selection,
 )
 from tagalong.codex import CodexConversation
 from tagalong.domain import TranscriptEntry, TranscriptRouter, UserTextMessage
@@ -174,6 +175,34 @@ def test_system_clipboard_returns_none_when_empty(monkeypatch) -> None:
 def completed(stdout: bytes = b"", returncode: int = 0):
     """A stand-in for ``subprocess.run``'s result."""
     return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": b""})()
+
+
+def test_read_primary_selection_prefers_wl_paste(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(list(command))
+        if command[:2] == ["wl-paste", "--primary"]:
+            return completed(b"  primary text  \n")
+        raise AssertionError(f"unexpected helper: {command}")
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert read_primary_selection() == "primary text"
+    assert calls[0][:2] == ["wl-paste", "--primary"]
+
+
+def test_read_primary_selection_falls_back_and_returns_none(monkeypatch) -> None:
+    def fake_run(command, **_kwargs):
+        if command[0] == "wl-paste":
+            raise FileNotFoundError
+        if command[0] == "xclip":
+            return completed(b"", returncode=1)
+        if command[0] == "xsel":
+            return completed(b"")
+        raise AssertionError(command)
+
+    monkeypatch.setattr("tagalong.attachments.subprocess.run", fake_run)
+    assert read_primary_selection() is None
 
 
 def applescript_data(code: str, data: bytes) -> bytes:

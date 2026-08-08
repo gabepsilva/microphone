@@ -15,6 +15,7 @@ export const ACTIONS = {
   tts_set_enabled: "tts.set_enabled",
   tts_set_provider: "tts.set_provider",
   tts_set_voice: "tts.set_voice",
+  speech_read_selection: "speech.read_selection",
   codex_set_model: "codex.set_model",
   codex_set_reasoning: "codex.set_reasoning",
   turn_silence_set: "turn_silence.set",

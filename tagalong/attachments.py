@@ -206,6 +206,27 @@ class SystemImageClipboard:
         return None
 
 
+def read_primary_selection() -> str | None:
+    """Read the X11/Wayland primary selection as text, or ``None`` if empty/missing.
+
+    Prefer ``wl-paste --primary``, then ``xclip -selection primary``, then
+    ``xsel --primary``. Reuses :func:`_run_clipboard` so helper failures,
+    timeouts, and empty stdout are the same clear ``None`` path AC#5 needs.
+    """
+    for command in (
+        ["wl-paste", "--primary", "--no-newline"],
+        ["xclip", "-selection", "primary", "-o"],
+        ["xsel", "--primary", "--output"],
+    ):
+        data = _run_clipboard(command)
+        if data is None:
+            continue
+        text = data.decode("utf-8", errors="replace").strip()
+        if text:
+            return text
+    return None
+
+
 def _decode_applescript_data(payload: bytes, code: str) -> bytes | None:
     """Decode ``«data PNGf89504…»`` — AppleScript's hex form — into bytes.
 

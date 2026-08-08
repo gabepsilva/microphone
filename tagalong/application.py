@@ -28,12 +28,14 @@ keystroke that overtook an in-flight open is superseded rather than applied.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from .attachments import read_primary_selection
 from .control import (
     Accepted,
     Actor,
@@ -52,7 +54,14 @@ from .control import (
     with_desired,
     with_effective,
 )
-from .domain import AGENT, TEXT, UserTextMessage
+from .domain import (
+    AGENT,
+    TEXT,
+    SentenceChunker,
+    UserTextMessage,
+    markdown_to_speech,
+    strip_chrome,
+)
 from .presentation import Entry
 from .recording import default_transcript_dir, write_transcript_export
 from .speech import PIPER
@@ -99,6 +108,14 @@ class SpeechPort(Protocol):
     """The speech engine surface the first slice needs."""
 
     def set_enabled(self, enabled: bool) -> bool | None: ...
+
+
+class ReadAloudSpeechPort(Protocol):
+    """Speak cleaned selection text; shares the session TurnGate with Codex."""
+
+    def begin_turn(self) -> None: ...
+
+    def speak(self, text: str) -> None: ...
 
 
 class SettingsSpeechPort(Protocol):
@@ -557,6 +574,61 @@ def bind_audio_slice(
     controller.register("audio_stream.select", select_audio)
     controller.register("microphone.set_muted", set_microphone_muted)
     controller.register("audio_stream.set_muted", set_audio_muted)
+
+
+def bind_read_aloud_slice(
+    controller: Controller,
+    *,
+    tts: ReadAloudSpeechPort,
+    read_selection: Callable[[], str | None] = read_primary_selection,
+) -> None:
+    """Register ``speech.read_selection`` — primary selection → chrome → TTS.
+
+    The handler must not block: ``wl-paste`` is ``subprocess.run(..., timeout=2)``
+    and the controller lock is also the transcript lock. Shape mirrors
+    ``select_audio`` — validate, return ``Effect.pending``, worker settles/fails.
+
+    Collision with a Codex reply is last-wins: one :class:`~.domain.TurnGate`
+    on the shared TTS engine; ``begin_turn`` orphans the other side's queue.
+    Spoken text enters ``EchoMemory`` via ``tts.speak`` so the mic does not
+    re-transcribe the machine reading aloud.
+    """
+
+    def read_aloud(request: Request, state: AppState) -> Effect:
+        if not state.tts_enabled:
+            raise EffectFailed("TTS is disabled")
+
+        def work() -> None:
+            try:
+                selection = read_selection()
+                if selection is None or not selection.strip():
+                    controller.fail(
+                        request.id,
+                        "Primary selection is empty or no selection helper is available",
+                    )
+                    return
+                cleaned = markdown_to_speech(strip_chrome(selection))
+                if not cleaned:
+                    controller.fail(
+                        request.id,
+                        "Nothing speakable remained after cleaning the selection",
+                    )
+                    return
+                # Last-wins vs Codex: begin_turn bumps the shared TurnGate.
+                tts.begin_turn()
+                chunker = SentenceChunker(tts.speak)
+                chunker.feed(cleaned)
+                chunker.flush()
+                # No effective payload — settle would publish it on action.applied
+                # into the shared EventLog (#128b S3); nobody reads it.
+                controller.settle(request.id)
+            except Exception as error:
+                controller.fail(request.id, str(error))
+
+        threading.Thread(target=work, name="speech.read_selection", daemon=True).start()
+        return Effect.pending(state, settle=lambda current, _effective: current)
+
+    controller.register("speech.read_selection", read_aloud)
 
 
 def bind_session_transcript_slice(

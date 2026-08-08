@@ -169,14 +169,21 @@ def actor_for_client(client: str, peer: Peer) -> Actor:
 
     The transport authenticates uid, not which program connected. A self-asserted
     ``client`` string therefore cannot mint :class:`ActorKind.HUMAN` — that
-    would let any same-uid process pose as a person in the room. Scopes come
-    from :func:`~.control.policy.scopes_for_socket_client`, not from the
-    request. The in-process TUI is still :func:`local_user`.
+    would let any same-uid process pose as a person in the room. Scopes and
+    per-label denials come from :mod:`~.control.policy`, not from the request.
+    The in-process TUI is still :func:`local_user`.
     """
-    from .control.policy import scopes_for_socket_client
+    from .control.policy import (
+        denied_actions_for_socket_client,
+        scopes_for_socket_client,
+    )
 
     label = client.strip() or "local"
-    return agent(f"{label}-{peer.uid}", scopes_for_socket_client(label))
+    return agent(
+        f"{label}-{peer.uid}",
+        scopes_for_socket_client(label),
+        denied_actions_for_socket_client(label),
+    )
 
 
 class LocalServer:

@@ -51,7 +51,7 @@ from .actions import (
     Capability,
     InvalidPayload,
 )
-from .actors import Actor
+from .actors import Actor, ActorKind
 from .events import DEFAULT_CAPACITY, EventLog, Subscription, utc_now
 from .outcomes import (
     Accepted,
@@ -411,7 +411,12 @@ class Controller:
                 f"no such action: {action_id}",
             )
         if not authorizes(actor, action):
-            if action.id in AGENT_DENIED_ACTIONS and action.scope in actor.scopes:
+            kind_denied = (
+                actor.kind is ActorKind.AGENT and action.id in AGENT_DENIED_ACTIONS
+            )
+            if action.scope in actor.scopes and (
+                action.id in actor.denied or kind_denied
+            ):
                 detail = f"{actor.id} is denied {action_id} by capability policy"
             else:
                 detail = f"{actor.id} does not hold the {action.scope} scope"

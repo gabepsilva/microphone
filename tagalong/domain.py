@@ -205,6 +205,54 @@ def markdown_to_speech(text: str) -> str:
     return spoken.strip()
 
 
+# Selection chrome (#128b). Kept out of markdown_to_speech — that path is on
+# every Codex reply (codex.py → speech_sink), and chrome rules must not strip
+# Taga quoting a Slack header back to the user.
+#
+# Chrome occupies structural positions (own line / trailing metadata). Whole-
+# body substitutions would delete ordinary English — clocks (`10:30:45`),
+# "3 replies", capitalized "Edited" — so each rule is anchored like
+# ``_LEADING_NAME_TIME`` below. Shortcodes require a letter so ``:30:`` inside
+# a timestamp never matches, and ``(?!\w)`` after the closing colon so
+# namespaced keys like ``a:b:c`` survive while word-adjacent ``live:tada:``
+# still strips (Slack shortcodes are never followed by a word character).
+_EMOJI_SHORTCODE = re.compile(r":[a-zA-Z][a-zA-Z0-9_+-]*:(?!\w)")
+# Reaction clusters like ``:eyes: 4`` / ``:tada: 2`` (same line only — do not
+# eat a following line's ``3 replies`` count across a newline).
+_REACTION_CLUSTER = re.compile(r"(?::[a-zA-Z][a-zA-Z0-9_+-]*:(?!\w)[ \t]*)+\d+")
+# Slack reply chrome is its own line ("3 replies"), never mid-sentence.
+_REPLY_COUNT_LINE = re.compile(r"(?m)^[ \t]*\d+[ \t]+replies?[ \t]*$")
+# Slack edit marker is parenthesised and trailing, not the word "Edited".
+_EDITED_TRAILING = re.compile(r"[ \t]*\(edited\)[ \t]*(?=\n|$)", re.IGNORECASE)
+# First-line-only Slack-ish header: Capitalized Name(s) then HH:MM AM/PM.
+# Unanchored would eat mid-paragraph "we shipped it at 10:42 AM".
+_LEADING_NAME_TIME = re.compile(
+    r"^(?:[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*){0,5})\s+"
+    r"\d{1,2}:\d{2}\s*(?:AM|PM)\b\s*",
+)
+
+
+def strip_chrome(text: str) -> str:
+    """Drop source-UI chrome from a primary selection before TTS prep.
+
+    Compose only on the selection path: ``strip_chrome`` →
+    :func:`markdown_to_speech` → :class:`SentenceChunker`. Never call this
+    from the Codex render path.
+    """
+    if not text:
+        return ""
+    lines = text.splitlines(keepends=True)
+    first = _LEADING_NAME_TIME.sub("", lines[0], count=1)
+    body = first + "".join(lines[1:])
+    body = _REACTION_CLUSTER.sub(" ", body)
+    body = _EMOJI_SHORTCODE.sub(" ", body)
+    body = _REPLY_COUNT_LINE.sub(" ", body)
+    body = _EDITED_TRAILING.sub(" ", body)
+    body = _SPEECH_WHITESPACE.sub(" ", body)
+    body = _SPACE_BEFORE_PUNCT.sub(r"\1", body)
+    return body.strip()
+
+
 def speech_sink(speak: Callable[[str], None]) -> Callable[[str], None]:
     """Wrap a ``speak`` callback so it only receives cleaned markdown chunks.
 

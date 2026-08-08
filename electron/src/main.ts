@@ -11,7 +11,12 @@ import {
   nativeImage,
 } from "electron";
 
-import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
+import {
+  SessionEvents,
+  TagAlongClient,
+  type ActionFailedEvent,
+  type TranscriptWireEvent,
+} from "./client";
 import { dispatchAction, outcomeFailureDetail, registerIpcHandlers } from "./ipc";
 import { ACTIONS } from "./protocol/actions";
 import { CHANNELS } from "./protocol/channels";
@@ -44,6 +49,7 @@ let tray: Tray | null = null;
 let lastTrayMenuKey: string | null = null;
 
 function showTrayNotification(title: string, body: string): void {
+  // Visible with the window minimized/covered — renderer banner is not (#128 Q4).
   if (!Notification.isSupported()) {
     console.error("tray notification unsupported:", title, body);
     return;
@@ -70,10 +76,18 @@ function broadcastTranscriptEvent(event: TranscriptWireEvent): void {
   }
 }
 
+function onActionFailed(event: ActionFailedEvent): void {
+  if (event.action !== ACTIONS.speech_read_selection) {
+    return;
+  }
+  showTrayNotification("Read aloud", event.detail);
+}
+
 const sessionEvents = new SessionEvents(events, {
   onState: broadcastState,
   onTranscriptSnapshot: broadcastTranscriptSnapshot,
   onTranscriptEvent: broadcastTranscriptEvent,
+  onActionFailed,
   onError: (error) => {
     console.error("tagalong event loop:", error.message);
   },
@@ -98,11 +112,24 @@ async function dispatchMuted(
   }
 }
 
+async function dispatchReadAloud(): Promise<void> {
+  try {
+    const outcome = await dispatchAction(commands, ACTIONS.speech_read_selection, {});
+    // Sync rejection (FORBIDDEN / INAPPLICABLE) — async failures use action.failed.
+    const detail = outcomeFailureDetail(outcome);
+    if (detail !== null) {
+      showTrayNotification("Read aloud", detail);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    showTrayNotification("Read aloud", message);
+  }
+}
+
 function rebuildTrayMenu(state: AppState): void {
   if (tray === null) {
     return;
   }
-  // Read aloud stays absent until #128b wires speech.read_selection.
   const handlers = {
     onToggleMicrophoneMute: () => {
       void dispatchMuted(
@@ -115,6 +142,9 @@ function rebuildTrayMenu(state: AppState): void {
         ACTIONS.audio_stream_set_muted,
         !sessionEvents.state.audio_stream_muted,
       );
+    },
+    onReadAloud: () => {
+      void dispatchReadAloud();
     },
   };
   const key = trayMenuKey(state, handlers);

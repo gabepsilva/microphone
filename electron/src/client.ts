@@ -169,6 +169,12 @@ export class TagAlongClient {
   }
 }
 
+export type ActionFailedEvent = {
+  request_id: string;
+  action: string;
+  detail: string;
+};
+
 export type SessionEventsOptions = {
   /** Long-poll budget in ms. Default 30s. */
   timeoutMs?: number;
@@ -177,6 +183,8 @@ export type SessionEventsOptions = {
   onTranscriptSnapshot?: (rows: TranscriptRow[]) => void;
   /** Incremental transcript events from the shared EventLog. */
   onTranscriptEvent?: (event: TranscriptWireEvent) => void;
+  /** Async dispatch failures (e.g. speech.read_selection) — #128b. */
+  onActionFailed?: (event: ActionFailedEvent) => void;
   onError?: (error: Error) => void;
 };
 
@@ -197,6 +205,7 @@ export class SessionEvents {
   private readonly onState: (state: AppState) => void;
   private readonly onTranscriptSnapshot: (rows: TranscriptRow[]) => void;
   private readonly onTranscriptEvent: (event: TranscriptWireEvent) => void;
+  private readonly onActionFailed: (event: ActionFailedEvent) => void;
   private readonly onError: (error: Error) => void;
 
   constructor(
@@ -207,6 +216,7 @@ export class SessionEvents {
     this.onState = options.onState;
     this.onTranscriptSnapshot = options.onTranscriptSnapshot ?? (() => undefined);
     this.onTranscriptEvent = options.onTranscriptEvent ?? (() => undefined);
+    this.onActionFailed = options.onActionFailed ?? (() => undefined);
     this.onError = options.onError ?? (() => undefined);
   }
 
@@ -313,6 +323,24 @@ export class SessionEvents {
           if (event.name === "state.changed") {
             this._state = applyStateFragment(this._state, event.payload ?? {});
             this.onState(this._state);
+            continue;
+          }
+          if (event.name === "action.failed") {
+            const payload = event.payload ?? {};
+            const requestId = payload.request_id;
+            const action = payload.action;
+            const detail = payload.detail;
+            if (
+              typeof requestId === "string" &&
+              typeof action === "string" &&
+              typeof detail === "string"
+            ) {
+              this.onActionFailed({
+                request_id: requestId,
+                action,
+                detail,
+              });
+            }
             continue;
           }
           this._applyTranscriptEvent(event);

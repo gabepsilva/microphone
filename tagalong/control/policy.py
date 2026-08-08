@@ -30,6 +30,12 @@ SOCKET_AGENT_SCOPES: frozenset[Scope] = frozenset(Scope)
 # handler-level INAPPLICABLE that MCP would still advertise.
 AGENT_DENIED_ACTIONS: frozenset[str] = frozenset({"session.quit"})
 
+# Per-label denials at grant time (#128 D12). ``mcp`` must not pull the primary
+# selection; ``electron`` (tray) may. Enforced in :func:`authorizes`, so
+# capabilities and dispatch refuse together — list_tools filtering alone is
+# not enough (``call_tool`` resolves against the full catalog).
+MCP_DENIED_ACTIONS: frozenset[str] = frozenset({"speech.read_selection"})
+
 
 def scopes_for_socket_client(client: str) -> frozenset[Scope]:
     """Return the scopes the runtime grants a same-uid socket peer.
@@ -42,9 +48,24 @@ def scopes_for_socket_client(client: str) -> frozenset[Scope]:
     return SOCKET_AGENT_SCOPES
 
 
+def denied_actions_for_socket_client(client: str) -> frozenset[str]:
+    """Return action ids denied to a same-uid socket peer of this *client* label.
+
+    Consumed once in :func:`~tagalong.transport.actor_for_client` when the
+    actor is minted — the same seam as scopes. The adversary this binds is
+    the model via :class:`~tagalong.mcp.McpBridge` (hardcoded ``client=mcp``),
+    not a hostile same-uid process that can assert any label.
+    """
+    if client.strip() == "mcp":
+        return MCP_DENIED_ACTIONS
+    return frozenset()
+
+
 def authorizes(actor: Actor, action: ActionSpec) -> bool:
     """True when *actor* holds *action*'s scope and is not explicitly denied."""
     if action.scope not in actor.scopes:
+        return False
+    if action.id in actor.denied:
         return False
     denied = actor.kind is ActorKind.AGENT and action.id in AGENT_DENIED_ACTIONS
     return not denied

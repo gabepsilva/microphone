@@ -42,6 +42,7 @@ from .application import (
     app_state_from_session,
     bind_audio_slice,
     bind_first_slice,
+    bind_read_aloud_slice,
     bind_session_transcript_slice,
     bind_settings_slice,
     install_audio_hooks,
@@ -735,6 +736,7 @@ def attach_conversation_hooks(tui, conversation, tts, attachments):
         # Socket peers have no prompt of their own; the handler draws for them.
         display=tui,
     )
+    bind_read_aloud_slice(controller, tts=tts)
     install_first_slice_hooks(tui, controller, actor)
     return controller, actor
 

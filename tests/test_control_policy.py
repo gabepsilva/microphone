@@ -6,8 +6,10 @@ from tagalong.control.actions import CATALOG, ActionSpec, Scope
 from tagalong.control.actors import ActorKind, agent, local_user
 from tagalong.control.policy import (
     AGENT_DENIED_ACTIONS,
+    MCP_DENIED_ACTIONS,
     SOCKET_AGENT_SCOPES,
     authorizes,
+    denied_actions_for_socket_client,
     scopes_for_socket_client,
 )
 
@@ -44,3 +46,37 @@ def test_every_catalog_action_is_decidable_for_a_socket_agent() -> None:
         for action_id, allowed in decisions.items()
         if action_id != "session.quit"
     )
+
+
+def test_client_keyed_denial_binds_mcp_not_electron() -> None:
+    """#128 D12: grant-time denial — mcp FORBIDDEN, electron allowed."""
+    assert "speech.read_selection" in MCP_DENIED_ACTIONS
+    assert denied_actions_for_socket_client("mcp") == MCP_DENIED_ACTIONS
+    assert denied_actions_for_socket_client("electron") == frozenset()
+    # Blank / whitespace labels are not mcp — same empty denial as electron.
+    assert denied_actions_for_socket_client("  ") == frozenset()
+    assert denied_actions_for_socket_client("") == frozenset()
+    assert denied_actions_for_socket_client("MCP") == frozenset()
+    # strip() then exact match — trailing/leading space still counts as mcp.
+    assert denied_actions_for_socket_client("mcp ") == MCP_DENIED_ACTIONS
+    assert denied_actions_for_socket_client(" mcp") == MCP_DENIED_ACTIONS
+
+    # Synthetic spec — denial is keyed on action id, not catalog membership.
+    action = ActionSpec(
+        "speech.read_selection",
+        "Read the primary selection aloud after chrome cleanup",
+        Scope.SETTINGS,
+    )
+    mcp_denied = denied_actions_for_socket_client("mcp")
+    assert mcp_denied == frozenset({"speech.read_selection"})
+    mcp = agent("mcp-1", SOCKET_AGENT_SCOPES, mcp_denied)
+    electron = agent(
+        "electron-1", SOCKET_AGENT_SCOPES, denied_actions_for_socket_client("electron")
+    )
+    # actor.denied must actually be the grant — ignoring it would leave mcp open.
+    assert mcp.denied == MCP_DENIED_ACTIONS
+    assert electron.denied == frozenset()
+    assert not authorizes(mcp, action)
+    assert authorizes(electron, action)
+    # A same-scope agent with an empty denied set is allowed (denial is not kind-wide).
+    assert authorizes(agent("other-1", SOCKET_AGENT_SCOPES), action)

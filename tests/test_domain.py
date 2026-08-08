@@ -23,6 +23,7 @@ from tagalong.domain import (
     same_turn_text,
     silence_for_turn,
     speech_sink,
+    strip_chrome,
 )
 
 
@@ -915,6 +916,57 @@ def test_markdown_to_speech_keeps_dunder_names() -> None:
     assert markdown_to_speech("Call __init__ once.") == "Call __init__ once."
     # Single-underscore emphasis is the em form; markers must still return.
     assert markdown_to_speech("See _name_ here.") == "See _name_ here."
+
+
+def test_strip_chrome_removes_slack_noise_without_paraphrasing() -> None:
+    """Selection chrome only — wording that must survive stays substring-intact."""
+    assert strip_chrome("") == ""
+    slack = (
+        "Gabriel Silva 10:42 AM Hey team - the new deploy is live :tada:\n"
+        "rollback is `make rollback`\n"
+        ":eyes: 4 :tada: 2\n"
+        "3 replies\n"
+        'quoted: "we should watch p99 for an hour" (edited)\n'
+        "Sounds right.\n"
+        "I'll keep an eye on it and post at noon if anything drifts."
+    )
+    cleaned = strip_chrome(slack)
+    assert cleaned == (
+        "Hey team - the new deploy is live rollback is `make rollback` "
+        'quoted: "we should watch p99 for an hour" Sounds right. '
+        "I'll keep an eye on it and post at noon if anything drifts."
+    )
+    spoken = markdown_to_speech(cleaned)
+    assert "the new deploy is live" in spoken
+    assert "make rollback" in spoken
+
+
+def test_strip_chrome_header_is_first_line_only() -> None:
+    """Unanchored time matching would eat mid-paragraph 'at 10:42 AM'."""
+    body = (
+        "Gabriel Silva 10:42 AM Opening line.\n"
+        "we shipped it at 10:42 AM and watched p99."
+    )
+    cleaned = strip_chrome(body)
+    assert cleaned == "Opening line. we shipped it at 10:42 AM and watched p99."
+
+
+def test_strip_chrome_same_line_reaction_counts_not_cross_line_replies() -> None:
+    """`:tada: 2` on one line must not swallow the next line's prose replies."""
+    text = "Live:tada: 2\n3 replies left in the thread."
+    assert strip_chrome(text) == "Live 3 replies left in the thread."
+
+
+def test_strip_chrome_preserves_ordinary_prose() -> None:
+    """Anchored chrome rules must leave clocks, reply phrases, and Edited intact."""
+    prose = (
+        "The build finished at 10:30:45 and we shipped. "
+        "Aspect ratio is 16:9:1 in the export. "
+        "Use the key path a:b:c in the config. "
+        "She got 3 replies within a minute. "
+        "The contract was Edited by counsel before signing."
+    )
+    assert strip_chrome(prose) == prose
 
 
 def test_markdown_to_speech_url_punctuation_stays_with_the_sentence() -> None:
