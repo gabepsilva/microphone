@@ -12,7 +12,7 @@ import {
 } from "electron";
 
 import { SessionEvents, TagAlongClient, type TranscriptWireEvent } from "./client";
-import { dispatchAction, registerIpcHandlers } from "./ipc";
+import { dispatchAction, outcomeFailureDetail, registerIpcHandlers } from "./ipc";
 import { ACTIONS } from "./protocol/actions";
 import { CHANNELS } from "./protocol/channels";
 import type { AppState, TranscriptRow } from "./state";
@@ -85,7 +85,12 @@ async function dispatchMuted(
 ): Promise<void> {
   try {
     // Goes through ipc.dispatchAction so Semgrep's allowlist chokepoint holds.
-    await dispatchAction(commands, action, { muted });
+    const outcome = await dispatchAction(commands, action, { muted });
+    const detail = outcomeFailureDetail(outcome);
+    if (detail !== null) {
+      // Window may be covered — console alone is silent for the tray use case (R3).
+      showTrayNotification("Mute", detail);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Window may be covered — console alone is silent for the tray use case (R3).
@@ -98,29 +103,26 @@ function rebuildTrayMenu(state: AppState): void {
     return;
   }
   // Read aloud stays absent until #128b wires speech.read_selection.
-  const key = trayMenuKey(state, false);
+  const handlers = {
+    onToggleMicrophoneMute: () => {
+      void dispatchMuted(
+        ACTIONS.microphone_set_muted,
+        !sessionEvents.state.microphone_muted,
+      );
+    },
+    onToggleAudioStreamMute: () => {
+      void dispatchMuted(
+        ACTIONS.audio_stream_set_muted,
+        !sessionEvents.state.audio_stream_muted,
+      );
+    },
+  };
+  const key = trayMenuKey(state, handlers);
   if (key === lastTrayMenuKey) {
     return;
   }
   lastTrayMenuKey = key;
-  tray.setContextMenu(
-    Menu.buildFromTemplate(
-      buildTrayMenu(state, {
-        onToggleMicrophoneMute: () => {
-          void dispatchMuted(
-            ACTIONS.microphone_set_muted,
-            !sessionEvents.state.microphone_muted,
-          );
-        },
-        onToggleAudioStreamMute: () => {
-          void dispatchMuted(
-            ACTIONS.audio_stream_set_muted,
-            !sessionEvents.state.audio_stream_muted,
-          );
-        },
-      }),
-    ),
-  );
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenu(state, handlers)));
 }
 
 function createTray(): void {

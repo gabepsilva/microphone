@@ -6,7 +6,7 @@ import {
   isAllowedAction,
   validateDispatch,
 } from "../src/protocol/dispatch_allowlist";
-import { dispatchAction, registerIpcHandlers } from "../src/ipc";
+import { dispatchAction, outcomeFailureDetail, registerIpcHandlers } from "../src/ipc";
 import { CHANNELS } from "../src/protocol/channels";
 import type { IpcMainInvokeEvent } from "electron";
 
@@ -184,6 +184,25 @@ describe("dispatchAction", () => {
       "action not allowed",
     );
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("outcomeFailureDetail", () => {
+  it("surfaces rejected/failed detail and ignores applied outcomes", () => {
+    expect(outcomeFailureDetail({ type: "applied" })).toBeNull();
+    expect(outcomeFailureDetail({ type: "accepted", request_id: "r1" })).toBeNull();
+    expect(outcomeFailureDetail(null)).toBeNull();
+    expect(outcomeFailureDetail("ok")).toBeNull();
+    expect(
+      outcomeFailureDetail({
+        type: "rejected",
+        detail: "microphone.set_muted forbidden",
+      }),
+    ).toBe("microphone.set_muted forbidden");
+    expect(outcomeFailureDetail({ type: "failed", detail: "device gone" })).toBe(
+      "device gone",
+    );
+    expect(outcomeFailureDetail({ type: "rejected" })).toBe("Request failed");
   });
 });
 

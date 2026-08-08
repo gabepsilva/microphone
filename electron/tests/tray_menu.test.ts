@@ -73,8 +73,16 @@ describe("trayMenuKey", () => {
   it("changes only when mute flags or read-aloud presence change", () => {
     const live = { microphone_muted: false, audio_stream_muted: false };
     const micMuted = { microphone_muted: true, audio_stream_muted: false };
-    expect(trayMenuKey(live)).toBe(trayMenuKey({ ...live }));
-    expect(trayMenuKey(live)).not.toBe(trayMenuKey(micMuted));
-    expect(trayMenuKey(live, false)).not.toBe(trayMenuKey(live, true));
+    const muteOnly = {
+      onToggleMicrophoneMute: () => undefined,
+      onToggleAudioStreamMute: () => undefined,
+    };
+    const withReadAloud = {
+      ...muteOnly,
+      onReadAloud: () => undefined,
+    };
+    expect(trayMenuKey(live, muteOnly)).toBe(trayMenuKey({ ...live }, muteOnly));
+    expect(trayMenuKey(live, muteOnly)).not.toBe(trayMenuKey(micMuted, muteOnly));
+    expect(trayMenuKey(live, muteOnly)).not.toBe(trayMenuKey(live, withReadAloud));
   });
 });

@@ -56,11 +56,14 @@ export function buildTrayMenu(
  * Identity of the rendered menu — rebuild only when this changes.
  *
  * Partials arrive as ``state.changed`` at recognizer cadence; the mute labels
- * depend on exactly these two booleans (#128 review R1).
+ * depend on exactly these two booleans (#128 review R1). Read-aloud presence
+ * is derived from the same handlers object ``buildTrayMenu`` consults so the
+ * key cannot drift from the template.
  */
 export function trayMenuKey(
   state: Pick<AppState, "microphone_muted" | "audio_stream_muted">,
-  includeReadAloud: boolean = false,
+  handlers: TrayMenuHandlers | Pick<TrayMenuHandlers, "onReadAloud"> = {},
 ): string {
+  const includeReadAloud = handlers.onReadAloud !== undefined;
   return `${state.microphone_muted ? 1 : 0}:${state.audio_stream_muted ? 1 : 0}:${includeReadAloud ? 1 : 0}`;
 }

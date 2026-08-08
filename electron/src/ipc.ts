@@ -31,6 +31,24 @@ export async function dispatchAction(
   });
 }
 
+/**
+ * Detail from a settled refusal/failure outcome, or null when dispatch succeeded.
+ *
+ * JSON-RPC resolves FORBIDDEN / INVALID / INAPPLICABLE as a *result* with
+ * ``type: "rejected"`` (transport outcome_payload) — those never throw, so tray
+ * hosts must inspect the outcome (#128 R3).
+ */
+export function outcomeFailureDetail(outcome: unknown): string | null {
+  if (outcome === null || typeof outcome !== "object") {
+    return null;
+  }
+  const record = outcome as { type?: unknown; detail?: unknown };
+  if (record.type !== "rejected" && record.type !== "failed") {
+    return null;
+  }
+  return typeof record.detail === "string" ? record.detail : "Request failed";
+}
+
 /** Register every invoke CHANNELS entry on ipcMain. Returns those channels. */
 export function registerIpcHandlers(
   ipcMain: IpcHandle | Pick<IpcMain, "handle">,
