@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test";
 import {
   clampIndex,
   commandQuery,
+  decideSubmit,
+  detailLine,
   findCommand,
   matchCommands,
   parseCommandList,
@@ -128,5 +130,87 @@ describe("slash line resolution", () => {
     expect(slashArguments("/new keep")).toEqual(["keep"]);
     expect(slashArguments("  /help one two  ")).toEqual(["one", "two"]);
     expect(slashArguments("plain")).toEqual([]);
+  });
+});
+
+describe("detail line (TUI detail_line parity)", () => {
+  it("matches CommandSpec.detail_line shape", () => {
+    // Mirrors tests/test_commands.py::test_command_spec_formats_help_lines.
+    expect(detailLine(spec("status", ""))).toBe("/status: no description");
+    expect(detailLine(spec("new", "Fresh session", ["clear"]))).toBe(
+      "/new (aliases: /clear): Fresh session",
+    );
+  });
+});
+
+describe("submit decision", () => {
+  // Caller strips once; these cases assume already-trimmed input.
+  it("routes plain text as a message", () => {
+    expect(decideSubmit("hello", CATALOG)).toEqual({
+      kind: "message",
+      text: "hello",
+    });
+    expect(decideSubmit("", CATALOG)).toEqual({ kind: "message", text: "" });
+  });
+
+  it("dispatches action-backed commands without leftover args", () => {
+    const decision = decideSubmit("/new", CATALOG);
+    expect(decision.kind).toBe("command");
+    if (decision.kind === "command") {
+      expect(decision.spec.name).toBe("new");
+      expect(decision.args).toEqual([]);
+    }
+    expect(decideSubmit("/clear", CATALOG).kind).toBe("command");
+  });
+
+  it("refuses leftover args on action-backed commands", () => {
+    expect(decideSubmit("/new keep", CATALOG)).toEqual({
+      kind: "error",
+      text: "usage: /new",
+    });
+  });
+
+  it("leaves bare /help as a command so the menu can stay open", () => {
+    const decision = decideSubmit("/help", CATALOG);
+    expect(decision.kind).toBe("command");
+    if (decision.kind === "command") {
+      expect(decision.spec.name).toBe("help");
+      expect(decision.args).toEqual([]);
+    }
+    expect(decideSubmit("/?", CATALOG).kind).toBe("command");
+  });
+
+  it("answers /help <topic> with a detail line (info, not palette)", () => {
+    expect(decideSubmit("/help new", CATALOG)).toEqual({
+      kind: "info",
+      text: "/new (aliases: /clear): Start a fresh session",
+    });
+    // Alias and leading slash on the topic both resolve.
+    expect(decideSubmit("/help clear", CATALOG)).toEqual({
+      kind: "info",
+      text: "/new (aliases: /clear): Start a fresh session",
+    });
+    expect(decideSubmit("/help /new", CATALOG)).toEqual({
+      kind: "info",
+      text: "/new (aliases: /clear): Start a fresh session",
+    });
+  });
+
+  it("reports unknown slash and unknown help topics as errors", () => {
+    expect(decideSubmit("/missing", CATALOG)).toEqual({
+      kind: "error",
+      text: "unknown command: /missing",
+    });
+    expect(decideSubmit("/help missing", CATALOG)).toEqual({
+      kind: "error",
+      text: "unknown command: /missing",
+    });
+  });
+
+  it("expects the caller to strip once (does not re-trim)", () => {
+    // send() trims before calling. Untrimmed leading space would still be a
+    // message here — the strip-once contract lives at the call site.
+    expect(decideSubmit("/new", CATALOG).kind).toBe("command");
+    expect(decideSubmit(" /new", CATALOG).kind).toBe("message");
   });
 });
