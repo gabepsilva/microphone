@@ -8,9 +8,21 @@ PYTHON_SOURCES := tagalong.py tagalong
 # (including `-j1` for serial logs) overrides this default. Linux-only via
 # nproc — other platforms must pass -jN explicitly rather than get a silent
 # wrong guess.
-CI_JOBS := $(shell nproc 2>/dev/null)
-ifeq ($(CI_JOBS),)
+CPU_CORES := $(shell nproc 2>/dev/null)
+ifeq ($(CPU_CORES),)
 $(error nproc unavailable; TagAlong's parallel make defaults expect Linux. Pass -jN explicitly.)
+endif
+# Locally, leave a fifth of the machine to everything else: a gate run that
+# takes every core makes the desktop it is running on unusable. Floored so this
+# never rounds up past the budget, and clamped to 1 so a single-core box still
+# runs. A hosted runner is dedicated and small (4 vCPU), where giving up a core
+# buys nothing and costs the mutation lane wall-clock -- so CI takes all of
+# them. `CI` is set by GitHub Actions and by every other CI worth the name;
+# export CI=1 to get the hosted behaviour locally.
+ifeq ($(CI),)
+CI_JOBS := $(shell jobs=$$(( $(CPU_CORES) * 4 / 5 )); test "$$jobs" -ge 1 || jobs=1; echo "$$jobs")
+else
+CI_JOBS := $(CPU_CORES)
 endif
 MAKEFLAGS += -j$(CI_JOBS)
 
@@ -37,7 +49,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test electron-coverage verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real
+.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test electron-coverage verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real start start-tui start-ui start-ui-tui
 
 format:
 	uv run ruff format .
@@ -51,11 +63,13 @@ lint:
 types:
 	uv run ty check
 
+# -n on the command line wins over the pyproject addopts default, so the job
+# budget governs the gate while a bare `uv run pytest` keeps that default.
 test:
-	uv run pytest
+	uv run pytest -n $(CI_JOBS)
 
 test-coverage:
-	uv run pytest --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
+	uv run pytest -n $(CI_JOBS) --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
 	uv run python tools/coverage_gate.py
 
 diff-coverage:
@@ -65,8 +79,11 @@ verify-regression:
 	@test -n "$(TEST)" || { echo "usage: make verify-regression TEST=tests/test_x.py::test_y"; exit 2; }
 	tools/verify_regression.sh "$(TEST)"
 
+# Without --max-children mutmut forks os.cpu_count() children, ignoring the
+# budget entirely. Its own pytest runs -n0 (see pyproject), so these children
+# are the whole of this gate's parallelism.
 mutation:
-	uv run mutmut run
+	uv run mutmut run --max-children $(CI_JOBS)
 	uv run mutmut export-cicd-stats
 	uv run python tools/mutation_gate.py
 
@@ -105,6 +122,7 @@ ratchet:
 shellcheck:
 	bash -n fix-codex-sandbox.sh
 	bash -n tools/verify_regression.sh
+	bash -n tools/start.sh
 
 workflows:
 	@workflow_file="$$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print -quit)"; \
@@ -176,3 +194,25 @@ hook-check:
 # audio services and Codex, and may download Piper/Edge voice data.
 smoke-real:
 	uv run pytest smoke_tests --no-cov -q
+
+# Local launchers, in no gate: they open a real window and a real microphone.
+# Each is one recipe rather than a target with prerequisites -- the -j default
+# above would otherwise start Electron before the session owns a socket.
+#
+# DEV=1 (default) gives Electron hot reload: renderer/ soft-reloads, src/
+# rebuilds and restarts. DEV=0 uses the plain launch path. Python changes need
+# a session restart either way.
+DEV ?= 1
+
+# The everyday one. A single prerequisite, so the -j default has nothing to
+# reorder; the default goal stays `ci`, so a bare `make` is still the gate.
+start: start-ui
+
+start-tui:
+	DEV=$(DEV) tools/start.sh tui
+
+start-ui:
+	DEV=$(DEV) tools/start.sh ui
+
+start-ui-tui:
+	DEV=$(DEV) tools/start.sh ui-tui

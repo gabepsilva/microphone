@@ -291,8 +291,8 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "local parallel default no longer pinned to Linux nproc",
             (
                 "makefile",
-                "CI_JOBS := $(shell nproc 2>/dev/null)",
-                "CI_JOBS := 4",
+                "CPU_CORES := $(shell nproc 2>/dev/null)",
+                "CPU_CORES := 4",
             ),
         ),
         (
