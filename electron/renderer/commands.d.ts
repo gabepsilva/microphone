@@ -20,3 +20,13 @@ export function clampIndex(index: number, length: number): number;
 export function findCommand(specs: CommandSpec[], text: string): CommandSpec | null;
 
 export function slashArguments(text: string): string[];
+
+export function detailLine(spec: CommandSpec): string;
+
+export type SubmitDecision =
+  | { kind: "command"; spec: CommandSpec; args: string[] }
+  | { kind: "message"; text: string }
+  | { kind: "info"; text: string }
+  | { kind: "error"; text: string };
+
+export function decideSubmit(rawText: string, catalog: CommandSpec[]): SubmitDecision;

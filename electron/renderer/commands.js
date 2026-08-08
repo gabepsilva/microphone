@@ -229,3 +229,66 @@ export function slashArguments(text) {
   const parts = trimmed.slice(1).split(/\s+/).filter(Boolean);
   return parts.slice(1);
 }
+
+/**
+ * One-line description for `/help <name>`, matching CommandSpec.detail_line.
+ *
+ * @param {CommandSpec} spec
+ * @returns {string}
+ */
+export function detailLine(spec) {
+  const description = spec.summary || "no description";
+  const aliases = Array.isArray(spec.aliases) ? spec.aliases : [];
+  const aliasPart =
+    aliases.length === 0
+      ? ""
+      : ` (aliases: ${aliases.map((alias) => `/${alias}`).join(", ")})`;
+  return `/${spec.name}${aliasPart}: ${description}`;
+}
+
+/**
+ * @typedef {{ kind: "command", spec: CommandSpec, args: string[] }
+ *   | { kind: "message", text: string }
+ *   | { kind: "info", text: string }
+ *   | { kind: "error", text: string }} SubmitDecision
+ */
+
+/**
+ * Decide what Enter on a compose line should do.
+ *
+ * Strips once here so classification and the message wire payload share one
+ * value (TUI parity: `event.message.text.strip()` before both branches).
+ * Leading-space slash lines become commands; trailing spaces do not ride
+ * `message.send`.
+ *
+ * @param {string} rawText
+ * @param {CommandSpec[]} catalog
+ * @returns {SubmitDecision}
+ */
+export function decideSubmit(rawText, catalog) {
+  const text = String(rawText ?? "").trim();
+  if (!text.startsWith("/")) {
+    return { kind: "message", text };
+  }
+  const specs = Array.isArray(catalog) ? catalog : [];
+  const spec = findCommand(specs, text);
+  if (spec === null) {
+    return { kind: "error", text: `unknown command: ${text}` };
+  }
+  const args = slashArguments(text);
+  // No action_id means the command is local help (today: `/help` / `/?`).
+  // With a topic, answer in-band; bare help stays a command so the menu can
+  // remain open. Palette-on-topic is wrong: it would arm a highlighted row.
+  if (spec.action_id === null && args.length > 0) {
+    const token = String(args[0]).replace(/^\//, "");
+    const topicSpec = findCommand(specs, `/${token}`);
+    if (topicSpec === null) {
+      return { kind: "error", text: `unknown command: /${token}` };
+    }
+    return { kind: "info", text: detailLine(topicSpec) };
+  }
+  if (spec.action_id !== null && args.length > 0) {
+    return { kind: "error", text: `usage: /${spec.name}` };
+  }
+  return { kind: "command", spec, args };
+}

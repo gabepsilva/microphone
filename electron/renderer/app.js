@@ -13,10 +13,9 @@ import {
 import {
   clampIndex,
   commandQuery,
-  findCommand,
+  decideSubmit,
   matchCommands,
   parseCommandList,
-  slashArguments,
 } from "./commands.js";
 import {
   effortForModel,
@@ -58,26 +57,49 @@ let paletteIndex = 0;
 
 const LIVE_BANNER = "live · session attached";
 
-function setBanner(text, isError) {
+/**
+ * Update the status banner.
+ *
+ * `.error` is red styling only. `.sticky` means "do not overwrite on
+ * state.changed" — errors set both (default `sticky = isError`); topic-help
+ * info sets sticky without error so a correct answer is not painted red.
+ *
+ * Lifetime: sticky info survives `setBannerLive` and background
+ * `clearBannerError` polls; user-initiated `dispatch()` success restores
+ * LIVE_BANNER (retires sticky and error without a timer).
+ *
+ * @param {string} text
+ * @param {boolean} isError
+ * @param {boolean} [sticky]
+ */
+function setBanner(text, isError, sticky = isError) {
   banner.textContent = text;
   banner.classList.toggle("error", Boolean(isError));
+  banner.classList.toggle("sticky", Boolean(sticky));
 }
 
 /**
- * Say the session is live again, unless the banner is carrying an error.
+ * Say the session is live again, unless the banner is sticky.
  *
- * `state.changed` arrives for anything the session does, including things the
- * failed call had nothing to do with, so restating "live" on every fragment
- * would wipe an error before it had been read. An error stays until something
- * actually succeeds.
+ * `state.changed` arrives for anything the session does, including partial
+ * ASR commits, so restating "live" on every fragment would wipe command
+ * feedback (errors and topic-help info) before it had been read.
  */
 function setBannerLive() {
-  if (!banner.classList.contains("error")) {
+  if (!banner.classList.contains("sticky")) {
     banner.textContent = LIVE_BANNER;
   }
 }
 
-/** Clear an error the banner is showing, because a call has just worked. */
+/**
+ * Clear an error the banner is showing, because a background call worked.
+ *
+ * Sticky *info* is left alone: success polls (devices.list every 5s) must not
+ * retire a help answer on a timer. Errors set both classes, so clearing an
+ * error still drops stickiness via `setBanner(LIVE_BANNER, false)`.
+ * User-initiated success goes through `dispatch()`, which restores LIVE_BANNER
+ * unconditionally.
+ */
 function clearBannerError() {
   if (banner.classList.contains("error")) {
     setBanner(LIVE_BANNER, false);
@@ -282,7 +304,10 @@ async function dispatch(action, payload) {
     setBanner(error.message, true);
     return false;
   }
-  clearBannerError();
+  // User-initiated path only (the 5s interval never calls dispatch). Restore
+  // LIVE_BANNER so sticky topic-help does not outlive the next successful
+  // command or message — without coupling to background clearBannerError.
+  setBanner(LIVE_BANNER, false);
   return true;
 }
 
@@ -310,27 +335,30 @@ function markAttached(count) {
 }
 
 async function send() {
-  const text = composeText.value;
-  // A slash line is a command, never something Taga is asked to answer.
-  if (text.startsWith("/")) {
-    const trimmed = text.trim();
-    const spec = findCommand(catalog, trimmed);
-    if (spec === null) {
-      setBanner(`unknown command: ${trimmed}`, true);
-      return;
-    }
-    // Action-backed commands dispatch with an empty payload — there is no
-    // CommandRouter here to validate args the way the TUI does. Refuse
-    // leftovers so `/new keep` cannot silently run `session.new`.
-    if (spec.action_id !== null && slashArguments(trimmed).length > 0) {
-      setBanner(`usage: /${spec.name}`, true);
-      return;
-    }
-    paletteRows = [spec];
+  // decideSubmit strips once (TUI parity) and classifies; message branch
+  // ships decision.text so trailing spaces never ride the wire.
+  const decision = decideSubmit(composeText.value, catalog);
+  if (decision.kind === "error") {
+    setBanner(decision.text, true);
+    return;
+  }
+  if (decision.kind === "info") {
+    // Sticky, non-error: survives setBannerLive on partial ASR until the next
+    // successful dispatch() restores LIVE_BANNER. Apply/lifetime stays in
+    // uncovered app.js — pure decideSubmit is tested.
+    setBanner(decision.text, false, true);
+    composeText.value = "";
+    autoGrow();
+    closePalette();
+    return;
+  }
+  if (decision.kind === "command") {
+    paletteRows = [decision.spec];
     paletteIndex = 0;
     await runSelectedCommand();
     return;
   }
+  const text = decision.text;
   const fileInput = document.getElementById("compose-image");
   const ids = [...attachmentIds];
   if (fileInput.files && fileInput.files[0]) {
@@ -340,7 +368,7 @@ async function send() {
     }
     ids.push(id);
   }
-  if (!text.trim() && ids.length === 0) {
+  if (!text && ids.length === 0) {
     return;
   }
   // Only clear the draft once the session has taken it. A refused or
