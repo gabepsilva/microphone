@@ -55,6 +55,7 @@ from .control import (
 from .domain import AGENT, TEXT, UserTextMessage
 from .presentation import Entry
 from .recording import default_transcript_dir, write_transcript_export
+from .speech import PIPER
 
 
 class ConversationPort(Protocol):
@@ -101,9 +102,24 @@ class SpeechPort(Protocol):
 
 
 class SettingsSpeechPort(Protocol):
-    """The speech engine surface a provider switch needs."""
+    """The speech engine surface a provider or voice switch needs."""
 
-    def set_provider(self, provider: str) -> bool | None: ...
+    def set_provider(
+        self,
+        provider: str,
+        voice: str | None = None,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None: ...
+
+    def set_voice(
+        self,
+        voice: str,
+        *,
+        on_applied: Callable[[str], object] | None = None,
+        on_failed: Callable[[str], object] | None = None,
+    ) -> bool | None: ...
 
 
 class PolicyPort(Protocol):
@@ -204,6 +220,9 @@ class SessionView(Protocol):
     policy: str
     tts_enabled: bool
     tts_provider: str
+    tts_voice: str
+    piper_voice: str
+    edge_voice: str
     codex_model: str
     codex_effort: str
     turn_silence: float
@@ -219,8 +238,11 @@ def app_state_from_session(state: SessionView) -> AppState:
     """Seed every field a registered handler will keep true.
 
     Desired selections come from the session; effective ones stay empty until
-    a reconciler reports what actually opened. Mute, policy, speech, model,
-    and silence are synchronous, so the session value is already effective.
+    a reconciler reports what actually opened — except the active TTS engine
+    and voice, which are already speaking when the session starts, so both
+    sides of those Selections carry the startup values. Mute, policy, speech
+    enable, model, and silence are synchronous, so the session value is
+    already effective.
     """
     return AppState(
         microphone=Selection(desired=state.microphone),
@@ -229,7 +251,12 @@ def app_state_from_session(state: SessionView) -> AppState:
         audio_stream_muted=state.audio.muted,
         response_policy=state.policy,
         tts_enabled=state.tts_enabled,
-        tts_provider=state.tts_provider,
+        tts_provider=Selection(
+            desired=state.tts_provider, effective=state.tts_provider
+        ),
+        tts_voice=Selection(desired=state.tts_voice, effective=state.tts_voice),
+        piper_voice=state.piper_voice,
+        edge_voice=state.edge_voice,
         codex_model=state.codex_model,
         codex_reasoning=state.codex_effort,
         turn_silence=state.turn_silence,
@@ -330,13 +357,75 @@ def _set_response_policy(
 
 
 def _set_tts_provider(
-    tts: SettingsSpeechPort, persist: Persist, request: Request, state: AppState
+    tts: SettingsSpeechPort,
+    persist: Persist,
+    controller: Controller,
+    request: Request,
+    state: AppState,
 ) -> Effect:
     provider = str(request.payload["provider"])
-    if tts.set_provider(provider) is False:
+    voice = state.piper_voice if provider == PIPER else state.edge_voice
+
+    def settle(current: AppState, effective: object) -> AppState:
+        applied_voice = str(effective)
+        return replace(
+            current,
+            tts_provider=Selection(desired=provider, effective=provider),
+            tts_voice=Selection(desired=voice, effective=applied_voice),
+        )
+
+    def on_applied(effective: str) -> object:
+        settled = controller.settle(request.id, effective)
+        if isinstance(settled, Applied):
+            _record(persist, "tts_provider", provider)
+        return settled
+
+    if (
+        tts.set_provider(
+            provider,
+            voice,
+            on_applied=on_applied,
+            on_failed=lambda detail: controller.fail(request.id, detail),
+        )
+        is False
+    ):
         raise EffectFailed("tts provider could not be changed")
-    _record(persist, "tts_provider", provider)
-    return Effect.applied(replace(state, tts_provider=provider), provider)
+    pending = with_desired(state, "tts_provider", provider)
+    return Effect.pending(with_desired(pending, "tts_voice", voice), settle=settle)
+
+
+def _set_tts_voice(
+    tts: SettingsSpeechPort,
+    persist: Persist,
+    controller: Controller,
+    request: Request,
+    state: AppState,
+) -> Effect:
+    voice = str(request.payload["voice"])
+    running = state.tts_provider.effective or state.tts_provider.desired
+    remember = "piper_voice" if running == PIPER else "edge_voice"
+
+    def settle(current: AppState, effective: object) -> AppState:
+        applied = str(effective)
+        updated = with_effective(current, "tts_voice", applied)
+        return replace(updated, **{remember: applied})
+
+    def on_applied(effective: str) -> object:
+        settled = controller.settle(request.id, effective)
+        if isinstance(settled, Applied):
+            _record(persist, remember, effective)
+        return settled
+
+    if (
+        tts.set_voice(
+            voice,
+            on_applied=on_applied,
+            on_failed=lambda detail: controller.fail(request.id, detail),
+        )
+        is False
+    ):
+        raise EffectFailed("tts voice could not be changed")
+    return Effect.pending(with_desired(state, "tts_voice", voice), settle=settle)
 
 
 def _set_codex_model(
@@ -380,17 +469,25 @@ def bind_settings_slice(
     ],
     persist: Persist = None,
 ) -> None:
-    """Register the synchronous settings handlers on *controller*.
+    """Register the settings handlers on *controller*.
 
     Persistence belongs to the action, not to a TUI hook wrapper. A socket
     caller that sets the model must leave the same startup file a sidebar
     pick would, or the next session starts somewhere only one client went.
+    Provider and voice switches settle asynchronously and persist only on
+    success, the same shape as microphone selection (#124 D14).
     """
     conversation, tts, gate, turn_silence = collaborators
     controller.register(
         "response_policy.set", partial(_set_response_policy, gate, persist)
     )
-    controller.register("tts.set_provider", partial(_set_tts_provider, tts, persist))
+    controller.register(
+        "tts.set_provider", partial(_set_tts_provider, tts, persist, controller)
+    )
+    controller.register(
+        "tts.set_voice",
+        partial(_set_tts_voice, tts, persist, controller),
+    )
     controller.register(
         "codex.set_model", partial(_set_codex_model, conversation, persist)
     )

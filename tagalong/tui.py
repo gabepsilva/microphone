@@ -72,8 +72,10 @@ from .domain import (
 from .presentation import Entry
 from .speech import (
     DEFAULT_PROVIDER,
+    EDGE,
     NO_VOICE,
     NO_VOICE_LABEL,
+    PIPER,
     PROVIDER_LABELS,
     default_voice,
 )
@@ -171,6 +173,8 @@ class SessionState:
     tts_enabled: bool = True
     tts_provider: str = DEFAULT_PROVIDER
     tts_voice: str = default_voice(DEFAULT_PROVIDER)
+    piper_voice: str = default_voice(PIPER)
+    edge_voice: str = default_voice(EDGE)
 
     turn_silence: float = 3.0
     # Seconds until the pending turn is submitted, or None when none is.
@@ -228,11 +232,35 @@ def _set_tts_provider(state: Any, value: object) -> None:
     The sidebar's speech control is one widget for engine and silence. Picking
     an engine while ``No voice reply`` is on also calls ``tts.set_enabled``.
     A remote ``tts.set_provider`` is only the engine change; an agent that
-    wants voice back sends the second action itself.
+    wants voice back sends the second action itself. The remembered voice for
+    the target engine is restored by the ``tts_voice`` / ``piper_voice`` /
+    ``edge_voice`` fragments that travel with the same state.changed payload
+    (#124 D13) — this setter does not invent a default.
     """
-    state.tts_provider = str(value)
-    if hasattr(state, "tts_voice"):
-        state.tts_voice = default_voice(state.tts_provider)
+    state.tts_provider = _selection_desired(value) or DEFAULT_PROVIDER
+
+
+def _set_tts_voice(state: Any, value: object) -> None:
+    """Copy the active voice label from a Selection or a plain string."""
+    if is_dataclass(value) and not isinstance(value, type):
+        chosen = getattr(value, "effective", None) or getattr(value, "desired", None)
+        if chosen is not None:
+            state.tts_voice = str(chosen)
+        return
+    if isinstance(value, Mapping):
+        chosen = value.get("effective") or value.get("desired")
+        if chosen is not None:
+            state.tts_voice = str(chosen)
+        return
+    state.tts_voice = str(value)
+
+
+def _set_piper_voice(state: Any, value: object) -> None:
+    state.piper_voice = str(value)
+
+
+def _set_edge_voice(state: Any, value: object) -> None:
+    state.edge_voice = str(value)
 
 
 def _set_response_policy(state: Any, value: object) -> None:
@@ -273,6 +301,9 @@ def _set_turn_silence(state: Any, value: object) -> None:
 _STATE_SETTERS = {
     "tts_enabled": _set_tts_enabled,
     "tts_provider": _set_tts_provider,
+    "tts_voice": _set_tts_voice,
+    "piper_voice": _set_piper_voice,
+    "edge_voice": _set_edge_voice,
     "response_policy": _set_response_policy,
     "microphone_muted": _set_microphone_muted,
     "audio_stream_muted": _set_audio_stream_muted,
@@ -1413,7 +1444,9 @@ class Sidebar(VerticalScroll):
             self.sync()
             return
         self.state.tts_provider = value
-        self.state.tts_voice = default_voice(value)
+        self.state.tts_voice = (
+            self.state.piper_voice if value == PIPER else self.state.edge_voice
+        )
         if not self.state.tts_enabled:
             app.set_tts_enabled(True)
         self.sync()

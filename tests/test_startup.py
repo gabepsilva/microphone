@@ -725,6 +725,26 @@ def test_a_chosen_voice_survives_the_provider_default(tmp_path) -> None:
     )
 
     assert (args.tts_provider, args.tts_voice) == ("piper", "en_US-ryan-high")
+    assert args.piper_voice == "en_US-ryan-high"
+
+
+def test_an_explicit_tts_voice_updates_the_edge_remembered_voice(tmp_path) -> None:
+    _, args = parse_startup_args(
+        [
+            "--config",
+            empty_config(tmp_path),
+            "--tts-provider",
+            "edge",
+            "--tts-voice",
+            "en-US-JennyNeural",
+        ]
+    )
+
+    assert (args.tts_provider, args.tts_voice, args.edge_voice) == (
+        "edge",
+        "en-US-JennyNeural",
+        "en-US-JennyNeural",
+    )
 
 
 @pytest.mark.parametrize("seconds", ["0.1", "31", "0"])

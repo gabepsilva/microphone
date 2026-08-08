@@ -19,6 +19,7 @@ export const DISPATCH_ALLOWLIST = [
   ACTIONS.response_policy_set,
   ACTIONS.tts_set_enabled,
   ACTIONS.tts_set_provider,
+  ACTIONS.tts_set_voice,
   ACTIONS.codex_set_model,
   ACTIONS.codex_set_reasoning,
   ACTIONS.turn_silence_set,
@@ -65,6 +66,9 @@ export function validateDispatch(
       break;
     case ACTIONS.tts_set_provider:
       requireString(payload, "provider");
+      break;
+    case ACTIONS.tts_set_voice:
+      requireString(payload, "voice");
       break;
     case ACTIONS.codex_set_model:
       requireString(payload, "model");

@@ -56,7 +56,7 @@ def test_the_catalog_takes_its_choices_from_the_session_that_runs_them() -> None
     assert action("response_policy.set").parameters[0].choices == POLICY_NAMES
     assert action("tts.set_provider").parameters[0].choices == PROVIDERS
     assert AppState().response_policy in POLICY_NAMES
-    assert AppState().tts_provider in PROVIDERS
+    assert AppState().tts_provider.effective in PROVIDERS
 
 
 def test_a_valid_payload_comes_back_normalized() -> None:

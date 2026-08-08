@@ -6,6 +6,10 @@ microphone: null
 # "piper" synthesizes locally and reaches the first word fastest; "edge" uses
 # Microsoft's online voices. Null keeps the default, piper.
 tts_provider: null
+# Remembered voice ids per engine (#124). Null keeps each provider's default.
+# --tts-voice overrides the active provider's remembered voice at startup.
+piper_voice: null
+edge_voice: null
 # The application whose audio is transcribed as Audio, by the name the
 # desktop shows for it, or "none". Null keeps the built-in default, none.
 audio_stream: null

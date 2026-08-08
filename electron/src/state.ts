@@ -12,7 +12,10 @@ export type AppState = {
   audio_stream_muted: boolean;
   response_policy: string;
   tts_enabled: boolean;
-  tts_provider: string;
+  tts_provider: Selection;
+  tts_voice: Selection;
+  piper_voice: string;
+  edge_voice: string;
   codex_model: string;
   codex_reasoning: string;
   turn_silence: number;
@@ -30,6 +33,9 @@ export const APP_STATE_KEYS = [
   "response_policy",
   "tts_enabled",
   "tts_provider",
+  "tts_voice",
+  "piper_voice",
+  "edge_voice",
   "codex_model",
   "codex_reasoning",
   "turn_silence",
@@ -73,7 +79,10 @@ export function emptyAppState(): AppState {
     audio_stream_muted: false,
     response_policy: "both",
     tts_enabled: true,
-    tts_provider: "piper",
+    tts_provider: { desired: "piper", effective: "piper" },
+    tts_voice: emptySelection(),
+    piper_voice: "en_US-lessac-medium",
+    edge_voice: "en-US-AndrewNeural",
     codex_model: "",
     codex_reasoning: "",
     turn_silence: 3.0,
@@ -107,6 +116,7 @@ export function applyStateFragment(
     ...state,
     microphone: { ...state.microphone },
     audio_stream: { ...state.audio_stream },
+    tts_voice: { ...state.tts_voice },
   };
   for (const [name, value] of Object.entries(changed)) {
     switch (name) {
@@ -144,9 +154,28 @@ export function applyStateFragment(
           next.response_policy = value;
         }
         break;
-      case "tts_provider":
+      case "tts_provider": {
+        const selection = asSelection(value);
+        if (selection !== null) {
+          next.tts_provider = selection;
+        }
+        break;
+      }
+      case "tts_voice": {
+        const selection = asSelection(value);
+        if (selection !== null) {
+          next.tts_voice = selection;
+        }
+        break;
+      }
+      case "piper_voice":
         if (typeof value === "string") {
-          next.tts_provider = value;
+          next.piper_voice = value;
+        }
+        break;
+      case "edge_voice":
+        if (typeof value === "string") {
+          next.edge_voice = value;
         }
         break;
       case "codex_model":
