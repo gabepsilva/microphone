@@ -19,6 +19,14 @@
       "numbers": [2, 1]
     },
     { "text": "a:[Image #3]b:[Image #1]c", "numbers": [3, 1] },
-    { "text": "[Not an image #1] [Image#1] [Image #1x]", "numbers": [] }
+    { "text": "[Not an image #1] [Image#1] [Image #1x]", "numbers": [] },
+    {
+      "text": "[Image #٣] [Image #۳] [Image #３] — Unicode decimal lookalikes are not token digits",
+      "numbers": []
+    },
+    {
+      "text": "mixed [Image #1] and [Image #١] — only ASCII digits count",
+      "numbers": [1]
+    }
   ]
 }

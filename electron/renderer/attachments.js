@@ -191,6 +191,12 @@ export class DraftAttachments {
   resolve(text) {
     const resolved = [];
     for (const number of parseImageNumbers(text)) {
+      // Mirrors attachments.DraftAttachments: a hand-edited draft cannot
+      // invent ids inside or outside the staged range. In JS, ids[-1] would
+      // simply be undefined; the check says the mirror reads the same.
+      if (number < 1 || number > this.ids.length) {
+        continue;
+      }
       const attachmentId = this.ids[number - 1];
       if (attachmentId !== undefined && !resolved.includes(attachmentId)) {
         resolved.push(attachmentId);

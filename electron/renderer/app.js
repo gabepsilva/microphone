@@ -341,35 +341,31 @@ async function uploadImage(bytes) {
 }
 
 /**
- * Read a stage file again into a small canvas thumbnail (data: URI, CSP
- * allows img-src data: — #139 D7). Null when the decode fails; the chip
- * renders its token text either way.
+ * Read a stage file once, decode it straight from the File, and return a
+ * small canvas thumbnail (data: URI, CSP allows img-src data: — #139 D7).
+ * createImageBitmap takes the File directly, so there is no second read, no
+ * second base64 pass, and no blob URL for the CSP to block. Null when the
+ * decode fails; the chip renders its token text either way.
  * @param {File} file
  * @returns {Promise<string | null>}
  */
 async function chipThumbnail(file) {
   try {
-    const mime = typeof file.type === "string" && file.type ? file.type : "image/png";
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const dataUrl = `data:${mime};base64,${base64FromBytes(bytes)}`;
-    const image = new Image();
-    await new Promise((resolve, reject) => {
-      image.onload = () => resolve(undefined);
-      image.onerror = () => reject(new Error("image decode failed"));
-      image.src = dataUrl;
-    });
+    const bitmap = await createImageBitmap(file);
     const size = 96;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (ctx === null) {
+      bitmap.close();
       return null;
     }
-    const scale = Math.min(size / image.width, size / image.height);
-    const width = image.width * scale;
-    const height = image.height * scale;
-    ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+    const scale = Math.min(size / bitmap.width, size / bitmap.height);
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    ctx.drawImage(bitmap, (size - width) / 2, (size - height) / 2, width, height);
+    bitmap.close();
     return canvas.toDataURL("image/png");
   } catch {
     return null;
@@ -416,7 +412,7 @@ async function stageAndInsert(files) {
     }
     const token = draft.add(id);
     insertTokensAtCursor([token]);
-    const number = parseImageTokens(token)[0]?.number;
+    const number = draft.ids.length;
     if (number !== undefined) {
       void chipThumbnail(result.file).then((thumb) => {
         if (thumb !== null) {
@@ -826,12 +822,19 @@ function bind() {
   // One staging loop for drop as well: the browser default for a dragged
   // file would navigate this window away from index.html — unrecoverable
   // (menu and dev reload are gone, #139 F2). The default is refused for the
-  // whole window: dragEnter anywhere lights the composer, and only the
-  // composer region stages files (#139 D2, Q5).
+  // whole window: a file drag anywhere lights the composer, and only the
+  // composer region stages files (#139 D2, Q5). A file dropped anywhere
+  // else gets a real refusal in the banner, never a silent vanish.
   const promptbar = document.getElementById("promptbar");
   let dragDepth = 0;
   window.addEventListener("dragenter", (event) => {
     event.preventDefault();
+    const types = event.dataTransfer ? [...event.dataTransfer.types] : [];
+    // Only file drags are ours: a text or link drag gets no affordance and
+    // no staging path, just the refused default.
+    if (!types.includes("Files")) {
+      return;
+    }
     dragDepth += 1;
     dragAffordance(true);
   });
@@ -852,7 +855,11 @@ function bind() {
     // must not navigate or load the file.
     event.preventDefault();
     const files = [...(event.dataTransfer?.files ?? [])];
-    if (files.length === 0 || !promptbar.contains(event.target)) {
+    if (files.length === 0) {
+      return;
+    }
+    if (!promptbar.contains(event.target)) {
+      setBanner("Files stage on the composer — drop images on the prompt box", true);
       return;
     }
     void stageAndInsert(files);
