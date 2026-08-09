@@ -350,25 +350,29 @@ async function uploadImage(bytes) {
  * @returns {Promise<string | null>}
  */
 async function chipThumbnail(file) {
+  let bitmap = null;
   try {
-    const bitmap = await createImageBitmap(file);
+    bitmap = await createImageBitmap(file);
     const size = 96;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (ctx === null) {
-      bitmap.close();
       return null;
     }
     const scale = Math.min(size / bitmap.width, size / bitmap.height);
     const width = bitmap.width * scale;
     const height = bitmap.height * scale;
     ctx.drawImage(bitmap, (size - width) / 2, (size - height) / 2, width, height);
-    bitmap.close();
     return canvas.toDataURL("image/png");
   } catch {
     return null;
+  } finally {
+    // The full-resolution decode must die on every path — a 20 MiB JPEG can
+    // be ~192 MB of RGBA, and a throw inside drawImage/toDataURL otherwise
+    // leaves it to GC.
+    bitmap?.close();
   }
 }
 
