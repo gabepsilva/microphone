@@ -308,7 +308,7 @@ def test_a_session_bus_that_answers_late_leaves_no_orphan_claim(
 
     release.set()
     assert wait_until(lambda: bus.disconnected)
-    assert wait_until(lambda: bus.claimed == [])
+    assert bus.claimed == [media_controls.PLAYER_BUS_NAME]
 
 
 def test_a_connect_failure_falls_back_with_one_line() -> None:

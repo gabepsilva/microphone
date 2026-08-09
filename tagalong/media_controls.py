@@ -199,6 +199,12 @@ class MprisMediaControls:
         self._loop = loop
         try:
             loop.run_until_complete(self._establish())
+            if self._stop.is_set():
+                # Start-up gave up while the bus was still answering. The
+                # invariant: once _stop is set the thread never reaches
+                # run_forever, and the handler below disconnects whatever
+                # was reached.
+                raise MediaControlsUnavailable("the session bus answered too late")
             self._outcome.set()
             loop.run_forever()
         except BaseException as error:
@@ -230,21 +236,11 @@ class MprisMediaControls:
             raise MediaControlsUnavailable(
                 f"could not connect to the session bus: {error}"
             ) from error
-        if self._stop.is_set():
-            # Start-up gave up on this session while the bus was still
-            # answering; release what was just connected and go quiet.
-            bus.disconnect()
-            raise MediaControlsUnavailable("the session bus answered too late")
         self._bus = bus
         self._player = _Player(self._on_stop)
         bus.export(OBJECT_PATH, _Root())
         bus.export(OBJECT_PATH, self._player)
         reply = await bus.request_name(PLAYER_BUS_NAME, flags=NameFlag.DO_NOT_QUEUE)
-        if self._stop.is_set():
-            # Same trade turned upside down: nothing may hold the name for a
-            # session nobody thinks has one anymore.
-            bus.disconnect()
-            raise MediaControlsUnavailable("the session bus answered too late")
         if reply != RequestNameReply.PRIMARY_OWNER:
             raise MediaControlsUnavailable(
                 f"{PLAYER_BUS_NAME!r} is already claimed on this session bus"
