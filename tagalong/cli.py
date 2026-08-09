@@ -928,6 +928,7 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
         host, conversation, tts, attachments, recorder=recorder
     )
     host.bind_partial_publisher(controller.set_partial)
+    host.bind_session_state_publisher(controller.set_session_state)
     bind_settings_slice(
         controller,
         (conversation, tts, parts.gate, turn_silence),

@@ -16,7 +16,13 @@ from datetime import UTC, datetime
 from .control.transcript import TranscriptStore
 from .domain import TAGA, VOICE
 from .presentation import Entry
-from .tui import OrderedDeltaBuffer, SessionState, TuiHooks, entry_is_open
+from .tui import (
+    SESSION_STATE_FIELDS,
+    OrderedDeltaBuffer,
+    SessionState,
+    TuiHooks,
+    entry_is_open,
+)
 
 
 class HeadlessSession:
@@ -44,6 +50,7 @@ class HeadlessSession:
         self._answer_deltas = OrderedDeltaBuffer()
         self._reasoning_deltas = OrderedDeltaBuffer()
         self._publish_partial: Callable[[str, str, int], None] | None = None
+        self._publish_session_state: Callable[[dict[str, object]], None] | None = None
         self._partial_seq = 0
         self._entries: list[Entry] = []
         self._streaming: Entry | None = None
@@ -53,6 +60,17 @@ class HeadlessSession:
     def bind_partial_publisher(self, publish: Callable[[str, str, int], None]) -> None:
         """Mirror SessionState partials onto controller ``AppState`` (Q3a)."""
         self._publish_partial = publish
+
+    def bind_session_state_publisher(
+        self, publish: Callable[[dict[str, object]], None]
+    ) -> None:
+        """Mirror live session state onto controller ``AppState``."""
+        self._publish_session_state = publish
+
+    def _publish_state(self, changed: dict[str, object]) -> None:
+        publish = self._publish_session_state
+        if publish is not None and changed:
+            publish(changed)
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
@@ -135,6 +153,7 @@ class HeadlessSession:
         self._resolve_entries(entries, accepted=accepted)
         if not accepted:
             self.state.echoes_cut += 1
+            self._publish_state({"echoes_cut": self.state.echoes_cut})
 
     def close_speaker(self, speaker: str) -> None:
         self.finish_turn(speaker)
@@ -178,6 +197,7 @@ class HeadlessSession:
 
     def codex_message_open(self, reply_to: str) -> None:
         self.state.codex_state = f"replying to {reply_to}"
+        self._publish_state({"codex_state": self.state.codex_state})
         entry = Entry(kind="speech", source=TAGA, reply_to=reply_to, streaming=True)
         self._streaming = self._add_entry(entry)
 
@@ -206,6 +226,7 @@ class HeadlessSession:
     def end_codex(self) -> None:
         self.reasoning_completed()
         self.state.codex_state = "idle"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._flush_answer_deltas()
         entry = self._streaming
         if entry is not None:
@@ -215,6 +236,7 @@ class HeadlessSession:
 
     def reasoning_started(self) -> None:
         self.state.codex_state = "thinking"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._thinking_started = time.monotonic()
         self._streaming = None
         self._reasoning = self._add_entry(
@@ -254,6 +276,7 @@ class HeadlessSession:
 
     def command_started(self, command: str) -> None:
         self.state.codex_state = "running command"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._streaming = None
         self._command = self._add_entry(Entry(kind="command", text=command))
 
@@ -280,6 +303,7 @@ class HeadlessSession:
 
     def token_usage(self, total_tokens: int) -> None:
         self.state.tokens = total_tokens
+        self._publish_state({"tokens": total_tokens})
 
     def error(self, message: str) -> None:
         self.note(message)
@@ -292,10 +316,14 @@ class HeadlessSession:
             target.active = active
 
     def set_codex(self, **fields: object) -> None:
+        changed: dict[str, object] = {}
         for key, value in fields.items():
             attribute = f"codex_{key}"
             if hasattr(self.state, attribute):
                 setattr(self.state, attribute, value)
+                if attribute in SESSION_STATE_FIELDS:
+                    changed[attribute] = value
+        self._publish_state(changed)
 
     def set_codex_catalog(
         self,
@@ -321,9 +349,13 @@ class HeadlessSession:
         self.state.microphones = list(microphones)
 
     def set_session(self, **fields: object) -> None:
+        changed: dict[str, object] = {}
         for key, value in fields.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
+                if key in SESSION_STATE_FIELDS:
+                    changed[key] = value
+        self._publish_state(changed)
 
     def set_status(self, status: str, live: bool = True) -> None:
         self.state.status = status

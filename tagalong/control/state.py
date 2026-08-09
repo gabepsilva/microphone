@@ -30,6 +30,20 @@ class Selection:
     effective: str | None = None
 
 
+SESSION_STATE_FIELDS = frozenset(
+    {
+        "confidence",
+        "language",
+        "moonshine",
+        "tokens",
+        "echoes_cut",
+        "codex_thread",
+        "codex_state",
+        "codex_speaking",
+    }
+)
+
+
 @dataclass(frozen=True)
 class AppState:
     """Everything a client needs to draw the session, and nothing it draws with."""
@@ -56,7 +70,15 @@ class AppState:
     edge_voice: str = DEFAULT_VOICES[EDGE]
     codex_model: str = ""
     codex_reasoning: str = ""
+    codex_thread: str = "none"
+    codex_state: str = "idle"
+    codex_speaking: bool = False
     turn_silence: float = 3.0
+    confidence: float = 0.60
+    language: str = "en"
+    moonshine: str = "medium-streaming"
+    tokens: int = 0
+    echoes_cut: int = 0
     # Live recognition line (promoted from SessionState; issue #102 D6 / Q3a).
     # Single-valued, not an ordered transcript row — clients render via
     # ``state.changed``, while accepted rows travel on the transcript store.

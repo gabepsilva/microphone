@@ -168,7 +168,15 @@ describe("applyStateFragment", () => {
       edge_voice: "en-US-JennyNeural",
       codex_model: "gpt",
       codex_reasoning: "high",
+      codex_thread: "thread-9",
+      codex_state: "thinking",
+      codex_speaking: true,
       turn_silence: 1.5,
+      confidence: 0.83,
+      language: "fr",
+      moonshine: "small-streaming",
+      tokens: 42,
+      echoes_cut: 3,
       partial_source: "Voice",
       partial_text: "hello",
     };
@@ -179,6 +187,14 @@ describe("applyStateFragment", () => {
     expect(after.partial_source).toBe("Voice");
     expect(after.partial_text).toBe("hello");
     expect(after.turn_silence).toBe(1.5);
+    expect(after.codex_thread).toBe("thread-9");
+    expect(after.codex_state).toBe("thinking");
+    expect(after.codex_speaking).toBe(true);
+    expect(after.confidence).toBe(0.83);
+    expect(after.language).toBe("fr");
+    expect(after.moonshine).toBe("small-streaming");
+    expect(after.tokens).toBe(42);
+    expect(after.echoes_cut).toBe(3);
     expect(after.microphone).toEqual({ desired: "Yeti", effective: "Yeti" });
     // Exhaustiveness: every key differs from empty defaults after the merge.
     const empty = emptyAppState();
@@ -195,11 +211,27 @@ describe("parseAppState", () => {
       microphone: null,
       turn_silence: Number.NaN,
       response_policy: 12,
+      codex_thread: 12,
+      codex_state: null,
+      codex_speaking: "yes",
+      confidence: Number.NaN,
+      language: 12,
+      moonshine: null,
+      tokens: "42",
+      echoes_cut: Number.NaN,
     });
     expect(parsed.tts_enabled).toBe(false);
     expect(parsed.microphone).toEqual({ desired: null, effective: null });
     expect(parsed.turn_silence).toBe(3.0);
     expect(parsed.response_policy).toBe("both");
+    expect(parsed.codex_thread).toBe("none");
+    expect(parsed.codex_state).toBe("idle");
+    expect(parsed.codex_speaking).toBe(false);
+    expect(parsed.confidence).toBe(0.6);
+    expect(parsed.language).toBe("en");
+    expect(parsed.moonshine).toBe("medium-streaming");
+    expect(parsed.tokens).toBe(0);
+    expect(parsed.echoes_cut).toBe(0);
   });
 
   it("returns empty defaults when the snapshot is not an object", () => {

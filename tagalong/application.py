@@ -241,7 +241,15 @@ class SessionView(Protocol):
     edge_voice: str
     codex_model: str
     codex_effort: str
+    codex_thread: str
+    codex_state: str
+    codex_speaking: bool
     turn_silence: float
+    confidence: float
+    language: str
+    moonshine: str
+    tokens: int
+    echoes_cut: int
 
     @property
     def mic(self) -> ChannelMuteView: ...
@@ -275,7 +283,15 @@ def app_state_from_session(state: SessionView) -> AppState:
         edge_voice=state.edge_voice,
         codex_model=state.codex_model,
         codex_reasoning=state.codex_effort,
+        codex_thread=state.codex_thread,
+        codex_state=state.codex_state,
+        codex_speaking=state.codex_speaking,
         turn_silence=state.turn_silence,
+        confidence=state.confidence,
+        language=state.language,
+        moonshine=state.moonshine,
+        tokens=state.tokens,
+        echoes_cut=state.echoes_cut,
     )
 
 
