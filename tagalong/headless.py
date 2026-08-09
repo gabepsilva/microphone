@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from .control.transcript import TranscriptStore
 from .domain import TAGA, VOICE
@@ -25,6 +26,10 @@ from .tui import (
 )
 
 
+class SpeechActivity(Protocol):
+    def is_speaking(self) -> bool: ...
+
+
 class HeadlessSession:
     """Presentation + channel host with no Textual app thread."""
 
@@ -32,16 +37,17 @@ class HeadlessSession:
         self,
         state: SessionState | None = None,
         countdown: object = None,
-        speech: object = None,
+        speech: SpeechActivity | None = None,
         transcript: TranscriptStore | None = None,
         **hooks: object,
     ) -> None:
-        del countdown, speech  # accepted for VoiceCodexTUI call-site parity
+        del countdown  # accepted for VoiceCodexTUI call-site parity
         self.state = state or SessionState()
         self.hooks = TuiHooks()
         for name, value in hooks.items():
             setattr(self.hooks, name, value)
         self.transcript = transcript if transcript is not None else TranscriptStore()
+        self.speech = speech
         self._stop = threading.Event()
         self._thinking_started: float | None = None
         self._partial_pending = False
@@ -83,7 +89,8 @@ class HeadlessSession:
         previous_int = signal.signal(signal.SIGINT, self._signal_stop)
         previous_term = signal.signal(signal.SIGTERM, self._signal_stop)
         try:
-            self._stop.wait()
+            while not self._stop.wait(0.1):
+                self._tick_speaking()
         finally:
             signal.signal(signal.SIGINT, previous_int)
             signal.signal(signal.SIGTERM, previous_term)
@@ -94,6 +101,13 @@ class HeadlessSession:
 
     def _signal_stop(self, _signum: int, _frame: object) -> None:
         self.stop()
+
+    def _tick_speaking(self) -> None:
+        speaking = self.speech is not None and self.speech.is_speaking()
+        if speaking == self.state.codex_speaking:
+            return
+        self.state.codex_speaking = speaking
+        self._publish_state({"codex_speaking": speaking})
 
     # -- store helpers -----------------------------------------------------
 

@@ -56,11 +56,44 @@ def test_headless_session_rejects_provisional_speech() -> None:
     assert controller.state.echoes_cut == 1
 
 
+def test_headless_speech_activity_reaches_attached_clients() -> None:
+    class Speaking:
+        value = True
+
+        def is_speaking(self) -> bool:
+            return self.value
+
+    speech = Speaking()
+    host = HeadlessSession(speech=speech)
+    controller = Controller(transcript=host.transcript)
+    host.bind_session_state_publisher(controller.set_session_state)
+
+    host._tick_speaking()
+    assert controller.state.codex_speaking is True
+    host._tick_speaking()
+    speech.value = False
+    host._tick_speaking()
+
+    assert controller.state.codex_speaking is False
+
+
 def test_headless_close_speaker_accepts_like_finish_turn() -> None:
     host = HeadlessSession()
     host.commit("Voice", "kept")
     host.close_speaker("Voice")
     assert _texts(host) == ["kept"]
+
+
+def test_headless_run_polls_speech_until_stopped() -> None:
+    class StopAfterPoll:
+        def is_speaking(self) -> bool:
+            host.stop()
+            return True
+
+    host = HeadlessSession(speech=StopAfterPoll())
+    host.run()
+
+    assert host.state.codex_speaking is True
 
 
 def test_headless_session_streams_taga_onto_the_store() -> None:
@@ -146,7 +179,12 @@ def test_headless_tools_tokens_errors_and_panels() -> None:
     host.set_audio("audio", active=False)
     host.set_audio("unknown", active=True)
     host.set_codex(
-        model="gpt", effort="high", state="thinking", thread="thread-9", speaking=True
+        model="gpt",
+        effort="high",
+        state="thinking",
+        thread="thread-9",
+        speaking=True,
+        unknown=True,
     )
     host.set_codex_catalog(
         [("gpt", "GPT")],
@@ -253,6 +291,13 @@ def test_headless_catalog_defaults_effort_when_current_invalid() -> None:
         {"gpt": ["low", "medium"]},
         {},
     )
+    assert host.state.codex_effort == "low"
+
+
+def test_headless_catalog_without_efforts_leaves_state_alone() -> None:
+    host = HeadlessSession(SessionState(codex_model="gpt", codex_effort="low"))
+    host.set_codex_catalog([("other", "Other")], {}, {})
+
     assert host.state.codex_effort == "low"
 
 
