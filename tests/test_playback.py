@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
+import threading
 
 import pytest
 
@@ -259,3 +261,79 @@ def test_a_finished_sentence_is_no_longer_stoppable(spawns) -> None:
     speaker.stop()
 
     assert spawns.player.terminated is False
+
+
+class StoppedPlayer(FakePlayer):
+    """A player frozen with SIGSTOP: ignores stdin and SIGTERM until SIGCONT.
+
+    A stopped process does not read its input pipe, so the writes ``play``
+    pushes into it back up and the call blocks; SIGTERM delivered to a
+    stopped process stays pending until SIGCONT arrives, so ``stop`` alone
+    cannot end the sentence. The player comes back to life — and reports the
+    signals it finally received — only when something sends SIGCONT.
+    """
+
+    def __init__(self, pid=4242):
+        super().__init__(alive=True)
+        self.pid = pid
+        self.continued = False
+        self.wake = threading.Event()
+
+    def continue_(self):
+        """Deliver the SIGCONT the test's fake os.kill routed here."""
+        self.continued = True
+        self.wake.set()
+
+    def communicate(self, input=None):
+        # The stopped player never consumed the pipe; only the SIGCONT that
+        # resumes it lets the write and the wait complete.
+        del input
+        self.wake.wait(timeout=5)
+        return b"", b""
+
+    def poll(self):
+        return None if not self.wake.is_set() else 0
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        return 0 if self.wake.is_set() else None
+
+
+def test_stop_unblocks_play_on_a_player_stopped_with_sigstop(
+    monkeypatch,
+) -> None:
+    """SIGCONT before termination, or play() never returns (a real wedge)."""
+    stopped = StoppedPlayer()
+    recorder = Spawns(stopped)
+    monkeypatch.setattr(subprocess, "Popen", recorder.popen)
+    sent = []
+
+    def signal_player(pid, sig):
+        sent.append((pid, sig))
+        stopped.continue_()
+
+    monkeypatch.setattr("os.kill", signal_player)
+    speaker = AudioPlayer("/usr/bin/ffplay")
+    finished = threading.Event()
+    errors = []
+
+    def play_background():
+        try:
+            speaker.play(b"sentence")
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=play_background, daemon=True)
+    thread.start()
+    # Give the worker time to reach the blocking communicate call, then cut
+    # it off the way a user pressing stop against a frozen player would.
+    finished.wait(timeout=0.2)
+    assert not finished.is_set()
+    speaker.stop()
+    assert finished.wait(timeout=2) is True
+    thread.join(timeout=2)
+    assert errors == []
+    assert stopped.continued is True
+    assert sent == [(stopped.pid, signal.SIGCONT)]

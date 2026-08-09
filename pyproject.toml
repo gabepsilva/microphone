@@ -5,6 +5,7 @@ description = "An always-on local assistant that hears both sides of your meetin
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "dbus-fast==5.0.22 ; sys_platform == 'linux'",
     "edge-tts==7.2.8",
     # Direct: speech render walks CommonMark tokens. Already pulled by Rich /
     # Textual for display markdown; declared here so TTS cleaning does not

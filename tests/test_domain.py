@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from tagalong.domain import (
@@ -728,6 +730,48 @@ def test_speech_continues_across_the_gap_between_sentences() -> None:
     activity.finished()
 
     assert activity.speaking is True
+
+
+def test_an_observer_is_told_about_every_state_you_make() -> None:
+    activity = SpeechActivity()
+    transitions = []
+
+    def observed(state):
+        transitions.append(state.speaking)
+
+    activity.observe(observed)
+    activity.queued()
+    activity.finished()
+    activity.queued()
+    activity.silenced()
+
+    assert transitions == [True, False, True, False]
+
+
+def test_an_observer_can_read_the_state_it_was_triggered_by() -> None:
+    """Re-reading ``speaking`` inside the observer must not deadlock.
+
+    The count is the observable the media controls mirror, so the observer
+    reads it back while the transition that fired it is still unwinding. The
+    mutation runs on a helper thread so a regression hangs that thread rather
+    than the test; the bounded wait turns the hang into a failure within two
+    seconds instead of wedging an xdist worker.
+    """
+    activity = SpeechActivity()
+    done = threading.Event()
+    broken = []
+
+    def observer(state):
+        if not state.speaking:
+            broken.append("observer did not see the transition")
+        done.set()
+
+    activity.observe(observer)
+    mutator = threading.Thread(target=activity.queued, daemon=True)
+    mutator.start()
+
+    assert done.wait(timeout=2) is True
+    assert broken == []
 
 
 def test_speech_ends_once_every_sentence_has_been_delivered() -> None:

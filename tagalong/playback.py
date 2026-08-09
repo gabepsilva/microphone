@@ -14,6 +14,8 @@ thread that is blocked writing audio into it.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -168,7 +170,24 @@ class AudioPlayer:
                 self.active = None
 
     def stop(self):
-        """Cut off whatever is playing now, if anything is."""
+        """Cut off whatever is playing now, if anything is.
+
+        A player that was arrested with SIGSTOP — by a pause, a tracing tool,
+        or a frozen desktop — ignores SIGTERM while it is stopped. The signal
+        is only delivered after SIGCONT, so termination first reanimates the
+        process; otherwise the child lingers as a wedged zombie until it is
+        killed or the session ends.
+        """
         with self.lock:
             if self.active is not None:
+                self._release_suspended_player(self.active)
                 self.active.terminate()
+
+    @staticmethod
+    def _release_suspended_player(process):
+        """Let a stopped player receive the termination that follows."""
+        pid = getattr(process, "pid", None)
+        if not hasattr(signal, "SIGCONT") or pid is None:
+            return
+        with suppress(OSError):
+            os.kill(pid, signal.SIGCONT)

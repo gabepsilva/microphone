@@ -533,21 +533,41 @@ class SpeechActivity:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending = 0
+        self._observer = None
+
+    def observe(self, observer) -> None:
+        """Watch state transitions, receiving the activity after each one.
+
+        The observer is ``None`` to unsubscribe. It runs with the state lock
+        released, so it may read ``speaking`` (or anything else that locks)
+        without deadlocking the engine that triggered it.
+        """
+        with self._lock:
+            self._observer = observer
+
+    def _notify(self) -> None:
+        with self._lock:
+            observer = self._observer
+        if observer is not None:
+            observer(self)
 
     def queued(self) -> None:
         with self._lock:
             self._pending += 1
+        self._notify()
 
     def finished(self) -> None:
         with self._lock:
             # Floored rather than allowed negative: an engine that reports one
             # extra completion would otherwise go quiet for the next sentence.
             self._pending = max(0, self._pending - 1)
+        self._notify()
 
     def silenced(self) -> None:
         """Drop everything outstanding, as an interrupt or a shutdown does."""
         with self._lock:
             self._pending = 0
+        self._notify()
 
     @property
     def speaking(self) -> bool:
