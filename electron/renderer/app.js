@@ -273,7 +273,7 @@ function applyState(state) {
   const policy = state.response_policy || "both";
   document.getElementById("policy-chip").textContent =
     `Replies to ${POLICY_LABELS[policy] ?? policy}`;
-  syncSession(state);
+  syncSession(document, state);
   const mic = document.getElementById("microphone");
   if (state.microphone?.desired != null) {
     if (![...mic.options].some((o) => o.value === state.microphone.desired)) {
