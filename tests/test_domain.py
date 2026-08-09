@@ -780,6 +780,29 @@ def test_a_quiet_start_never_announces_itself() -> None:
     assert transitions == []
 
 
+def test_a_gate_deaf_in_between_still_remembers_where_it_stood() -> None:
+    """Unsubscribing must not desynchronize the gate from the speaker.
+
+    While nobody listens, the span counts down to silence; the gate keeps
+    tracking it, so an edge heard after a re-subscribe is the next real
+    edge — not one swallowed by a stale state from before the deaf spell.
+    """
+    activity = SpeechActivity()
+    seen = []
+
+    def observed(state):
+        seen.append(state.speaking)
+
+    activity.observe(observed)
+    activity.queued()  # opens: True
+    activity.observe(None)
+    activity.finished()  # closes while deaf; the gate must hear the False
+    activity.observe(observed)
+    activity.queued()  # opens again: True
+
+    assert seen == [True, True]
+
+
 def test_an_observer_can_read_the_state_it_was_triggered_by() -> None:
     """Re-reading ``speaking`` inside the observer must not deadlock.
 

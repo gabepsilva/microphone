@@ -567,8 +567,9 @@ class SpeechActivity:
         with self._lock:
             observer = self._observer
             speaking = self._pending > 0
-        if observer is not None and speaking != self._last_speaking:
+            changed = speaking != self._last_speaking
             self._last_speaking = speaking
+        if observer is not None and changed:
             observer(self)
 
     def queued(self) -> None:

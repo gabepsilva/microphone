@@ -11,6 +11,7 @@ environment guarantees; what this module does with the bus is proved here.
 from __future__ import annotations
 
 import io
+import threading
 import time
 
 import pytest
@@ -269,6 +270,7 @@ def test_a_claimed_name_is_reported_and_falls_back() -> None:
     claimed = FakeBus(reply=RequestNameReply.IN_QUEUE)
     with pytest.raises(MediaControlsUnavailable, match="already claimed"):
         MprisMediaControls(bus_factory=lambda: claimed)
+    assert claimed.disconnected is True
 
     out = io.StringIO()
     port = media_controls.build_media_controls(
@@ -276,6 +278,37 @@ def test_a_claimed_name_is_reported_and_falls_back() -> None:
     )
     assert isinstance(port, NullMediaControls)
     assert "already claimed" in out.getvalue()
+
+
+def _slow_bus(release):
+    """A bus whose connect is parked until the test says otherwise."""
+
+    class SlowFakeBus(FakeBus):
+        async def connect(self):
+            release.wait(timeout=WAIT_SECONDS)
+            await super().connect()
+
+    return SlowFakeBus
+
+
+def test_a_session_bus_that_answers_late_leaves_no_orphan_claim(
+    monkeypatch,
+) -> None:
+    """Giving up on a slow bus must not leave a name claim behind.
+
+    The constructor raises and the session falls back to silence; the loop
+    thread wakes up later anyway, and it must release whatever it reached
+    rather than exporting a player nobody publishes to.
+    """
+    monkeypatch.setattr(MprisMediaControls, "READY_TIMEOUT_SECONDS", 0.2)
+    release = threading.Event()
+    bus = _slow_bus(release)()
+    with pytest.raises(MediaControlsUnavailable, match="did not answer"):
+        MprisMediaControls(bus_factory=lambda: bus)
+
+    release.set()
+    assert wait_until(lambda: bus.disconnected)
+    assert wait_until(lambda: bus.claimed == [])
 
 
 def test_a_connect_failure_falls_back_with_one_line() -> None:

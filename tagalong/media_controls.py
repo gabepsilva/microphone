@@ -44,6 +44,7 @@ import asyncio
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Protocol, runtime_checkable
 
 MEDIA_STATUS_PLAYING = "playing"
@@ -172,12 +173,18 @@ class MprisMediaControls:
         self._startup_error: BaseException | None = None
         self._ready = False
         self._closing = False
+        self._stop = threading.Event()
         threading.Thread(
             target=self._run_loop,
             name="MprisControls",
             daemon=True,
         ).start()
         if not self._outcome.wait(timeout=self.READY_TIMEOUT_SECONDS):
+            # Walk away without leaving a live claim out there: tell the
+            # thread to release anything it has happened to reach. The
+            # caller falls back to a null port, but no name may be held on
+            # its behalf afterwards.
+            self._stop.set()
             raise MediaControlsUnavailable(
                 f"the session bus did not answer within {self.READY_TIMEOUT_SECONDS}s"
             )
@@ -195,6 +202,14 @@ class MprisMediaControls:
             self._outcome.set()
             loop.run_forever()
         except BaseException as error:
+            bus = self._bus
+            if bus is not None:
+                # A failed claim or a dropped connection must not leave the
+                # socket behind: the fallback path is the expected one when
+                # another tagalong already owns the name, so leaking the
+                # AF_UNIX connection for every such session is real noise.
+                bus.disconnect()
+                self._bus = None
             self._startup_error = error
             self._outcome.set()
         finally:
@@ -215,11 +230,21 @@ class MprisMediaControls:
             raise MediaControlsUnavailable(
                 f"could not connect to the session bus: {error}"
             ) from error
+        if self._stop.is_set():
+            # Start-up gave up on this session while the bus was still
+            # answering; release what was just connected and go quiet.
+            bus.disconnect()
+            raise MediaControlsUnavailable("the session bus answered too late")
         self._bus = bus
         self._player = _Player(self._on_stop)
         bus.export(OBJECT_PATH, _Root())
         bus.export(OBJECT_PATH, self._player)
         reply = await bus.request_name(PLAYER_BUS_NAME, flags=NameFlag.DO_NOT_QUEUE)
+        if self._stop.is_set():
+            # Same trade turned upside down: nothing may hold the name for a
+            # session nobody thinks has one anymore.
+            bus.disconnect()
+            raise MediaControlsUnavailable("the session bus answered too late")
         if reply != RequestNameReply.PRIMARY_OWNER:
             raise MediaControlsUnavailable(
                 f"{PLAYER_BUS_NAME!r} is already claimed on this session bus"
@@ -242,7 +267,8 @@ class MprisMediaControls:
             and player is not None
             and loop.is_running()
         ):
-            loop.call_soon_threadsafe(player.update, status, title)
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(player.update, status, title)
 
     def close(self) -> None:
         """Ask the loop behind this port to hold its silence from now on."""
