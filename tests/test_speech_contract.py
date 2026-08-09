@@ -54,6 +54,9 @@ class Player:
     def poll(self):
         return 0
 
+    def send_signal(self, sig):
+        del sig
+
     def terminate(self):
         # A terminated ffplay exits, so the blocked write returns. Modelling
         # that is what lets a test assert shutdown actually completes.

@@ -35,6 +35,7 @@ class FakePlayer:
         self.received = None
         self.terminated = False
         self.killed = False
+        self.sent_signals: list[int] = []
         self.waits: list[float | None] = []
 
     def communicate(self, input=None):
@@ -53,6 +54,9 @@ class FakePlayer:
 
     def terminate(self):
         self.terminated = True
+
+    def send_signal(self, sig):
+        self.sent_signals.append(sig)
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
@@ -263,6 +267,51 @@ def test_a_finished_sentence_is_no_longer_stoppable(spawns) -> None:
     assert spawns.player.terminated is False
 
 
+def test_a_reap_does_not_clear_a_process_it_never_set(monkeypatch) -> None:
+    """One player winding down must not retire a newer occupant's slot.
+
+    The reap only ever excuses the process that took the slot; a previous
+    player finishing underneath a new one leaves the new one untouched. The
+    first play is still draining the pipe when the second claims the slot,
+    so the reap of the first runs against a slot that is no longer its own.
+    """
+    release = threading.Event()
+    first = FakePlayer(on_communicate=release.wait)
+    second = FakePlayer(alive=True)
+    recorder = Spawns(first)
+    monkeypatch.setattr(subprocess, "Popen", recorder.popen)
+    speaker = AudioPlayer("/usr/bin/ffplay")
+
+    drained = threading.Thread(target=speaker.play, args=(b"first",), daemon=True)
+    drained.start()
+    while first.received is None:
+        assert drained.is_alive() is True
+        threading.Event().wait(0.01)
+
+    recorder.player = second
+    speaker.play(b"second")
+    release.set()
+    drained.join(timeout=2)
+
+    assert speaker.active is None
+    assert first.terminated is False
+    assert second.terminated is True
+
+
+def test_stop_without_sigcont_never_signals_the_player(monkeypatch) -> None:
+    """A platform without SIGCONT gets the terminate and nothing else."""
+    monkeypatch.delattr(signal, "SIGCONT", raising=False)
+    speaker = AudioPlayer("/usr/bin/ffplay")
+    player = FakePlayer(on_communicate=speaker.stop)
+    recorder = Spawns(player)
+    monkeypatch.setattr(subprocess, "Popen", recorder.popen)
+
+    speaker.play(b"sentence")
+
+    assert player.sent_signals == []
+    assert player.terminated is True
+
+
 class StoppedPlayer(FakePlayer):
     """A player frozen with SIGSTOP: ignores stdin and SIGTERM until SIGCONT.
 
@@ -277,10 +326,11 @@ class StoppedPlayer(FakePlayer):
         super().__init__(alive=True)
         self.pid = pid
         self.continued = False
+        self.sent: list[tuple[int, int]] = []
         self.wake = threading.Event()
 
-    def continue_(self):
-        """Deliver the SIGCONT the test's fake os.kill routed here."""
+    def send_signal(self, sig):
+        self.sent.append((self.pid, sig))
         self.continued = True
         self.wake.set()
 
@@ -306,13 +356,6 @@ def test_stop_unblocks_play_on_a_player_stopped_with_sigstop(
     stopped = StoppedPlayer()
     recorder = Spawns(stopped)
     monkeypatch.setattr(subprocess, "Popen", recorder.popen)
-    sent = []
-
-    def signal_player(pid, sig):
-        sent.append((pid, sig))
-        stopped.continue_()
-
-    monkeypatch.setattr("os.kill", signal_player)
     speaker = AudioPlayer("/usr/bin/ffplay")
     finished = threading.Event()
     errors = []
@@ -336,4 +379,4 @@ def test_stop_unblocks_play_on_a_player_stopped_with_sigstop(
     thread.join(timeout=2)
     assert errors == []
     assert stopped.continued is True
-    assert sent == [(stopped.pid, signal.SIGCONT)]
+    assert stopped.sent == [(stopped.pid, signal.SIGCONT)]

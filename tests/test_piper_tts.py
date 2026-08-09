@@ -93,6 +93,9 @@ class FakePlayer:
     def poll(self):
         return self.returncode
 
+    def send_signal(self, sig):
+        del sig
+
     def terminate(self):
         self.terminated = True
 

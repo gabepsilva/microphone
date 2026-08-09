@@ -534,13 +534,31 @@ class SpeechActivity:
         self._lock = threading.Lock()
         self._pending = 0
         self._observer = None
+        self._last_speaking = False
 
     def observe(self, observer) -> None:
-        """Watch state transitions, receiving the activity after each one.
+        """Watch the speech edges, receiving the activity after each change.
 
         The observer is ``None`` to unsubscribe. It runs with the state lock
         released, so it may read ``speaking`` (or anything else that locks)
-        without deadlocking the engine that triggered it.
+        without deadlocking the engine that triggered it. What it is promised:
+
+        - Edges only. ``queued()``, ``finished()`` and ``silenced()`` call
+          out once apiece, and only when the counting span actually opened or
+          closed; the observer hears a two-sentence response twice, not four
+          times.
+        - Concurrency. The notify call is made from the thread that changed
+          the count — a caller's thread for ``queued()``, an engine worker
+          for ``finished()`` — and nothing serializes two of them. The
+          observer must be safe to run on several threads at once and must
+          arrange its own handoff off the calling thread.
+        - Promptness. The call happens inside the engine's first-word path;
+          anything the observer does is added to time-to-first-word, so it
+          must not block.
+        - It sees the current count, not the transition that fired it: the
+          last notify to run reads ``speaking`` as it is then. That settles
+          to the right final value, so a status mirror can trust it, but the
+          callback is not an event log.
         """
         with self._lock:
             self._observer = observer
@@ -548,7 +566,9 @@ class SpeechActivity:
     def _notify(self) -> None:
         with self._lock:
             observer = self._observer
-        if observer is not None:
+            speaking = self._pending > 0
+        if observer is not None and speaking != self._last_speaking:
+            self._last_speaking = speaking
             observer(self)
 
     def queued(self) -> None:

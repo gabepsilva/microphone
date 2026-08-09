@@ -748,6 +748,38 @@ def test_an_observer_is_told_about_every_state_you_make() -> None:
     assert transitions == [True, False, True, False]
 
 
+def test_an_observer_hears_the_edge_not_every_tick() -> None:
+    """A two-sentence response is Playing once, not once per sentence.
+
+    Notifications mark the opening and the closing of the counted span;
+    nothing is owed to intermediate sentences or to events that changed
+    nothing.
+    """
+    activity = SpeechActivity()
+    transitions = []
+    activity.observe(lambda state: transitions.append(state.speaking))
+
+    activity.queued()
+    activity.queued()
+    activity.finished()
+    activity.finished()
+    activity.silenced()
+
+    assert transitions == [True, False]
+
+
+def test_a_quiet_start_never_announces_itself() -> None:
+    """Events that leave the span closed stay unheard: no false Stopped."""
+    activity = SpeechActivity()
+    transitions = []
+    activity.observe(lambda state: transitions.append(state.speaking))
+
+    activity.silenced()
+    activity.finished()
+
+    assert transitions == []
+
+
 def test_an_observer_can_read_the_state_it_was_triggered_by() -> None:
     """Re-reading ``speaking`` inside the observer must not deadlock.
 

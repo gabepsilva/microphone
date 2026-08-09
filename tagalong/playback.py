@@ -14,7 +14,6 @@ thread that is blocked writing audio into it.
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
@@ -186,8 +185,12 @@ class AudioPlayer:
     @staticmethod
     def _release_suspended_player(process):
         """Let a stopped player receive the termination that follows."""
-        pid = getattr(process, "pid", None)
-        if not hasattr(signal, "SIGCONT") or pid is None:
+        if not hasattr(signal, "SIGCONT"):
             return
         with suppress(OSError):
-            os.kill(pid, signal.SIGCONT)
+            # send_signal polls first, so it never aims at a pid the kernel
+            # has already recycled: between the reap and the lock handover a
+            # concurrent stop could otherwise signal a stranger's process.
+            # poll() on a SIGSTOP'd child still returns None, so the wedge
+            # path gets its SIGCONT all the same.
+            process.send_signal(signal.SIGCONT)

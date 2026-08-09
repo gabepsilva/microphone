@@ -88,7 +88,10 @@ FLOORS = {
     # Raised 2026-08-09 to 98 when the audible-moment hook (issue #140) and a
     # shutdown-raced synthesis test closed the exception-report branch.
     "tagalong/piper_tts.py": 98.0,
-    "tagalong/playback.py": 98.0,
+    # Raised 2026-08-09 to 100 when stop() stopped killing a pid directly:
+    # the send_signal route (issue #140 review) put the reap guard and the
+    # no-SIGCONT platform branch under tests of their own.
+    "tagalong/playback.py": 100.0,
     "tagalong/presentation.py": 100.0,
     # Recorded 2026-08-05 with the shared queued-speech lifecycle.
     "tagalong/queued_tts.py": 100.0,
