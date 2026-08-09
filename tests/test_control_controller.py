@@ -1267,3 +1267,29 @@ def test_set_partial_drops_superseded_stamps() -> None:
     controller.set_partial("Voice", "stale", seq=1)
     assert controller.state.partial_source == "Voice"
     assert controller.state.partial_text == "newest"
+
+
+def test_set_session_state_publishes_known_fields_and_ignores_other_fields() -> None:
+    controller = Controller()
+    _snapshot, subscription = controller.subscribe()
+
+    controller.set_session_state(
+        {
+            "tokens": 42,
+            "echoes_cut": 3,
+            "codex_thread": "thread-9",
+            "not_a_session_field": "ignored",
+        }
+    )
+
+    assert controller.state.tokens == 42
+    assert controller.state.echoes_cut == 3
+    assert controller.state.codex_thread == "thread-9"
+    assert not hasattr(controller.state, "not_a_session_field")
+    changed = [event for event in subscription.drain() if event.name == "state.changed"]
+    assert [dict(event.payload) for event in changed] == [
+        {"tokens": 42, "echoes_cut": 3, "codex_thread": "thread-9"}
+    ]
+
+    controller.set_session_state({"not_a_session_field": "still ignored"})
+    assert subscription.drain() == ()

@@ -65,7 +65,7 @@ from .outcomes import (
     Superseded,
 )
 from .policy import AGENT_DENIED_ACTIONS, authorizes
-from .state import AppState, Effect
+from .state import SESSION_STATE_FIELDS, AppState, Effect
 from .transcript import TranscriptStore
 
 # Enough for a client to retry the handful of requests a disconnect can leave
@@ -306,6 +306,18 @@ class Controller:
                 return
             self._partial_seq = seq
             self._commit(replace(self._state, partial_source=source, partial_text=text))
+
+    def set_session_state(self, changed: Mapping[str, object]) -> None:
+        """Publish display state owned by the live session host."""
+        updates = {
+            name: value
+            for name, value in changed.items()
+            if name in SESSION_STATE_FIELDS
+        }
+        if not updates:
+            return
+        with self._lock:
+            self._commit(replace(self._state, **updates))
 
     # -- writing --------------------------------------------------------
 

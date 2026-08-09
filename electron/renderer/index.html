@@ -198,9 +198,39 @@
           </div>
         </section>
 
-        <!-- Session actions live on the keyboard (^X ^D ^N ^S) and in the
-             slash palette; the empty screen is their reference. Provenance and
-             lifecycle are documented in electron/README.md, not on screen. -->
+        <section class="panel">
+          <h2 class="panel-head">Session</h2>
+          <dl class="session-stats">
+            <div class="session-stat">
+              <dt>Taga Session</dt>
+              <dd id="session-codex-thread">none</dd>
+            </div>
+            <div class="session-stat">
+              <dt>state</dt>
+              <dd id="session-codex-state">idle</dd>
+            </div>
+            <div class="session-stat">
+              <dt>confidence</dt>
+              <dd id="session-confidence">0.60</dd>
+            </div>
+            <div class="session-stat">
+              <dt>language</dt>
+              <dd id="session-language">en</dd>
+            </div>
+            <div class="session-stat">
+              <dt>moonshine</dt>
+              <dd id="session-moonshine">medium-streaming</dd>
+            </div>
+            <div class="session-stat">
+              <dt>tokens</dt>
+              <dd id="session-tokens">0</dd>
+            </div>
+            <div class="session-stat">
+              <dt>echoes cut</dt>
+              <dd id="session-echoes-cut">0</dd>
+            </div>
+          </dl>
+        </section>
       </aside>
     </div>
     <script type="module" src="./app.js"></script>

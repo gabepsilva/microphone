@@ -216,6 +216,33 @@ function syncCodexPickers(state) {
   );
 }
 
+function syncSession(state) {
+  const thread = document.getElementById("session-codex-thread");
+  thread.textContent = state.codex_thread || "—";
+  const codexState = state.codex_state || "idle";
+  const activity =
+    codexState !== "idle" ? codexState : state.codex_speaking ? "speaking" : "idle";
+  const activityElement = document.getElementById("session-codex-state");
+  activityElement.textContent = activity;
+  activityElement.classList.toggle("active", activity !== "idle");
+  const confidence = Number(state.confidence);
+  document.getElementById("session-confidence").textContent = Number.isFinite(
+    confidence,
+  )
+    ? confidence.toFixed(2)
+    : "—";
+  document.getElementById("session-language").textContent = state.language || "—";
+  document.getElementById("session-moonshine").textContent = state.moonshine || "—";
+  const tokens = Number(state.tokens);
+  document.getElementById("session-tokens").textContent = Number.isFinite(tokens)
+    ? tokens.toLocaleString("en-US")
+    : "—";
+  const echoesCut = Number(state.echoes_cut);
+  document.getElementById("session-echoes-cut").textContent = Number.isFinite(echoesCut)
+    ? String(echoesCut)
+    : "—";
+}
+
 async function refreshDevices(state) {
   let listed;
   try {
@@ -272,6 +299,7 @@ function applyState(state) {
   const policy = state.response_policy || "both";
   document.getElementById("policy-chip").textContent =
     `Replies to ${POLICY_LABELS[policy] ?? policy}`;
+  syncSession(state);
   const mic = document.getElementById("microphone");
   if (state.microphone?.desired != null) {
     if (![...mic.options].some((o) => o.value === state.microphone.desired)) {

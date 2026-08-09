@@ -68,12 +68,16 @@ class FakeTUI:
         self._call: object | None = None
         self.transcript = TranscriptStore()
         self.partial_publisher = None
+        self.session_state_publisher = None
 
     def transcript_entries(self):
         return list(self.transcript.transcript_entries())
 
     def bind_partial_publisher(self, publish):
         self.partial_publisher = publish
+
+    def bind_session_state_publisher(self, publish):
+        self.session_state_publisher = publish
 
     def set_codex(self, **fields):
         self.codex_fields.update(fields)

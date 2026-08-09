@@ -18,7 +18,15 @@ export type AppState = {
   edge_voice: string;
   codex_model: string;
   codex_reasoning: string;
+  codex_thread: string;
+  codex_state: string;
+  codex_speaking: boolean;
   turn_silence: number;
+  confidence: number;
+  language: string;
+  moonshine: string;
+  tokens: number;
+  echoes_cut: number;
   /** Live recognition line (#102 Q3a). */
   partial_source: string;
   partial_text: string;
@@ -38,7 +46,15 @@ export const APP_STATE_KEYS = [
   "edge_voice",
   "codex_model",
   "codex_reasoning",
+  "codex_thread",
+  "codex_state",
+  "codex_speaking",
   "turn_silence",
+  "confidence",
+  "language",
+  "moonshine",
+  "tokens",
+  "echoes_cut",
   "partial_source",
   "partial_text",
 ] as const satisfies ReadonlyArray<keyof AppState>;
@@ -86,7 +102,15 @@ export function emptyAppState(): AppState {
     edge_voice: "en-US-AndrewNeural",
     codex_model: "",
     codex_reasoning: "",
+    codex_thread: "none",
+    codex_state: "idle",
+    codex_speaking: false,
     turn_silence: 3.0,
+    confidence: 0.6,
+    language: "en",
+    moonshine: "medium-streaming",
+    tokens: 0,
+    echoes_cut: 0,
     partial_source: "",
     partial_text: "",
   };
@@ -189,6 +213,21 @@ export function applyStateFragment(
           next.codex_reasoning = value;
         }
         break;
+      case "codex_thread":
+        if (typeof value === "string") {
+          next.codex_thread = value;
+        }
+        break;
+      case "codex_state":
+        if (typeof value === "string") {
+          next.codex_state = value;
+        }
+        break;
+      case "codex_speaking":
+        if (typeof value === "boolean") {
+          next.codex_speaking = value;
+        }
+        break;
       case "partial_source":
         if (typeof value === "string") {
           next.partial_source = value;
@@ -202,6 +241,31 @@ export function applyStateFragment(
       case "turn_silence":
         if (typeof value === "number" && Number.isFinite(value)) {
           next.turn_silence = value;
+        }
+        break;
+      case "confidence":
+        if (typeof value === "number" && Number.isFinite(value)) {
+          next.confidence = value;
+        }
+        break;
+      case "language":
+        if (typeof value === "string") {
+          next.language = value;
+        }
+        break;
+      case "moonshine":
+        if (typeof value === "string") {
+          next.moonshine = value;
+        }
+        break;
+      case "tokens":
+        if (typeof value === "number" && Number.isFinite(value)) {
+          next.tokens = value;
+        }
+        break;
+      case "echoes_cut":
+        if (typeof value === "number" && Number.isFinite(value)) {
+          next.echoes_cut = value;
         }
         break;
       default:

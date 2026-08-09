@@ -304,7 +304,15 @@ def test_app_state_seeds_every_field_this_slice_maintains() -> None:
         tts_provider="edge",
         codex_model="gpt-5.6-sol",
         codex_effort="high",
+        codex_thread="thread-9",
+        codex_state="thinking",
+        codex_speaking=True,
         turn_silence=4.5,
+        confidence=0.83,
+        language="fr",
+        moonshine="small-streaming",
+        tokens=17,
+        echoes_cut=2,
     )
     state.mic.muted = True
     state.audio.muted = True
@@ -324,7 +332,15 @@ def test_app_state_seeds_every_field_this_slice_maintains() -> None:
         edge_voice=state.edge_voice,
         codex_model="gpt-5.6-sol",
         codex_reasoning="high",
+        codex_thread="thread-9",
+        codex_state="thinking",
+        codex_speaking=True,
         turn_silence=4.5,
+        confidence=0.83,
+        language="fr",
+        moonshine="small-streaming",
+        tokens=17,
+        echoes_cut=2,
     )
 
 

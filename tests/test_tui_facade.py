@@ -678,11 +678,16 @@ def test_a_codex_error_is_shown_in_the_transcript(tui) -> None:
 
 def test_panel_updates_reach_the_running_sidebar(tui) -> None:
     facade = tui.VoiceCodexTUI()
+    from tagalong.control import Controller
+
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_session_state_publisher(controller.set_session_state)
+    _snapshot, subscription = controller.subscribe()
 
     async def body(pilot):
         facade.set_audio("mic", active=True)
         facade.set_audio("nonexistent", active=True)
-        facade.set_codex(model="gpt-5.6-nova", thread="thread-9")
+        facade.set_codex(model="gpt-5.6-nova", thread="thread-9", state="thinking")
         facade.set_session(tokens=42)
         facade.set_status("listening", live=True)
         await pilot.pause()
@@ -692,7 +697,58 @@ def test_panel_updates_reach_the_running_sidebar(tui) -> None:
     assert facade.state.mic.active is True
     assert facade.state.codex_model == "gpt-5.6-nova"
     assert facade.state.codex_thread == "thread-9"
+    assert controller.state.codex_thread == "thread-9"
+    assert controller.state.codex_state == "thinking"
+    assert any(
+        dict(event.payload)
+        == {
+            "codex_thread": "thread-9",
+            "codex_state": "thinking",
+        }
+        for event in subscription.drain()
+        if event.name == "state.changed"
+    )
     assert facade.state.tokens == 42
+
+
+def test_speech_activity_reaches_attached_clients(tui) -> None:
+    class Speaking:
+        def is_speaking(self) -> bool:
+            return True
+
+    facade = tui.VoiceCodexTUI(speech=Speaking())
+    from tagalong.control import Controller
+
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_session_state_publisher(controller.set_session_state)
+
+    async def body(pilot):
+        facade.app._tick_speaking()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert facade.state.codex_speaking is True
+    assert controller.state.codex_speaking is True
+
+
+def test_codex_state_transitions_reach_attached_clients(tui) -> None:
+    facade = tui.VoiceCodexTUI()
+    from tagalong.control import Controller
+
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_session_state_publisher(controller.set_session_state)
+
+    async def body(pilot):
+        facade.codex_message_open(tui.VOICE)
+        await pilot.pause()
+        assert controller.state.codex_state == "replying to Voice"
+        facade.end_codex()
+        await pilot.pause()
+
+    drive(facade, body)
+
+    assert controller.state.codex_state == "idle"
 
 
 def test_a_discovered_catalog_adopts_the_models_efforts(tui) -> None:
@@ -1672,6 +1728,8 @@ HOST_ONLY_METHODS = frozenset(
         "transcript_entries",
         # Wire SessionState partials onto controller AppState (#102 Q3a).
         "bind_partial_publisher",
+        # Wire host-owned session state onto controller AppState.
+        "bind_session_state_publisher",
         # Sidebar panels the host fills in. These are not part of a Codex
         # turn, so no presentation protocol describes them.
         "set_audio",
@@ -2267,6 +2325,11 @@ def test_an_idle_session_flushes_nothing(tui) -> None:
 def test_token_usage_repaints_the_counters_and_not_the_pickers(tui) -> None:
     """It arrives all through a streamed answer, so it must stay cheap."""
     facade = tui.VoiceCodexTUI()
+    from tagalong.control import Controller
+
+    controller = Controller(transcript=facade.transcript)
+    facade.bind_session_state_publisher(controller.set_session_state)
+    _snapshot, subscription = controller.subscribe()
     calls: list[str] = []
 
     async def body(pilot):
@@ -2280,6 +2343,9 @@ def test_token_usage_repaints_the_counters_and_not_the_pickers(tui) -> None:
 
     assert calls == ["session panel"]
     assert facade.state.tokens == 1234
+    assert controller.state.tokens == 1234
+    changed = [event for event in subscription.drain() if event.name == "state.changed"]
+    assert dict(changed[-1].payload) == {"tokens": 1234}
 
 
 def test_a_sound_report_never_waits_on_the_application_thread(tui) -> None:

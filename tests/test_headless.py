@@ -47,10 +47,13 @@ def test_headless_session_writes_accepted_speech_to_the_store() -> None:
 
 def test_headless_session_rejects_provisional_speech() -> None:
     host = HeadlessSession()
+    controller = Controller(transcript=host.transcript)
+    host.bind_session_state_publisher(controller.set_session_state)
     host.commit("Voice", "echo")
     host.finish_turn("Voice", accepted=False)
     assert _texts(host) == []
     assert host.state.echoes_cut == 1
+    assert controller.state.echoes_cut == 1
 
 
 def test_headless_close_speaker_accepts_like_finish_turn() -> None:
@@ -133,6 +136,8 @@ def test_headless_command_output_without_start_is_ignored() -> None:
 
 def test_headless_tools_tokens_errors_and_panels() -> None:
     host = HeadlessSession(SessionState(codex_model="gpt", codex_effort="low"))
+    controller = Controller(transcript=host.transcript)
+    host.bind_session_state_publisher(controller.set_session_state)
     host.tool_called("server", "tool")
     host.tool_completed("ok")
     host.token_usage(42)
@@ -140,7 +145,9 @@ def test_headless_tools_tokens_errors_and_panels() -> None:
     host.set_audio("mic", active=True)
     host.set_audio("audio", active=False)
     host.set_audio("unknown", active=True)
-    host.set_codex(model="gpt", effort="high", state="idle")
+    host.set_codex(
+        model="gpt", effort="high", state="thinking", thread="thread-9", speaking=True
+    )
     host.set_codex_catalog(
         [("gpt", "GPT")],
         {"gpt": ["low", "high"]},
@@ -150,6 +157,10 @@ def test_headless_tools_tokens_errors_and_panels() -> None:
     host.set_status("live", live=False)
 
     assert host.state.tokens == 42
+    assert controller.state.tokens == 42
+    assert controller.state.codex_thread == "thread-9"
+    assert controller.state.codex_state == "thinking"
+    assert controller.state.codex_speaking is True
     assert host.state.mic.active is True
     assert host.state.audio.active is False
     assert host.state.codex_effort == "high"

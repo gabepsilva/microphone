@@ -58,6 +58,7 @@ from .commands import (
     match_commands,
     preferred_index,
 )
+from .control.state import SESSION_STATE_FIELDS
 from .control.transcript import TranscriptStore
 from .domain import (
     AGENT,
@@ -1902,6 +1903,8 @@ class VoiceCodexApp(App):
         # Filled by VoiceCodexTUI so Ctrl-X can apply buffered stream text
         # before the cut-off mark is drawn.
         self.apply_pending_stream_text: Callable[[], None] | None = None
+        # Filled by VoiceCodexTUI so the remote state includes Codex activity.
+        self.publish_session_state: Callable[[Mapping[str, object]], None] | None = None
 
     # -- layout ------------------------------------------------------------
 
@@ -1995,6 +1998,8 @@ class VoiceCodexApp(App):
         if speaking == self.state.codex_speaking:
             return
         self.state.codex_speaking = speaking
+        if self.publish_session_state is not None:
+            self.publish_session_state({"codex_speaking": speaking})
         with suppress(NoMatches):
             self.query_one("#sidebar", Sidebar).sync_codex()
 
@@ -2535,6 +2540,8 @@ class VoiceCodexApp(App):
         # without waiting for the next flush.
         self.flush_stream()
         self.state.codex_state = "idle"
+        if self.publish_session_state is not None:
+            self.publish_session_state({"codex_state": "idle"})
         self.refresh_sidebar()
 
     def action_end_turn(self) -> None:
@@ -2657,6 +2664,10 @@ class VoiceCodexTUI:
         self.app.apply_pending_stream_text = self._apply_pending_stream_text
         # Installed once the controller exists so partials reach AppState (#102).
         self._publish_partial: Callable[[str, str, int], None] | None = None
+        self._publish_session_state: Callable[[Mapping[str, object]], None] | None = (
+            None
+        )
+        self.app.publish_session_state = self._publish_state
         # Monotonic stamp so AppState can drop superseded publishes without
         # holding `_partial_lock` across `Controller._lock` (lock-order leaf).
         self._partial_seq = 0
@@ -2664,6 +2675,17 @@ class VoiceCodexTUI:
     def bind_partial_publisher(self, publish: Callable[[str, str, int], None]) -> None:
         """Mirror SessionState partials onto controller ``AppState`` (Q3a)."""
         self._publish_partial = publish
+
+    def bind_session_state_publisher(
+        self, publish: Callable[[Mapping[str, object]], None]
+    ) -> None:
+        """Mirror live session state onto controller ``AppState``."""
+        self._publish_session_state = publish
+
+    def _publish_state(self, changed: Mapping[str, object]) -> None:
+        publish = self._publish_session_state
+        if publish is not None and changed:
+            publish(changed)
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
@@ -2789,6 +2811,7 @@ class VoiceCodexTUI:
         self.app.resolve_entries(entries, accepted=accepted)
         if not accepted:
             self.state.echoes_cut += 1
+            self._publish_state({"echoes_cut": self.state.echoes_cut})
             self.app.refresh_session()
 
     def close_speaker(self, speaker: str) -> None:
@@ -2852,6 +2875,7 @@ class VoiceCodexTUI:
 
     def codex_message_open(self, reply_to: str) -> None:
         self.state.codex_state = f"replying to {reply_to}"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._call(self._codex_begin_impl, reply_to)
 
     def _codex_begin_impl(self, reply_to: str) -> None:
@@ -2904,6 +2928,7 @@ class VoiceCodexTUI:
         # item completed on its own.
         self.reasoning_completed()
         self.state.codex_state = "idle"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._call(self._codex_finish_impl)
 
     def _codex_finish_impl(self) -> None:
@@ -2929,6 +2954,7 @@ class VoiceCodexTUI:
 
     def reasoning_started(self) -> None:
         self.state.codex_state = "thinking"
+        self._publish_state({"codex_state": self.state.codex_state})
         # Timed from here, on the thread the notification arrived on, rather
         # than from the repaint this schedules: what is being measured is how
         # long the model thought, not when the interface got around to it.
@@ -2993,6 +3019,7 @@ class VoiceCodexTUI:
 
     def command_started(self, command: str) -> None:
         self.state.codex_state = "running command"
+        self._publish_state({"codex_state": self.state.codex_state})
         self._call(self._command_impl, command)
 
     def _command_impl(self, command: str) -> None:
@@ -3028,6 +3055,7 @@ class VoiceCodexTUI:
         not go through :meth:`set_session` and its full sidebar refresh.
         """
         self.state.tokens = total_tokens
+        self._publish_state({"tokens": total_tokens})
         self._call(self.app.refresh_session)
 
     def error(self, message: str) -> None:
@@ -3066,10 +3094,14 @@ class VoiceCodexTUI:
 
     def set_codex(self, **fields) -> None:
         """Update any of model/effort/tier/sandbox/thread/state."""
+        changed: dict[str, object] = {}
         for key, value in fields.items():
             attribute = f"codex_{key}"
             if hasattr(self.state, attribute):
                 setattr(self.state, attribute, value)
+                if attribute in SESSION_STATE_FIELDS:
+                    changed[attribute] = value
+        self._publish_state(changed)
         self._call(self.app.refresh_sidebar)
 
     def set_codex_catalog(
@@ -3113,9 +3145,13 @@ class VoiceCodexTUI:
 
     def set_session(self, **fields) -> None:
         """Update language/turn_silence/confidence/moonshine/tokens/echoes_cut."""
+        changed: dict[str, object] = {}
         for key, value in fields.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
+                if key in SESSION_STATE_FIELDS:
+                    changed[key] = value
+        self._publish_state(changed)
         self._call(self.app.refresh_sidebar)
 
     def set_status(self, status: str, live: bool = True) -> None:
