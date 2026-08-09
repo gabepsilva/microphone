@@ -87,6 +87,27 @@ def test_image_token_and_parse_round_trip() -> None:
     assert parse_image_numbers(text) == [1, 2]
 
 
+def test_js_renderer_parses_the_same_token_corpus() -> None:
+    """#139 D1: Electron reimplements IMAGE_TOKEN_RE in JS.
+
+    The shared fixture in electron/tests/fixtures/token_parity.json pins both
+    sides to the same corpus, so a JS-only drift in that regex or parser
+    fails here rather than in a rendered transcript.
+    """
+    import json
+
+    fixture = json.loads(
+        Path(__file__)
+        .resolve()
+        .parents[1]
+        .joinpath("electron", "tests", "fixtures", "token_parity.json")
+        .read_text()
+    )
+    assert fixture["corpus"], "empty parity corpus"
+    for case in fixture["corpus"]:
+        assert parse_image_numbers(case["text"]) == case["numbers"], case["text"]
+
+
 def test_looks_like_image_accepts_png_rejects_noise_and_oversize() -> None:
     assert looks_like_image(tiny_png()) is True
     assert looks_like_image(b"not an image") is False
