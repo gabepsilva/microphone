@@ -952,6 +952,7 @@ def test_every_interface_hook_is_bound_before_the_session_runs(wiring) -> None:
         "on_quit",
     } <= set(vars(tui.hooks))
     assert tui.hooks.on_mute is not None
+    assert tui.session_state_publisher is not None
     assert tui.hooks.on_audio_mute is not None
     assert tui.hooks.on_entry is not None
     assert tui.hooks.on_command is not None
