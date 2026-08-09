@@ -248,6 +248,8 @@ def _validate_startup_args(parser, args):
         parser.error("startup config 'codex_fast' must be true or false")
     if args.codex_prefire is not None and not isinstance(args.codex_prefire, bool):
         parser.error("startup config 'codex_prefire' must be true or false")
+    if args.media_controls is not None and not isinstance(args.media_controls, bool):
+        parser.error("startup config 'media_controls' must be true or false")
     if args.codex_reasoning is not None and (
         not isinstance(args.codex_reasoning, str) or not args.codex_reasoning
     ):

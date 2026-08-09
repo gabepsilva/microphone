@@ -779,6 +779,7 @@ def test_a_turn_silence_inside_the_editable_range_is_accepted(
         "turn_silence: true\n",
         'codex_fast: "yes"\n',
         'codex_prefire: "yes"\n',
+        'media_controls: "off"\n',
     ],
 )
 def test_a_config_value_the_session_cannot_use_is_rejected(tmp_path, body) -> None:
