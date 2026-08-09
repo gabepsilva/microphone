@@ -13,6 +13,7 @@
  */
 
 import { renderMarkdownInto } from "./markdown.js";
+import { renderTokenTextInto } from "./attachments.js";
 
 /** Speakers the transcript colours. Mirrors tui.SOURCE_STYLES. */
 const SOURCE_CLASSES = {
@@ -187,7 +188,14 @@ export function buildTranscriptRowElement(document, row) {
     renderMarkdownInto(document, body, entry.text);
     bubble.appendChild(body);
   } else {
-    bubble.appendChild(textNode(document, bodyClass, entryBodyText(entry)));
+    const body = document.createElement("div");
+    body.className = bodyClass;
+    // The bubble's text may hold `[Image #N]` tokens; they render as chips,
+    // through the same scan the composer uses (#139 Q8). The chip is a
+    // rendering of the token in the text, not evidence that an attachment
+    // exists — nothing else may be derived from it.
+    renderTokenTextInto(document, body, entryBodyText(entry));
+    bubble.appendChild(body);
   }
   for (const line of commandOutputLines(entry)) {
     bubble.appendChild(textNode(document, "msg-output", line, "pre"));

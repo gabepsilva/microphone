@@ -24,6 +24,8 @@ import {
   parseCodexCatalog,
 } from "./codex_catalog.js";
 import { bindSidebarResize } from "./sidebar_resize.js";
+import { DraftAttachments, base64FromBytes, parseImageTokens } from "./attachments.js";
+import { stageFiles } from "./staging.js";
 import { parseSpeechCatalog, voiceOptionsIncluding } from "./speech_catalog.js";
 import {
   selectedProviderId,
@@ -44,7 +46,12 @@ const transcriptArea = document.getElementById("transcript-area");
 const composeText = document.getElementById("compose-text");
 const palette = document.getElementById("command-palette");
 let applying = false;
-let attachmentIds = [];
+// The draft is the token model: `[Image #N]` in the composer text names the
+// staged attachment, exactly like the TUI's DraftAttachments (#139 D1).
+// Removes and reorders are text edits; the chips below only render the scan.
+const draft = new DraftAttachments();
+// Chip thumbnails keyed by token number — derived view data, never the model.
+const stagedThumbs = new Map();
 // Last state seen, so a keyboard shortcut can toggle a value it must first read.
 let current = {};
 // The session's model catalog, for the two Codex pickers.
@@ -311,16 +318,21 @@ async function dispatch(action, payload) {
   return true;
 }
 
-/** Upload an image and return its attachment id, or null when it failed. */
-async function uploadImage(file) {
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
-  }
+/**
+ * Upload image bytes and return the attachment id, or null when it failed.
+ *
+ * The payload goes through base64FromBytes (chunked btoa), not the
+ * per-byte String.fromCharCode loop that cost ~346 ms for a 5 MiB image
+ * (#139 F5). Refusal stays the staging loop's job: no rejected file must
+ * ever reach this call, or the transport would drop the socket (#139 F1).
+ * @param {Uint8Array} bytes
+ * @returns {Promise<string | null>}
+ */
+async function uploadImage(bytes) {
   try {
-    const outcome = await api.dispatch("attachment.upload", { data: btoa(binary) });
+    const outcome = await api.dispatch("attachment.upload", {
+      data: base64FromBytes(bytes),
+    });
     return outcome && outcome.effective ? outcome.effective : null;
   } catch (error) {
     setBanner(error.message, true);
@@ -328,15 +340,142 @@ async function uploadImage(file) {
   }
 }
 
-function markAttached(count) {
-  const button = document.getElementById("attach-button");
-  button.classList.toggle("has-file", count > 0);
-  button.title = count > 0 ? `${count} image attached` : "Attach an image";
+/**
+ * Read a stage file once, decode it straight from the File, and return a
+ * small canvas thumbnail (data: URI, CSP allows img-src data: — #139 D7).
+ * createImageBitmap takes the File directly, so there is no second read, no
+ * second base64 pass, and no blob URL for the CSP to block. Null when the
+ * decode fails; the chip renders its token text either way.
+ * @param {File} file
+ * @returns {Promise<string | null>}
+ */
+async function chipThumbnail(file) {
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(file);
+    const size = 96;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) {
+      return null;
+    }
+    const scale = Math.min(size / bitmap.width, size / bitmap.height);
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    ctx.drawImage(bitmap, (size - width) / 2, (size - height) / 2, width, height);
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  } finally {
+    // The full-resolution decode must die on every path — a 20 MiB JPEG can
+    // be ~192 MB of RGBA, and a throw inside drawImage/toDataURL otherwise
+    // leaves it to GC.
+    bitmap?.close();
+  }
+}
+
+/**
+ * Insert one or more tokens at the cursor, like the TUI prompt inserts a
+ * pasted image's token at the draft point.
+ * @param {string[]} tokens
+ */
+function insertTokensAtCursor(tokens) {
+  const start = composeText.selectionStart ?? composeText.value.length;
+  const end = composeText.selectionEnd ?? composeText.value.length;
+  const inserted = tokens.join(" ");
+  composeText.value =
+    composeText.value.slice(0, start) + inserted + composeText.value.slice(end);
+  const next = start + inserted.length;
+  composeText.selectionStart = next;
+  composeText.selectionEnd = next;
+  autoGrow();
+  syncPalette();
+  renderComposerDraft();
+}
+
+/**
+ * One staging loop for paste, drop, and the picker (#139 D2): preflight
+ * every file, upload the acceptable ones, refuse the rest with copy the
+ * banner can show. Refusals never reach the socket; uploaded images insert
+ * their token into the composer text.
+ * @param {File[]} files
+ */
+async function stageAndInsert(files) {
+  const results = await stageFiles(files, uploadImage);
+  const refusals = [];
+  for (const result of results) {
+    if (result.refused !== null) {
+      refusals.push(result.refused);
+      continue;
+    }
+    const id = result.id;
+    if (id == null || id === "") {
+      continue;
+    }
+    const token = draft.add(id);
+    insertTokensAtCursor([token]);
+    const number = draft.ids.length;
+    if (number !== undefined) {
+      void chipThumbnail(result.file).then((thumb) => {
+        if (thumb !== null) {
+          stagedThumbs.set(number, thumb);
+          renderComposerDraft();
+        }
+      });
+    }
+  }
+  if (refusals.length > 0) {
+    setBanner(refusals.join(" — "), true);
+  }
+}
+
+/**
+ * Draw the token chips and the attach button from the composer text scan.
+ *
+ * The chips are a rendering of the tokens in the draft, so deleting a token
+ * from the text removes its chip (and its attachment from the submit set).
+ * A hand-typed token gets a chip too — chips echo, they do not assert.
+ */
+function renderComposerDraft() {
+  const tokens = parseImageTokens(composeText.value);
+  document
+    .getElementById("attach-button")
+    .classList.toggle("has-file", tokens.length > 0);
+  document.getElementById("attach-button").title =
+    tokens.length > 0 ? `${tokens.length} image attached` : "Attach an image";
+  const strip = document.getElementById("composer-chips");
+  strip.replaceChildren();
+  strip.hidden = tokens.length === 0;
+  for (const parsed of tokens) {
+    const chip = document.createElement("span");
+    chip.className = "stage-chip";
+    const thumb = stagedThumbs.get(parsed.number);
+    if (thumb !== undefined) {
+      const image = document.createElement("img");
+      image.className = "stage-thumb";
+      image.src = thumb;
+      image.alt = "";
+      chip.appendChild(image);
+    }
+    const label = document.createElement("span");
+    label.className = "stage-token";
+    label.textContent = parsed.token;
+    chip.appendChild(label);
+    strip.appendChild(chip);
+  }
+}
+
+/** A line over the composer, lit while a file drag hovers the window. */
+function dragAffordance(on) {
+  document.getElementById("prompt-shell").classList.toggle("drag-target", on);
 }
 
 async function send() {
   // decideSubmit strips once (TUI parity) and classifies; message branch
-  // ships decision.text so trailing spaces never ride the wire.
+  // ships decision.text so trailing spaces never ride the wire. The token
+  // model stays in the text — the record is the token plus its ids.
   const decision = decideSubmit(composeText.value, catalog);
   if (decision.kind === "error") {
     setBanner(decision.text, true);
@@ -344,7 +483,7 @@ async function send() {
   }
   if (decision.kind === "info") {
     // Sticky, non-error: survives setBannerLive on partial ASR until the next
-    // successful dispatch() restores LIVE_BANNER. Apply/lifetime stays in
+    // successful dispatch() restores LIVE_BANNER. Lifetime stays in
     // uncovered app.js — pure decideSubmit is tested.
     setBanner(decision.text, false, true);
     composeText.value = "";
@@ -365,15 +504,7 @@ async function send() {
     return;
   }
   const text = decision.text;
-  const fileInput = document.getElementById("compose-image");
-  const ids = [...attachmentIds];
-  if (fileInput.files && fileInput.files[0]) {
-    const id = await uploadImage(fileInput.files[0]);
-    if (id === null) {
-      return;
-    }
-    ids.push(id);
-  }
+  const ids = draft.resolve(text);
   if (!text && ids.length === 0) {
     return;
   }
@@ -385,9 +516,9 @@ async function send() {
   }
   composeText.value = "";
   autoGrow();
-  fileInput.value = "";
-  attachmentIds = [];
-  markAttached(0);
+  draft.clear();
+  stagedThumbs.clear();
+  renderComposerDraft();
 }
 
 /* -- slash-command palette ------------------------------------------- */
@@ -638,6 +769,8 @@ function bind() {
   composeText.addEventListener("input", () => {
     autoGrow();
     syncPalette();
+    // Typing or deleting a token re-derives the chip strip (#139 D1).
+    renderComposerDraft();
   });
   // Browsing and completing the menu happen before the shortcut table sees
   // the key, so ↑↓ and Tab mean the menu while it is open.
@@ -671,23 +804,73 @@ function bind() {
   document.getElementById("attach-button").addEventListener("click", () => {
     fileInput.click();
   });
+  // The picker feeds the same staging loop as paste and drop (#139 D2).
   fileInput.addEventListener("change", (e) => {
-    markAttached(e.target.files && e.target.files.length ? 1 : 0);
+    const files = [...(e.target.files ?? [])];
+    e.target.value = "";
+    if (files.length === 0) {
+      return;
+    }
+    void stageAndInsert(files);
   });
-  // ^V of an image lands here rather than in the file picker.
+  // `image/*` paste lands here. Text (with or without rich source) keeps the
+  // browser default, which inserts plain text only (#139 Q4).
   composeText.addEventListener("paste", (event) => {
     const files = [...(event.clipboardData?.files ?? [])];
-    const image = files.find((file) => file.type.startsWith("image/"));
-    if (image === undefined) {
+    if (files.length === 0) {
       return;
     }
     event.preventDefault();
-    void uploadImage(image).then((id) => {
-      if (id !== null) {
-        attachmentIds.push(id);
-        markAttached(attachmentIds.length);
-      }
-    });
+    void stageAndInsert(files);
+  });
+  // One staging loop for drop as well: the browser default for a dragged
+  // file would navigate this window away from index.html — unrecoverable
+  // (menu and dev reload are gone, #139 F2). The default is refused for the
+  // whole window: a file drag anywhere lights the composer, and only the
+  // composer region stages files (#139 D2, Q5). A file dropped anywhere
+  // else gets a real refusal in the banner, never a silent vanish.
+  const promptbar = document.getElementById("promptbar");
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    const types = event.dataTransfer ? [...event.dataTransfer.types] : [];
+    // Only file drags are ours: a text or link drag gets no affordance and
+    // no staging path, just the refused default.
+    if (!types.includes("Files")) {
+      return;
+    }
+    dragDepth += 1;
+    dragAffordance(true);
+  });
+  window.addEventListener("dragover", (event) => {
+    event.preventDefault();
+  });
+  window.addEventListener("dragleave", () => {
+    dragDepth -= 1;
+    if (dragDepth <= 0) {
+      dragDepth = 0;
+      dragAffordance(false);
+    }
+  });
+  window.addEventListener("drop", (event) => {
+    dragDepth = 0;
+    dragAffordance(false);
+    // Refuse the default first, always: whatever the drag was, the window
+    // must not navigate or load the file.
+    event.preventDefault();
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (files.length === 0) {
+      return;
+    }
+    if (!promptbar.contains(event.target)) {
+      setBanner("Files stage on the composer — drop images on the prompt box", true);
+      return;
+    }
+    void stageAndInsert(files);
+  });
+  window.addEventListener("dragend", () => {
+    dragDepth = 0;
+    dragAffordance(false);
   });
 
   // One handler for every binding: the shortcut table decides what a key is.

@@ -482,6 +482,59 @@ body {
 #promptbar {
   padding: 0 1.25rem 1rem;
 }
+/* Staged image chips sit above the pill (#139): they render the `[Image #N]`
+   token scan of the composer text, so a token deleted from the text drops
+   its chip. The strip hanging just above the pill is the drop target's face. */
+#composer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-width: 46rem;
+  margin: 0 auto 0.4rem;
+}
+#composer-chips[hidden] {
+  display: none;
+}
+.stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem 0.15rem 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.stage-thumb {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.stage-token {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+/* Transcript bubbles echo `[Image #N]` tokens as chips (#139 Q8). The chip
+   is a rendering of the token in the entry text — it asserts nothing about
+   attachments, and inherits the composer chip look. */
+.image-chip {
+  display: inline-block;
+  padding: 0 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* A file drag anywhere in the window lights the composer so the drop target
+   reads as reachable (#139 Q5). */
+#prompt-shell.drag-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 #prompt-shell {
   display: flex;
   align-items: center;

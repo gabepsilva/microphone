@@ -40,6 +40,10 @@
                above the input so the list grows away from the prompt rather
                than over the hint line. -->
           <div id="command-palette" role="listbox" aria-label="Commands" hidden></div>
+          <!-- Staged image tokens from paste/drop/picker (#139). The strip is
+               a view of the token scan in the composer text, never a model;
+               deleting the token text removes the chip. -->
+          <div id="composer-chips" hidden></div>
           <div id="prompt-shell">
             <button type="button" id="attach-button" title="Attach an image">+</button>
             <input id="compose-image" type="file" accept="image/*" />

@@ -249,8 +249,59 @@ describe("transcript_view entry model", () => {
       id: 9,
       entry: { kind: "speech", source: "Voice", text: "run `ls`" },
     }) as FakeNode;
-    expect(body(spoken).children).toHaveLength(0);
-    expect(body(spoken).textContent).toBe("run `ls`");
+    // The plain branch renders the body as a text run inside the bubble —
+    // never markup, so the text survives flat.
+    expect(bodyText(spoken)).toBe("run `ls`");
+    const run = body(spoken).children[0]!;
+    expect(run.tag).toBe("#text");
+    expect(run.textContent).toBe("run `ls`");
+  });
+
+  it("renders an image token as a chip in the plain bubble (Q8b)", () => {
+    // #[139] The chip is a rendering of the token in the entry text, not
+    // evidence that an attachment exists: any text can carry one.
+    const { document } = makeDocument();
+    const row = buildTranscriptRowElement(document, {
+      id: 11,
+      entry: { kind: "speech", source: "Agent", text: "look at this [Image #1]" },
+    }) as FakeNode;
+    expect(bodyText(row)).toBe("look at this [Image #1]");
+    const run = body(row).children as FakeNode[];
+    expect(run.map((child) => child.tag)).toEqual(["#text", "span"]);
+    expect(run[0]?.textContent).toBe("look at this ");
+    const chip = run[1]!;
+    expect(chip.className).toBe("image-chip");
+    expect(chip.textContent).toBe("[Image #1]");
+  });
+
+  it("chips a token inside a markdown answer, but not inside code (Q8b)", () => {
+    const { document } = makeDocument();
+    const answer = buildTranscriptRowElement(document, {
+      id: 12,
+      entry: {
+        kind: "speech",
+        source: "Taga",
+        text: "I see [Image #2] in the log: `cat [Image #3]`\n\n```sh\nls [Image #4]\n```",
+      },
+    }) as FakeNode;
+    const blocks = body(answer).children as FakeNode[];
+    expect(blocks.map((child) => child.className)).toEqual(["md-paragraph", "md-code"]);
+    const paragraph = blocks[0]!;
+    expect(paragraph.children.map((child) => child.tag)).toEqual([
+      "#text",
+      "span",
+      "#text",
+      "code",
+    ]);
+    const chip = paragraph.children[1] as FakeNode;
+    expect(chip.className).toBe("image-chip");
+    expect(chip.textContent).toBe("[Image #2]");
+    // Inline and fenced code stay literal — inside code a token is not a
+    // reference.
+    const inline = paragraph.children[3] as FakeNode;
+    expect(inline.children).toHaveLength(0);
+    expect(inline.textContent).toBe("cat [Image #3]");
+    expect(flatText(blocks[1]!)).toBe("ls [Image #4]");
   });
 
   it("says why the partial line is quiet instead of hiding it", () => {

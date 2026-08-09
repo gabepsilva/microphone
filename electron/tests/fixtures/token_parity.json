@@ -1,0 +1,32 @@
+{
+  "corpus": [
+    { "text": "see [Image #1]", "numbers": [1] },
+    { "text": "[Image #12] and [Image #2] again [Image #1]", "numbers": [12, 2, 1] },
+    { "text": "[Image #1] [Image #1] [Image #1]", "numbers": [1] },
+    { "text": "no images here", "numbers": [] },
+    { "text": "", "numbers": [] },
+    { "text": "look at this\nand [Image #3] below", "numbers": [3] },
+    { "text": "[Image #1 extra](https://x.example)", "numbers": [] },
+    { "text": "[Image #01] and [Image #002]", "numbers": [1, 2] },
+    { "text": "[Image #999] with no staging behind it", "numbers": [999] },
+    { "text": "maim [Image #0] and [Image #-1] and [Image #]", "numbers": [0] },
+    {
+      "text": "Image #1 without brackets, [image #1] wrong case, [Image 1] no hash",
+      "numbers": []
+    },
+    {
+      "text": "[Image #2] before [Image #1] — tokens keep text order, not staging order",
+      "numbers": [2, 1]
+    },
+    { "text": "a:[Image #3]b:[Image #1]c", "numbers": [3, 1] },
+    { "text": "[Not an image #1] [Image#1] [Image #1x]", "numbers": [] },
+    {
+      "text": "[Image #٣] [Image #۳] [Image #３] — Unicode decimal lookalikes are not token digits",
+      "numbers": []
+    },
+    {
+      "text": "mixed [Image #1] and [Image #١] — only ASCII digits count",
+      "numbers": [1]
+    }
+  ]
+}

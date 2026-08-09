@@ -12,7 +12,13 @@
  * created with createElement and filled with textContent, so model output
  * can never become markup. Semgrep bans innerHTML under electron/renderer/,
  * and this file is exactly the place someone would reach for it.
+ *
+ * ``[Image #N]`` tokens in rendered text become chips through the same scan
+ * the composer strip and the plain transcript row use (#139 Q8). Fenced and
+ * inline code stay literal — inside code a token is code, not a reference.
  */
+
+import { renderTokenTextInto } from "./attachments.js";
 
 const FENCE = /^\s*(?:```|~~~)\s*([\w+-]*)\s*$/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
@@ -217,7 +223,7 @@ export function isSafeUrl(url) {
 function appendInline(document, host, text) {
   for (const span of parseInline(text)) {
     if (span.type === "text") {
-      host.appendChild(document.createTextNode(span.text));
+      renderTokenTextInto(document, host, span.text);
       continue;
     }
     const { tag, className } = {
@@ -228,7 +234,12 @@ function appendInline(document, host, text) {
     }[span.type];
     const el = document.createElement(tag);
     el.className = className;
-    el.textContent = span.text;
+    if (span.type === "code") {
+      // A token inside inline code is literal text, not a reference.
+      el.textContent = span.text;
+    } else {
+      renderTokenTextInto(document, el, span.text);
+    }
     if (span.type === "link") {
       // No href: nothing in this window may navigate away from the app. The
       // target is shown on hover until an open-externally channel exists.

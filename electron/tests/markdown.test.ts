@@ -151,7 +151,8 @@ describe("markdown rendering is text, never markup", () => {
     expect(anchors[0]!.className).toBe("md-link");
     expect(anchors[1]!.title).toBe("");
     expect(anchors[1]!.className).toBe("md-link md-link-blocked");
-    expect(anchors[1]!.textContent).toBe("bad");
+    // Link text renders inside the anchor (as a run, not HTML).
+    expect(flatText(anchors[1]!)).toBe("bad");
   });
 
   it("tags a code block with its language for the label", () => {

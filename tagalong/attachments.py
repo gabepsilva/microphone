@@ -29,7 +29,12 @@ from uuid import uuid4
 CACHE_ROOT_NAME = "tagalong"
 ATTACHMENTS_DIR_NAME = "attachments"
 
-IMAGE_TOKEN_RE = re.compile(r"\[Image #(\d+)\]")
+# The token grammar is ASCII by contract, not by coincidence: imageToken()
+# emits ASCII and the Electron client mirrors this regex in JS, whose ``\d``
+# does not match Unicode decimal digits. re.ASCII pins the grammar to the
+# same [0-9] set on both sides (discussed in #139; corpus pinned at
+# electron/tests/fixtures/token_parity.json).
+IMAGE_TOKEN_RE = re.compile(r"\[Image #(\d+)\]", re.ASCII)
 
 # Clipboard image MIME types we accept, preferred first.
 _CLIPBOARD_IMAGE_TYPES: tuple[tuple[str, str], ...] = (
