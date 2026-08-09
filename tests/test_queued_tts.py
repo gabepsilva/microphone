@@ -285,3 +285,81 @@ def test_closing_an_engine_ends_its_worker(engine) -> None:
     engine.close()
 
     assert engine.worker.is_alive() is False
+
+
+# --------------------------------------------------------------------------
+# What reaches the desktop's media port
+# --------------------------------------------------------------------------
+
+
+class RecordingPort:
+    """Collect the announcements the engine makes through its media port."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def publish(self, status, title=None):
+        self.calls.append((status, title))
+
+    def close(self):
+        self.calls.append(("closed", None))
+
+
+def test_speech_state_is_mirrored_to_the_media_port(engine) -> None:
+    port = RecordingPort()
+    engine.set_media_controls(port)
+    engine.begin_turn()
+
+    engine.speak("Hello there.")
+
+    assert ("playing", None) in port.calls
+
+    engine.interrupt()
+
+    assert ("stopped", None) in port.calls
+
+
+def test_a_port_installed_mid_session_starts_from_the_current_state(
+    parked,
+) -> None:
+    """A desktop that notices a session mid-reply must not see it idle."""
+    parked.begin_turn()
+    parked.speak("Holds the worker.")
+    assert wait_until(lambda: parked.is_speaking())
+
+    port = RecordingPort()
+    parked.set_media_controls(port)
+
+    assert ("playing", None) in port.calls
+
+    parked.interrupt()
+    assert ("stopped", None) in port.calls
+
+
+def test_an_idle_engine_installs_its_port_as_stopped(engine) -> None:
+    port = RecordingPort()
+    engine.set_media_controls(port)
+
+    assert ("stopped", None) in port.calls
+
+
+def test_the_audible_moment_carries_the_sentence(engine) -> None:
+    port = RecordingPort()
+    engine.set_media_controls(port)
+
+    engine.on_sentence_audible("The sentence being said")
+
+    assert ("playing", "The sentence being said") in port.calls
+
+
+def test_a_new_port_replaces_the_previous_one(engine) -> None:
+    """A newer port replaces the older one, and only it hears the rest."""
+    first = RecordingPort()
+    second = RecordingPort()
+    engine.set_media_controls(first)
+    engine.set_media_controls(second)
+    engine.begin_turn()
+    engine.speak("Hello")
+
+    assert ("playing", None) in second.calls
+    assert ("playing", None) not in first.calls

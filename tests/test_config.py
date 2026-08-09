@@ -29,6 +29,7 @@ def test_startup_config_round_trip(tmp_path) -> None:
         # config key that silently reads as truthy either way.
         "codex_fast": False,
         "codex_prefire": True,
+        "media_controls": True,
     }
     config = tmp_path / "tagalong.yaml"
 
@@ -114,6 +115,7 @@ def test_saved_settings_reload_to_the_same_values(tmp_path) -> None:
         "codex_reasoning": "low",
         "codex_fast": True,
         "codex_prefire": False,
+        "media_controls": False,
     }
 
     save_startup_config(path, settings)

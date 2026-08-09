@@ -225,6 +225,31 @@ def test_silence_trimmed_audio_is_what_reaches_the_player(tts, playback) -> None
     assert playback.audio == [b"audio:Hello there.:trimmed"]
 
 
+class RecordingPort:
+    """Collect the announcements an engine makes through its media port."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def publish(self, status, title=None):
+        self.calls.append((status, title))
+
+    def close(self):
+        self.calls.append(("closed", None))
+
+
+def test_the_audible_sentence_reaches_the_media_port(tts, playback) -> None:
+    """The title marquee must be the sentence Edge is actually playing."""
+    port = RecordingPort()
+    tts.set_media_controls(port)
+    tts.begin_turn()
+
+    tts.speak("Why are you late?")
+
+    assert playback.wait_for(1)
+    assert ("playing", "Why are you late?") in port.calls
+
+
 def test_the_player_is_invoked_with_a_pipe_and_no_display(tts, playback) -> None:
     tts.begin_turn()
     tts.speak("Hello there.")

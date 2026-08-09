@@ -160,6 +160,15 @@ def build_parser():
         "--tts-voice",
         help="Voice name; defaults to the chosen provider's own default voice",
     )
+    parser.add_argument(
+        "--media-controls",
+        action="store_true",
+        default=None,
+        help=(
+            "Publish Taga's speech as an MPRIS player, so the media keys and "
+            "the desktop's player widget can stop a reply (default: off)"
+        ),
+    )
     # Config-only remembered voices (#124 D5); no dedicated CLI flags.
     parser.set_defaults(piper_voice=None, edge_voice=None)
     parser.add_argument(
@@ -321,6 +330,7 @@ def startup_settings(selection, args):
         "codex_reasoning": args.codex_reasoning,
         "codex_fast": args.codex_fast,
         "codex_prefire": args.codex_prefire,
+        "media_controls": args.media_controls,
     }
 
 

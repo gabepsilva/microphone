@@ -31,3 +31,7 @@ codex_model: null
 codex_reasoning: null
 codex_fast: null
 codex_prefire: null
+# Publish Taga's speech as an MPRIS player, so the media keys, the desktop's
+# player widget, and the lock screen can stop a reply mid-sentence. Null keeps
+# the built-in default, off.
+media_controls: null

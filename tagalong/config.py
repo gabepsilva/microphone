@@ -27,6 +27,7 @@ STARTUP_CONFIG_KEYS = (
     "codex_reasoning",
     "codex_fast",
     "codex_prefire",
+    "media_controls",
 )
 
 

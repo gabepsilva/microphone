@@ -125,9 +125,10 @@ class EdgeSentenceTTS(QueuedSentenceTTS):
             return audio
         return result.stdout or audio
 
-    def _play(self, turn, audio):
+    def _play(self, turn, text, audio):
         if not audio or self._abandoned(turn):
             return
+        self.on_sentence_audible(text)
         self.playback.play(audio, abandoned=lambda: self._abandoned(turn))
 
     def _release_if_abandoned(self, turn, text, available_slots):
@@ -186,7 +187,7 @@ class EdgeSentenceTTS(QueuedSentenceTTS):
             try:
                 audio = await synthesis
                 if not self._abandoned(turn):
-                    await asyncio.to_thread(self._play, turn, audio)
+                    await asyncio.to_thread(self._play, turn, text, audio)
             except Exception as error:
                 if not self.shutdown_requested.is_set():
                     print(

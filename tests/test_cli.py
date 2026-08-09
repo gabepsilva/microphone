@@ -1333,12 +1333,21 @@ def test_the_startup_selection_is_saved_when_asked(wiring, tmp_path) -> None:
 
 def test_speech_is_built_for_the_chosen_provider_and_output(monkeypatch) -> None:
     started: list[tuple] = []
+    ports: list[object] = []
+
+    class Speech:
+        def set_media_controls(self, port):
+            ports.append(port)
+
+        def interrupt(self):
+            del self
+
     monkeypatch.setattr(
         cli.SwitchableSpeech,
         "start",
         classmethod(
             lambda _cls, provider, voice, output_sink=None: (
-                started.append((provider, voice, output_sink)) or object()
+                started.append((provider, voice, output_sink)) or Speech()
             )
         ),
     )
@@ -1348,27 +1357,72 @@ def test_speech_is_built_for_the_chosen_provider_and_output(monkeypatch) -> None
         tts_output={"name": "alsa_output.pci"},
     )
 
-    cli.build_speech(selection, SimpleNamespace(tts_voice="en-US-AndrewNeural"))
+    cli.build_speech(
+        selection, SimpleNamespace(tts_voice="en-US-AndrewNeural", media_controls=False)
+    )
 
     assert started == [("edge", "en-US-AndrewNeural", "alsa_output.pci")]
+    # Without --media-controls the session still installs a (silent) port,
+    # so every build speaks the same shape to the runtime.
+    assert len(ports) == 1
+
+
+def test_build_speech_installs_the_requested_media_port(monkeypatch) -> None:
+    installed: list[object] = []
+
+    class Speech:
+        def set_media_controls(self, port):
+            installed.append(port)
+
+        def interrupt(self):
+            del self
+
+    monkeypatch.setattr(
+        cli.SwitchableSpeech,
+        "start",
+        classmethod(lambda _cls, *_args, **_kwargs: Speech()),
+    )
+    selection = SimpleNamespace(
+        tts_enabled=True,
+        tts_provider="piper",
+        tts_output=None,
+    )
+
+    cli.build_speech(selection, SimpleNamespace(tts_voice="v", media_controls=True))
+
+    # The flag asks for a port; exactly one is installed. Which kind the
+    # desktop gets — the named bus player or the silent port — is the
+    # ``build_media_controls`` decision, covered in test_media_controls.
+    assert len(installed) == 1
+    port = installed[0]
+    assert callable(getattr(port, "publish", None))
+    assert callable(getattr(port, "close", None))
 
 
 def test_speech_plays_through_the_default_output_when_none_was_chosen(
     monkeypatch,
 ) -> None:
     started: list[str | None] = []
+
+    class Speech:
+        def set_media_controls(self, port):
+            del port
+
+        def interrupt(self):
+            del self
+
     monkeypatch.setattr(
         cli.SwitchableSpeech,
         "start",
         classmethod(
             lambda _cls, provider, voice, output_sink=None: (
-                started.append(output_sink) or object()
+                started.append(output_sink) or Speech()
             )
         ),
     )
     selection = SimpleNamespace(tts_enabled=True, tts_provider="piper", tts_output=None)
 
-    cli.build_speech(selection, SimpleNamespace(tts_voice="v"))
+    cli.build_speech(selection, SimpleNamespace(tts_voice="v", media_controls=False))
 
     assert started == [None]
 

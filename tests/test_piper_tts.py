@@ -418,6 +418,58 @@ def test_silence_is_trimmed_before_the_audio_reaches_the_player(
     assert played < 2 * (PADDING_SAMPLES + SPEECH_SAMPLES)
 
 
+class RecordingPort:
+    """Collect the announcements an engine makes through its media port."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def publish(self, status, title=None):
+        self.calls.append((status, title))
+
+    def close(self):
+        self.calls.append(("closed", None))
+
+
+def test_the_audible_sentence_reaches_the_media_port(piper, playback) -> None:
+    """The title the desktop marquees must be the sentence actually spoken."""
+    port = RecordingPort()
+    piper.set_media_controls(port)
+    piper.begin_turn()
+
+    piper.speak("Will you cover the demo?")
+
+    assert playback.wait_for(1)
+    assert ("playing", "Will you cover the demo?") in port.calls
+
+
+def test_an_interrupted_sentence_never_reaches_the_port(
+    monkeypatch,
+    playback,
+) -> None:
+    """The title is owed only the moment the audio is; cancel before that.
+
+    Synthesis is blocked mid-sentence and then interrupted, so the audible
+    moment never arrives for a reply that was already cancelled.
+    """
+    block = threading.Event()
+    port = RecordingPort()
+    voice = FakeVoice(on_synthesize=block.wait)
+    piper = start_engine(monkeypatch, playback, voice)
+    piper.set_media_controls(port)
+    piper.begin_turn()
+
+    piper.speak("Cutting before a word.")
+    assert wait_until(lambda: voice.spoken == ["Cutting before a word."])
+
+    piper.interrupt()
+    block.set()
+
+    assert wait_until(lambda: piper.activity.speaking is False)
+    assert all(title is None for _, title in port.calls)
+    piper.close()
+
+
 def test_an_interrupted_turn_stops_the_player_and_drops_its_queue(
     monkeypatch, playback, voice
 ) -> None:
@@ -537,6 +589,35 @@ def test_a_session_closed_while_the_model_loads_never_speaks(
     assert engine.worker.is_alive() is False
     assert playback.stayed_silent()
     assert voice.spoken == []
+
+
+def test_a_synthesis_failure_during_shutdown_is_swallowed_silently(
+    monkeypatch, playback, capsys
+) -> None:
+    """An error that races the shutdown owes nobody a second report.
+
+    The worker has already been told to stop; a decoder that dies on its way
+    out must not print a post-mortem after the session is over.
+    """
+    release = threading.Event()
+
+    def die_on_shutdown():
+        release.wait(WAIT_SECONDS)
+        raise RuntimeError("decoder died at the door")
+
+    voice = FakeVoice(on_synthesize=die_on_shutdown)
+    engine = start_engine(monkeypatch, playback, voice)
+    engine.begin_turn()
+    engine.speak("Dies.")
+    assert wait_until(lambda: voice.spoken == ["Dies."])
+
+    # Released from the side so the close below joins its worker rather than
+    # waiting out the timeout; the sentence is already inside synthesis.
+    threading.Timer(0.05, release.set).start()
+    engine.close()
+
+    assert engine.worker.is_alive() is False
+    assert "decoder died at the door" not in capsys.readouterr().err
 
 
 def test_speech_spans_the_gap_between_two_sentences(monkeypatch, playback) -> None:

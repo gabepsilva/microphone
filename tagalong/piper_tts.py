@@ -198,6 +198,7 @@ class PiperSentenceTTS(QueuedSentenceTTS):
             return
         audio = self._synthesize(model, text)
         if audio and not self._abandoned(turn):
+            self.on_sentence_audible(text)
             self.playback.play(audio, abandoned=lambda: self._abandoned(turn))
 
     def _worker(self):

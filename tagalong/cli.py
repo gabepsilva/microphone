@@ -73,6 +73,7 @@ from .domain import (
     TurnSilenceClock,
 )
 from .listener import TranscriptSubmitter
+from .media_controls import build_media_controls
 from .recording import TranscriptRecorder
 from .session import sweep_orphans
 from .speech import SwitchableSpeech
@@ -135,14 +136,26 @@ def build_speech(selection, args):
     Every session has a synthesizer. "No voice reply" only stops audio being
     generated, so there is nothing for a session to start without: the engine
     is what the sidebar mutes, switches, and unmutes.
+
+    Media controls ride on the same object, pointed at the session's state
+    rather than the engine's: preventing them stops whatever speech engine is
+    current, and a provider switch keeps announcing through the same port.
     """
-    return SwitchableSpeech.start(
+    speech = SwitchableSpeech.start(
         selection.tts_provider,
         args.tts_voice,
         output_sink=(
             selection.tts_output["name"] if selection.tts_output is not None else None
         ),
     )
+    speech.set_media_controls(
+        build_media_controls(
+            bool(args.media_controls),
+            request_stop=speech.interrupt,
+            stream=sys.stderr,
+        )
+    )
+    return speech
 
 
 def sound_taps(tui):

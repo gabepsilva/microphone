@@ -39,6 +39,11 @@ class FakeEngine:
         self.enabled: list[bool] = []
         self.closed = False
         self.ready_error: BaseException | None = None
+        # The ports this engine was told to announce through.
+        self.media_ports: list[object] = []
+
+    def set_media_controls(self, port):
+        self.media_ports.append(port)
 
     def begin_turn(self):
         self.turns += 1
@@ -456,3 +461,81 @@ def test_closing_during_a_voice_switch_reports_failure() -> None:
     assert wait_until(lambda: len(built) == 1 and built[0].closed is True)
     assert speech.provider == DEFAULT_PROVIDER
     assert speech.engine is original
+
+
+# --------------------------------------------------------------------------
+# The media port announcements travel through
+# --------------------------------------------------------------------------
+
+
+class PortRecorder:
+    """Collect the lifecycle of the session's media port."""
+
+    def __init__(self):
+        self.publishes: list[tuple] = []
+        self.closed = False
+
+    def publish(self, status, title=None):
+        self.publishes.append((status, title))
+
+    def close(self):
+        self.closed = True
+
+
+class EngineWithoutMediaControls(FakeEngine):
+    """An engine that predates media ports: it has no announce method."""
+
+    set_media_controls = None
+
+
+def test_a_port_is_never_forced_on_an_engine_that_has_no_spokes() -> None:
+    def build(provider, voice, output_sink):
+        del provider, voice, output_sink
+        return EngineWithoutMediaControls()
+
+    speech, _ = started(build=build)
+    port = PortRecorder()
+
+    speech.set_media_controls(port)
+
+    assert speech.engine.media_ports == []
+    assert port.closed is False
+
+
+def test_setting_a_media_port_attaches_it_to_the_installed_engine() -> None:
+    speech, built = started("piper")
+    port = PortRecorder()
+
+    speech.set_media_controls(port)
+
+    assert built[0].media_ports == [port]
+
+
+def test_a_provider_switch_keeps_announcing_through_the_same_port() -> None:
+    speech, built = started("piper")
+    port = PortRecorder()
+    speech.set_media_controls(port)
+    assert built[0].media_ports == [port]
+
+    assert speech.set_provider("edge") is True
+    assert wait_until(lambda: speech.provider == "edge")
+
+    assert built[1].media_ports == [port]
+    assert speech.media_controls is port
+
+
+def test_closing_speech_closes_the_port() -> None:
+    speech, _ = started("piper")
+    port = PortRecorder()
+    speech.set_media_controls(port)
+
+    speech.close()
+
+    assert port.closed is True
+
+
+def test_a_facade_without_a_port_closes_cleanly() -> None:
+    speech, built = started("piper")
+    speech.close()
+
+    assert built[0].closed is True

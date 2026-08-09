@@ -59,6 +59,7 @@ def saved_args(**overrides):
             "codex_reasoning": "low",
             "codex_fast": True,
             "codex_prefire": True,
+            "media_controls": False,
             **overrides,
         }
     )
@@ -160,6 +161,7 @@ def test_saved_settings_round_trip_back_to_the_same_selection() -> None:
         "codex_reasoning": "low",
         "codex_fast": True,
         "codex_prefire": True,
+        "media_controls": False,
     }
 
 

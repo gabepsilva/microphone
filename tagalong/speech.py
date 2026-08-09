@@ -21,6 +21,8 @@ import sys
 import threading
 from typing import Protocol
 
+from .media_controls import MediaControlsPort
+
 EDGE = "edge"
 PIPER = "piper"
 
@@ -144,6 +146,11 @@ class SwitchableSpeech:
         # providers is still muted, and a freshly built engine speaks unless
         # it is told otherwise.
         self.enabled = True
+        # The media port announcements go out through, kept across switches so
+        # a provider change never blinds the desktop's widget. None until a
+        # session names one (``set_media_controls``), because the composition
+        # root may want to point this at the session's own request_stop hook.
+        self.media_controls: MediaControlsPort | None = None
 
     @classmethod
     def start(cls, provider, voice=None, output_sink=None, build=build_speech_engine):
@@ -189,6 +196,25 @@ class SwitchableSpeech:
     def wait_ready(self, timeout: float | None = None) -> None:
         """Forward readiness to the installed engine."""
         self._current().wait_ready(timeout)
+
+    def set_media_controls(self, port: MediaControlsPort) -> None:
+        """Announce this session's speech to *port*, across provider switches.
+
+        The port belongs to the session, not to whatever engine happens to be
+        installed: a provider switch retires the old engine and installs the
+        new one, and speech must keep announcing through the same port either
+        way. Engines that speak announce through engines that support it; the
+        rest simply keep their silence.
+        """
+        with self.lock:
+            self.media_controls = port
+            engine = self.engine
+        self._attach_media_controls(engine, port)
+
+    def _attach_media_controls(self, engine, port) -> None:
+        setter = getattr(engine, "set_media_controls", None)
+        if setter is not None:
+            setter(port)
 
     def set_provider(self, provider, voice=None, *, on_applied=None, on_failed=None):
         """Start replacing the engine; report whether the switch was started.
@@ -266,6 +292,9 @@ class SwitchableSpeech:
                 # sentence can reach it in between.
                 if not self.enabled:
                     engine.set_enabled(False)
+                port = self.media_controls
+                if port is not None:
+                    self._attach_media_controls(engine, port)
                 retired, self.engine, self.provider = self.engine, engine, provider
                 self.voice = applied_voice
         if not installing:
@@ -280,7 +309,9 @@ class SwitchableSpeech:
     def close(self):
         with self.lock:
             self.closed = True
-            engine, switch = self.engine, self.switch
+            engine, switch, port = self.engine, self.switch, self.media_controls
         engine.close()
         if switch is not None:
             switch.join(timeout=10)
+        if port is not None:
+            port.close()

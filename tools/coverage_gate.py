@@ -85,7 +85,9 @@ FLOORS = {
     # same figure across three consecutive runs, so none of these carries the
     # thread-interleaving slack the tts.py note below describes: piper_tts.py
     # 95.73, playback.py 98.41, speech.py 100.00.
-    "tagalong/piper_tts.py": 96.0,
+    # Raised 2026-08-09 to 98 when the audible-moment hook (issue #140) and a
+    # shutdown-raced synthesis test closed the exception-report branch.
+    "tagalong/piper_tts.py": 98.0,
     "tagalong/playback.py": 98.0,
     "tagalong/presentation.py": 100.0,
     # Recorded 2026-08-05 with the shared queued-speech lifecycle.

@@ -6,6 +6,12 @@ import queue
 import threading
 
 from .domain import EchoMemory, SpeechActivity, TurnGate
+from .media_controls import (
+    MEDIA_STATUS_PLAYING,
+    MEDIA_STATUS_STOPPED,
+    MediaControlsPort,
+    NullMediaControls,
+)
 from .playback import AudioPlayer
 
 
@@ -34,6 +40,11 @@ class QueuedSentenceTTS:
         self.turns = TurnGate()
         self.echo = EchoMemory()
         self.activity = SpeechActivity()
+        # The desktop's media surface, neutral until a session says otherwise.
+        # Announcements mirror the speech state; the port decides what, if
+        # anything, the desktop gets to hold on to.
+        self.media_controls: MediaControlsPort = NullMediaControls()
+        self.activity.observe(self._on_activity)
 
     def _abandoned(self, turn) -> bool:
         """Report whether a turn's speech is no longer wanted.
@@ -92,6 +103,35 @@ class QueuedSentenceTTS:
     def is_speaking(self) -> bool:
         """Report whether this engine still has speech to deliver."""
         return self.activity.speaking
+
+    def _on_activity(self, activity) -> None:
+        """Mirror the speech state out to the media port, if it is interested.
+
+        The status climbs with the first queued sentence and falls with the
+        last finished or silenced one — the span the room hears speech, which
+        is exactly the span a media surface should show.
+        """
+        status = MEDIA_STATUS_PLAYING if activity.speaking else MEDIA_STATUS_STOPPED
+        self.media_controls.publish(status)
+
+    def set_media_controls(self, port: MediaControlsPort) -> None:
+        """Announce through *port* from now on, starting with the current state.
+
+        The port only earns its place if it is right the moment it arrives: a
+        session that is mid-reply when the desktop notices it must not appear
+        idle.
+        """
+        self.media_controls = port
+        self._on_activity(self.activity)
+
+    def on_sentence_audible(self, text: str) -> None:
+        """Tell the desktop which sentence is actually coming out of the speaker.
+
+        Called by a provider right before playback of one sentence begins. The
+        title is what MPRIS marquees show, so it is the sentence being said,
+        not the sentence being synthesized or the one queued up next.
+        """
+        self.media_controls.publish(MEDIA_STATUS_PLAYING, text)
 
     def close(self) -> None:
         self.shutdown_requested.set()
