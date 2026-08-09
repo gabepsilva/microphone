@@ -204,6 +204,14 @@ async function createWindow(): Promise<void> {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+  // The session UI has exactly one document. Any navigation away from it —
+  // a dragged link, a target="_blank" survivor, Electron's own error viewer —
+  // removes the menu, the dev reload, and the preload bridge with no way back.
+  // Refuse everything: the browser default never has a UI surface here.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event) => {
+    event.preventDefault();
+  });
   await mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
   // Push a real subscribe snapshot once the page can listen — never empty defaults.
   if (sessionEvents.hasSnapshot) {
