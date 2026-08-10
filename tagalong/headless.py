@@ -10,7 +10,7 @@ from __future__ import annotations
 import signal
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 
 from .control.state import session_state_changes
@@ -46,7 +46,9 @@ class HeadlessSession:
         self._answer_deltas = OrderedDeltaBuffer()
         self._reasoning_deltas = OrderedDeltaBuffer()
         self._publish_partial: Callable[[str, str, int], None] | None = None
-        self._publish_session_state: Callable[[dict[str, object]], None] | None = None
+        self._publish_session_state: Callable[[Mapping[str, object]], None] | None = (
+            None
+        )
         self._partial_seq = 0
         self._entries: list[Entry] = []
         self._streaming: Entry | None = None
@@ -58,16 +60,17 @@ class HeadlessSession:
         self._publish_partial = publish
 
     def bind_session_state_publisher(
-        self, publish: Callable[[dict[str, object]], None]
+        self, publish: Callable[[Mapping[str, object]], None]
     ) -> None:
         """Mirror live session state onto controller ``AppState``."""
         self._publish_session_state = publish
 
-    def _publish_state(self, changed: dict[str, object]) -> None:
+    def _publish_state(self, changed: Mapping[str, object]) -> None:
         publish = self._publish_session_state
-        changed = session_state_changes(changed)
-        if publish is not None and changed:
-            publish(changed)
+        if publish is not None:
+            changed = session_state_changes(changed)
+            if changed:
+                publish(changed)
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""

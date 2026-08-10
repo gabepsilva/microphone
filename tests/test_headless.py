@@ -7,11 +7,12 @@ from types import SimpleNamespace
 from typing import cast
 
 from tagalong.control import Controller
+from tagalong.control.state import SESSION_STATE_FIELDS
 from tagalong.domain import TAGA, VOICE
 from tagalong.headless import HeadlessSession
 from tagalong.presentation import Entry
 from tagalong.startup import build_parser
-from tagalong.tui import SessionState, apply_state_fragment
+from tagalong.tui import SessionState, VoiceCodexTUI, apply_state_fragment
 
 
 def _texts(host: HeadlessSession) -> list[str]:
@@ -75,6 +76,41 @@ def test_headless_speech_activity_reaches_attached_clients() -> None:
     host._tick_speaking()
 
     assert controller.state.codex_speaking is False
+
+
+def test_headless_and_tui_publish_the_same_session_state_fields() -> None:
+    headless = HeadlessSession()
+    tui = VoiceCodexTUI()
+    headless_controller = Controller()
+    tui_controller = Controller()
+    headless.bind_session_state_publisher(headless_controller.set_session_state)
+    tui.bind_session_state_publisher(tui_controller.set_session_state)
+
+    for host in (headless, tui):
+        host.set_codex(thread="thread-9", state="thinking", speaking=True)
+        host.set_session(
+            confidence=0.83,
+            language="fr",
+            moonshine="small-streaming",
+            tokens=42000,
+            echoes_cut=3,
+        )
+
+    expected = {
+        "codex_thread": "thread-9",
+        "codex_state": "thinking",
+        "codex_speaking": True,
+        "confidence": 0.83,
+        "language": "fr",
+        "moonshine": "small-streaming",
+        "tokens": 42000,
+        "echoes_cut": 3,
+    }
+    states = [
+        {name: getattr(controller.state, name) for name in SESSION_STATE_FIELDS}
+        for controller in (headless_controller, tui_controller)
+    ]
+    assert states == [expected, expected]
 
 
 def test_headless_close_speaker_accepts_like_finish_turn() -> None:

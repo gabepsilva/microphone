@@ -2684,9 +2684,10 @@ class VoiceCodexTUI:
 
     def _publish_state(self, changed: Mapping[str, object]) -> None:
         publish = self._publish_session_state
-        changed = session_state_changes(changed)
-        if publish is not None and changed:
-            publish(changed)
+        if publish is not None:
+            changed = session_state_changes(changed)
+            if changed:
+                publish(changed)
 
     def transcript_entries(self) -> list[Entry]:
         """Accepted-only rows for ``transcript.save`` (F5 / recorded view)."""
