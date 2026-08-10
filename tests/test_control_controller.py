@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import cast
 
@@ -29,6 +29,7 @@ from tagalong.control.outcomes import (
     Superseded,
 )
 from tagalong.control.state import (
+    SESSION_STATE_FIELDS,
     AppState,
     Effect,
     Selection,
@@ -36,6 +37,7 @@ from tagalong.control.state import (
     with_effective,
 )
 from tagalong.domain import TurnSilence
+from tagalong.tui import SessionState
 
 OWNER = local_user()
 STAMP = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
@@ -1267,6 +1269,14 @@ def test_set_partial_drops_superseded_stamps() -> None:
     controller.set_partial("Voice", "stale", seq=1)
     assert controller.state.partial_source == "Voice"
     assert controller.state.partial_text == "newest"
+
+
+def test_session_state_fields_fit_both_state_models() -> None:
+    app_state_fields = {field.name for field in fields(AppState)}
+    session_state_fields = {field.name for field in fields(SessionState)}
+
+    assert SESSION_STATE_FIELDS - app_state_fields == set()
+    assert SESSION_STATE_FIELDS - session_state_fields == set()
 
 
 def test_set_session_state_publishes_known_fields_and_ignores_other_fields() -> None:

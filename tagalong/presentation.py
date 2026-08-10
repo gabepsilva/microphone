@@ -32,6 +32,12 @@ class Entry:
     recorded: bool = False
 
 
+class SpeechActivity(Protocol):
+    """Expose only the speech status a presentation host needs to poll."""
+
+    def is_speaking(self) -> bool: ...
+
+
 class TranscriptSink(Protocol):
     """Show speech as it arrives and mark where a turn ends."""
 

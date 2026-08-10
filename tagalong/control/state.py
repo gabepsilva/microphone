@@ -16,7 +16,7 @@ would be a field with no source.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
 from ..speech import DEFAULT_PROVIDER, DEFAULT_VOICES, EDGE, PIPER
@@ -42,6 +42,13 @@ SESSION_STATE_FIELDS = frozenset(
         "codex_speaking",
     }
 )
+
+
+def session_state_changes(changed: Mapping[str, object]) -> dict[str, object]:
+    """Keep host publications limited to fields the controller can commit."""
+    return {
+        name: value for name, value in changed.items() if name in SESSION_STATE_FIELDS
+    }
 
 
 @dataclass(frozen=True)
