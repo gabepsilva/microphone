@@ -113,6 +113,26 @@ def test_headless_and_tui_publish_the_same_session_state_fields() -> None:
     assert states == [expected, expected]
 
 
+def test_headless_codex_lifecycle_state_reaches_attached_client() -> None:
+    host = HeadlessSession()
+    controller = Controller(transcript=host.transcript)
+    host.bind_session_state_publisher(controller.set_session_state)
+
+    host.codex_message_open("Voice")
+    assert controller.state.codex_state == "replying to Voice"
+    host.reasoning_started()
+    assert controller.state.codex_state == "thinking"
+    host.command_started("ls")
+    assert controller.state.codex_state == "running command"
+    host.end_codex()
+    assert controller.state.codex_state == "idle"
+    host.token_usage(1234)
+    assert controller.state.tokens == 1234
+    host.commit("Voice", "echo")
+    host.finish_turn("Voice", accepted=False)
+    assert controller.state.echoes_cut == 1
+
+
 def test_headless_close_speaker_accepts_like_finish_turn() -> None:
     host = HeadlessSession()
     host.commit("Voice", "kept")
