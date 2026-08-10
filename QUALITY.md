@@ -200,11 +200,17 @@ never committed.
 ## CI and merge policy
 
 The hosted workflow splits `make ci-hosted` across quick, coverage, mutation,
-and static-security lanes, then folds their results into the protected
-`Quality and security` check. A separate Gitleaks job supplies the secret scan,
-because that action installs the scanner itself. Together the two protected
-checks are equivalent to `make ci`. Locally, `make ci` enables the same
-cross-lane parallelism by default (`make -j1 ci` restores serial logs).
+Electron, and static-security Linux lanes. A macOS lane runs `make ci-macos`:
+the same portable policy, application coverage, and Electron gates, excluding
+only the planted Semgrep proofs that require the digest-pinned Linux container.
+All six lanes fold into the protected `Quality and security` check. A separate
+Gitleaks job supplies the secret scan because that action installs the scanner
+itself. Together the protected checks are equivalent to `make ci`, with an
+additional macOS compatibility proof. Locally, `make ci` enables the same
+cross-lane parallelism by default; `make ci-macos` is the Docker- and
+Gitleaks-free macOS compatibility subset. Pass `JOBS=1` to either target for
+serial logs; this works on both the older GNU Make bundled with macOS and the
+current Linux implementation.
 
 Branch protection is GitHub UI state and exists nowhere in this repository, so
 it is recorded here. Protect `master` with pull requests required, force pushes

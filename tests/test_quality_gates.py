@@ -283,16 +283,24 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "local make no longer defaults to parallel jobs",
             (
                 "makefile",
-                "MAKEFLAGS += -j$(CI_JOBS)",
+                "MAKEFLAGS += -j$(JOBS)",
                 "# parallel Make default removed",
             ),
         ),
         (
-            "local parallel default no longer pinned to Linux nproc",
+            "local parallelism is no longer user-overridable",
             (
                 "makefile",
+                "JOBS ?= $(CI_JOBS)",
+                "JOBS := $(CI_JOBS)",
+            ),
+        ),
+        (
+            "local parallel default loses its macOS fallback",
+            (
+                "makefile",
+                "CPU_CORES := $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)",
                 "CPU_CORES := $(shell nproc 2>/dev/null)",
-                "CPU_CORES := 4",
             ),
         ),
         (
@@ -300,19 +308,43 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             ("workflow", "run: make verify-mutation", "run: make mutation"),
         ),
         (
+            "macOS target drops Electron verification",
+            (
+                "makefile",
+                "ci-macos: verify-quick macos-test-coverage verify-electron",
+                "ci-macos: verify-quick macos-test-coverage",
+            ),
+        ),
+        (
+            "macOS compatibility target no longer invoked",
+            ("workflow", "run: make ci-macos", "run: make verify-quick"),
+        ),
+        (
+            "macOS compatibility lane moved onto Linux",
+            (
+                "workflow",
+                "  macos:\n    name: macOS compatibility\n    runs-on: macos-15",
+                "  macos:\n    name: macOS compatibility\n    runs-on: ubuntu-24.04",
+            ),
+        ),
+        (
+            "missing macOS compatibility lane",
+            ("workflow", "  macos:\n", "  osx:\n"),
+        ),
+        (
             "quality lane omitted from the protected aggregator",
             (
                 "workflow",
+                "needs: [quick, coverage, mutation, electron, macos, security-static]",
                 "needs: [quick, coverage, mutation, electron, security-static]",
-                "needs: [quick, coverage, mutation, security-static]",
             ),
         ),
         (
             "aggregator with no parseable needs list",
             (
                 "workflow",
-                "needs: [quick, coverage, mutation, electron, security-static]",
-                "depends-on: [quick, coverage, mutation, electron, security-static]",
+                "needs: [quick, coverage, mutation, electron, macos, security-static]",
+                "depends-on: [quick, coverage, mutation, electron, macos, security-static]",
             ),
         ),
         (
@@ -323,7 +355,7 @@ def test_orchestration_gate_accepts_the_local_and_hosted_contract(
             "aggregator that does not positively require success",
             (
                 "workflow",
-                'test "$LANE_RESULTS" = "success success success success success"',
+                'test "$LANE_RESULTS" = "success success success success success success"',
                 'test "$LANE_RESULTS" != "failure"',
             ),
         ),
@@ -1328,6 +1360,7 @@ def _run_semgrep_on_tree(tree: Path, *, image: str) -> tuple[int, set[str]]:
     return result.returncode, rule_ids
 
 
+@pytest.mark.container_security
 def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
     """Allowlist form must catch non-literal bypasses, not only `: true` / `: false`."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
@@ -1370,6 +1403,7 @@ def test_semgrep_forbids_electron_node_integration_and_open_isolation() -> None:
         assert "electron-no-open-context-isolation" in rule_ids
 
 
+@pytest.mark.container_security
 def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
     """Aliased .handle outside ipc.ts must fail — orphan-handler half of #97."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
@@ -1414,6 +1448,7 @@ def test_semgrep_forbids_bare_ipc_main_handle_outside_registrar() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+@pytest.mark.container_security
 def test_semgrep_forbids_raw_tagalong_channel_literals() -> None:
     """Raw \"tagalong:…\" in send/on/invoke outside channels.ts must fail (#96)."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
@@ -1460,6 +1495,7 @@ def test_semgrep_forbids_raw_tagalong_channel_literals() -> None:
         assert not any(path.endswith("channels.ts") for path in paths)
 
 
+@pytest.mark.container_security
 def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
     """A call(\"dispatch\") outside ipc.ts must fail — D3c table gate for #96."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")
@@ -1501,6 +1537,7 @@ def test_semgrep_forbids_bare_dispatch_outside_allowlist_table() -> None:
         assert not any(path.endswith("ipc.ts") for path in paths)
 
 
+@pytest.mark.container_security
 def test_semgrep_forbids_innerhtml_in_electron_renderer() -> None:
     """Each HTML-injection sink under electron/renderer/ must fail alone (#102)."""
     rules = (ROOT / "semgrep.yml").read_text(encoding="utf-8")

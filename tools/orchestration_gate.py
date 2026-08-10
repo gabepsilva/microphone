@@ -67,6 +67,9 @@ REQUIRED_TARGETS = {
 
 AGGREGATOR_JOB = "quality-gate"
 AGGREGATOR_NAME = "Quality and security"
+MACOS_JOB = "macos"
+MACOS_RUNNER = "macos-15"
+MACOS_TARGET = "ci-macos"
 
 
 def _make_words(source: str, name: str) -> tuple[str, ...] | None:
@@ -147,6 +150,7 @@ def _check_makefile(source: str, failures: list[str]) -> None:
     expected_prerequisites = {
         "verify": VERIFY_GROUPS,
         "ci-hosted": ("verify", "verify-security"),
+        "ci-macos": ("verify-quick", "macos-test-coverage", "verify-electron"),
         "security": ("security-static", "secrets"),
         "ci": ("verify", "security"),
     }
@@ -159,15 +163,19 @@ def _check_makefile(source: str, failures: list[str]) -> None:
     # Local `make ci` must keep the same cross-lane parallelism hosted CI gets
     # from separate jobs. The spelling is pinned so a silent slide back to
     # serial `make` cannot pass as an unrelated Makefile edit.
-    if "MAKEFLAGS += -j$(CI_JOBS)" not in source:
+    if "JOBS ?= $(CI_JOBS)" not in source or "MAKEFLAGS += -j$(JOBS)" not in source:
         failures.append(
             "Makefile: local gates must default to parallel jobs via "
-            "`MAKEFLAGS += -j$(CI_JOBS)` (override with make -j1)."
+            "`JOBS ?= $(CI_JOBS)` and `MAKEFLAGS += -j$(JOBS)` "
+            "(override with make JOBS=1)."
         )
-    if "$(shell nproc " not in source:
+    if (
+        "$(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)"
+        not in source
+    ):
         failures.append(
-            "Makefile: parallel job default must use nproc on Linux "
-            "(unsupported platforms pass -jN explicitly)."
+            "Makefile: parallel job default must use nproc on Linux and "
+            "getconf as the macOS fallback."
         )
 
 
@@ -205,18 +213,20 @@ def _check_aggregator(job: str, lane_jobs: set[str], failures: list[str]) -> Non
         )
 
 
-def _check_workflow(source: str, failures: list[str]) -> None:
-    jobs = _workflow_jobs(source)
-    if not jobs:
-        failures.append(f"{HOSTED_WORKFLOW}: jobs are missing or could not be parsed.")
-        return
+def _check_macos_job(job: str, failures: list[str]) -> None:
+    if not re.search(
+        rf"^\s+runs-on:\s*{re.escape(MACOS_RUNNER)}\s*$", job, re.MULTILINE
+    ):
+        failures.append(f"{HOSTED_WORKFLOW}: {MACOS_JOB} must run on {MACOS_RUNNER}.")
+    if not re.search(
+        rf"^\s+run:\s+make\s+{re.escape(MACOS_TARGET)}\s*$", job, re.MULTILINE
+    ):
+        failures.append(
+            f"{HOSTED_WORKFLOW}: {MACOS_JOB} must invoke make {MACOS_TARGET}."
+        )
 
-    for job_id, job in jobs.items():
-        if _declares_continue_on_error(job):
-            failures.append(
-                f"{HOSTED_WORKFLOW}: job {job_id} must not declare continue-on-error."
-            )
 
+def _hosted_group_lanes(jobs: dict[str, str], failures: list[str]) -> set[str]:
     lanes_by_group: dict[str, list[str]] = {group: [] for group in HOSTED_GROUPS}
     for job_id, job in jobs.items():
         group = _invoked_group(job)
@@ -229,8 +239,30 @@ def _check_workflow(source: str, failures: list[str]) -> None:
                 f"{HOSTED_WORKFLOW}: {group} must be invoked by exactly one lane; "
                 f"found {lane_jobs}."
             )
+    return {job_ids[0] for job_ids in lanes_by_group.values() if len(job_ids) == 1}
 
-    lane_jobs = {job_ids[0] for job_ids in lanes_by_group.values() if len(job_ids) == 1}
+
+def _check_workflow(source: str, failures: list[str]) -> None:
+    jobs = _workflow_jobs(source)
+    if not jobs:
+        failures.append(f"{HOSTED_WORKFLOW}: jobs are missing or could not be parsed.")
+        return
+
+    for job_id, job in jobs.items():
+        if _declares_continue_on_error(job):
+            failures.append(
+                f"{HOSTED_WORKFLOW}: job {job_id} must not declare continue-on-error."
+            )
+
+    macos = jobs.get(MACOS_JOB)
+    if macos is None:
+        failures.append(f"{HOSTED_WORKFLOW}: {MACOS_JOB} job is missing.")
+    else:
+        _check_macos_job(macos, failures)
+
+    lane_jobs = _hosted_group_lanes(jobs, failures)
+    if macos is not None:
+        lane_jobs.add(MACOS_JOB)
     aggregator = jobs.get(AGGREGATOR_JOB)
     if aggregator is None:
         failures.append(f"{HOSTED_WORKFLOW}: {AGGREGATOR_JOB} job is missing.")

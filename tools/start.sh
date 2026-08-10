@@ -24,6 +24,15 @@ DEV="${DEV:-1}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ELECTRON_DIR="$REPO_ROOT/electron"
+
+# Linux provides XDG_RUNTIME_DIR. macOS instead provides a randomized,
+# per-user TMPDIR (normally mode 0700), which has the security property needed
+# by the local socket. Export it so Python and Electron resolve the same path.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ "$(uname -s)" = "Darwin" ]; then
+    XDG_RUNTIME_DIR="${TMPDIR:?macOS did not provide TMPDIR}"
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR%/}"
+    export XDG_RUNTIME_DIR
+fi
 # Mirrors tagalong/transport.py: $XDG_RUNTIME_DIR/tagalong/tagalong.sock, and
 # no /tmp fallback.
 SOCKET_PATH="${XDG_RUNTIME_DIR:-}/tagalong/tagalong.sock"
@@ -85,10 +94,14 @@ require_electron_binary() {
     # `make electron-install` sets ELECTRON_SKIP_BINARY_DOWNLOAD=1 -- CI never
     # opens a window -- so a gate-installed tree has the types but no runnable
     # Chromium. Say so rather than failing inside bun.
-    if [ ! -x "$ELECTRON_DIR/node_modules/electron/dist/electron" ]; then
-        echo "error: no Electron binary at electron/node_modules/electron/dist/electron."
+    local executable="$ELECTRON_DIR/node_modules/electron/dist/electron"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        executable="$ELECTRON_DIR/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+    fi
+    if [ ! -x "$executable" ]; then
+        echo "error: no Electron binary at $executable."
         echo "The CI install skips the ~176 MB download. Fetch it once with:"
-        echo "    cd electron && bun install"
+        echo "    cd electron && bun install && bun run install-electron"
         exit 2
     fi
 }

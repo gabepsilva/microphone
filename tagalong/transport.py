@@ -3,8 +3,8 @@
 The in-process controller is the session. This module is how a second writer
 — Electron, an MCP adapter, a CLI — reaches it without inventing a parallel
 API. Framing is NDJSON, the directory is mode ``0700``, the socket is ``0600``,
-and every accepted connection is checked with ``SO_PEERCRED`` so a peer from
-another uid never speaks to the session.
+and every accepted connection is checked with kernel-supplied peer credentials
+so a peer from another uid never speaks to the session.
 
 There is no ``/tmp`` fallback. If ``XDG_RUNTIME_DIR`` is unset the server
 refuses to start, rather than listen somewhere any local user can connect.
@@ -42,8 +42,10 @@ from .discovery import list_commands
 from .piper_voices import speech_catalog as piper_speech_catalog
 from .streams import graph, offered_applications
 
-SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 _CRED_FORMAT = "3i"
+_XUCRED_FORMAT = "@IIh2xI"
+_SOL_LOCAL = 0
+_LOCAL_PEERPID = 2
 # Base64 expands by 4/3; 20 MiB of image bytes become ~28 MiB on the wire.
 # Leave room for the JSON-RPC envelope around attachment.upload. Same-uid
 # only, so a larger frame is not a cross-user DoS surface.
@@ -100,10 +102,25 @@ def prepare_runtime_dir(path: Path) -> None:
 
 
 def read_peer(connection: socket.socket) -> Peer:
-    raw = connection.getsockopt(
-        socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize(_CRED_FORMAT)
+    """Read unforgeable peer credentials on Linux or macOS."""
+    if hasattr(socket, "SO_PEERCRED"):
+        raw = connection.getsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_PEERCRED,
+            struct.calcsize(_CRED_FORMAT),
+        )
+        pid, uid, gid = struct.unpack(_CRED_FORMAT, raw)
+        return Peer(pid=pid, uid=uid, gid=gid)
+
+    local_peercred = getattr(socket, "LOCAL_PEERCRED", None)
+    if local_peercred is None:
+        raise TransportError("peer credentials are unsupported on this platform")
+    credentials = connection.getsockopt(
+        _SOL_LOCAL, local_peercred, struct.calcsize(_XUCRED_FORMAT)
     )
-    pid, uid, gid = struct.unpack(_CRED_FORMAT, raw)
+    _version, uid, _group_count, gid = struct.unpack(_XUCRED_FORMAT, credentials)
+    peer_pid = connection.getsockopt(_SOL_LOCAL, _LOCAL_PEERPID, struct.calcsize("i"))
+    (pid,) = struct.unpack("i", peer_pid)
     return Peer(pid=pid, uid=uid, gid=gid)
 
 

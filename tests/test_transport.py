@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import stat
+import struct
 import threading
 import time
 from pathlib import Path
@@ -857,6 +858,32 @@ def test_peer_credentials_match_this_process() -> None:
     finally:
         left.close()
         right.close()
+
+
+def test_linux_peer_credentials_are_decoded(monkeypatch) -> None:
+    option = 0xCAFE
+    monkeypatch.setattr(socket, "SO_PEERCRED", option, raising=False)
+
+    class Connection:
+        def getsockopt(self, level, name, size):
+            assert (level, name, size) == (
+                socket.SOL_SOCKET,
+                option,
+                struct.calcsize("3i"),
+            )
+            return struct.pack("3i", 123, 456, 789)
+
+    assert read_peer(cast(socket.socket, Connection())) == Peer(
+        pid=123, uid=456, gid=789
+    )
+
+
+def test_peer_credentials_reject_an_unsupported_platform(monkeypatch) -> None:
+    monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
+    monkeypatch.delattr(socket, "LOCAL_PEERCRED", raising=False)
+
+    with pytest.raises(TransportError, match="unsupported"):
+        read_peer(cast(socket.socket, object()))
 
 
 def test_socket_client_labels_do_not_mint_a_human_actor() -> None:

@@ -112,6 +112,9 @@ addopts = [
 ]
 testpaths = ["tests"]
 filterwarnings = ["error"]
+markers = [
+    "container_security: planted security-rule proofs that require the pinned Linux container",
+]
 
 [tool.coverage.run]
 branch = true
