@@ -1,5 +1,15 @@
 import type { AppState } from "../src/state";
 
+export const SESSION_FIELD_IDS: {
+  readonly thread: "session-codex-thread";
+  readonly state: "session-codex-state";
+  readonly confidence: "session-confidence";
+  readonly language: "session-language";
+  readonly moonshine: "session-moonshine";
+  readonly tokens: "session-tokens";
+  readonly echoesCut: "session-echoes-cut";
+};
+
 type SessionState = Pick<
   AppState,
   | "codex_thread"
