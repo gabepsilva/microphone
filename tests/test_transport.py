@@ -878,12 +878,53 @@ def test_linux_peer_credentials_are_decoded(monkeypatch) -> None:
     )
 
 
+def test_macos_peer_credentials_are_decoded(monkeypatch) -> None:
+    option = 0xBEEF
+    monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
+    monkeypatch.setattr(socket, "LOCAL_PEERCRED", option, raising=False)
+
+    class Connection:
+        def getsockopt(self, level, name, size):
+            if name == option:
+                assert (level, size) == (
+                    transport._SOL_LOCAL,
+                    struct.calcsize(transport._XUCRED_FORMAT),
+                )
+                return struct.pack(transport._XUCRED_FORMAT, 1, 456, 1, 789)
+            assert (level, name, size) == (
+                transport._SOL_LOCAL,
+                transport._LOCAL_PEERPID,
+                struct.calcsize("i"),
+            )
+            return struct.pack("i", 123)
+
+    assert read_peer(cast(socket.socket, Connection())) == Peer(
+        pid=123, uid=456, gid=789
+    )
+
+
 def test_peer_credentials_reject_an_unsupported_platform(monkeypatch) -> None:
     monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
     monkeypatch.delattr(socket, "LOCAL_PEERCRED", raising=False)
 
     with pytest.raises(TransportError, match="unsupported"):
         read_peer(cast(socket.socket, object()))
+
+
+def test_server_stops_after_an_oserror_from_accept(monkeypatch) -> None:
+    server = LocalServer(Controller(), path=Path("/tmp/tagalong-stop.sock"))
+    server._listener = cast(socket.socket, object())
+    calls = 0
+
+    def stopped_accept(_listener):
+        nonlocal calls
+        calls += 1
+        server._stop.set()
+        raise OSError("closed")
+
+    monkeypatch.setattr(server, "_accept", stopped_accept)
+    server._serve()
+    assert calls == 1
 
 
 def test_socket_client_labels_do_not_mint_a_human_actor() -> None:
