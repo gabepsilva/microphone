@@ -142,6 +142,12 @@ far-end applications), and Codex credentials as for a normal TUI session.
   desired and effective diverge, an `effective:` footnote appears under the
   picker (same pattern as microphone/audio). Hide/disable when Engine is Edge.
 
+7c. **Session status panel**
+
+- Start a turn and watch the `state` value move through `thinking` ->
+  `replying` -> `speaking` -> `idle`. Confirm `tokens` and `echoes cut`
+  track the TUI sidebar.
+
 8. **Compose**
    - Type text, optionally attach an image (**+** button or paste), press
      **Enter** — or the send button.

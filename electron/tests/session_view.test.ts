@@ -1,18 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { sessionActivity, syncSession } from "../renderer/session_view.js";
+import {
+  SESSION_FIELD_IDS,
+  sessionActivity,
+  syncSession,
+} from "../renderer/session_view.js";
 
 function documentWithSessionFields() {
   const fields = new Map<string, { textContent: string; active: boolean }>();
-  for (const id of [
-    "session-codex-thread",
-    "session-codex-state",
-    "session-confidence",
-    "session-language",
-    "session-moonshine",
-    "session-tokens",
-    "session-echoes-cut",
-  ]) {
+  for (const id of Object.values(SESSION_FIELD_IDS)) {
     fields.set(id, { textContent: "", active: false });
   }
   return {
@@ -40,6 +38,15 @@ function documentWithSessionFields() {
     },
   };
 }
+
+describe("session markup", () => {
+  it("contains each renderer field exactly once", () => {
+    const html = readFileSync(join(__dirname, "../renderer/index.html"), "utf8");
+    for (const id of Object.values(SESSION_FIELD_IDS)) {
+      expect(html.match(new RegExp(`id="${id}"`, "g")) ?? []).toHaveLength(1);
+    }
+  });
+});
 
 describe("sessionActivity", () => {
   it("keeps a specific Codex state ahead of speech", () => {
