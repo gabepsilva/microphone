@@ -743,8 +743,23 @@ def test_codex_state_transitions_reach_attached_clients(tui) -> None:
         facade.codex_message_open(tui.VOICE)
         await pilot.pause()
         assert controller.state.codex_state == "replying to Voice"
+        facade.reasoning_started()
+        await pilot.pause()
+        assert controller.state.codex_state == "thinking"
+        facade.command_started("ls")
+        await pilot.pause()
+        assert controller.state.codex_state == "running command"
         facade.end_codex()
         await pilot.pause()
+        assert controller.state.codex_state == "idle"
+        facade.token_usage(1234)
+        await pilot.pause()
+        assert controller.state.tokens == 1234
+        facade.commit(tui.VOICE, "echo")
+        await pilot.pause()
+        facade.finish_turn(tui.VOICE, accepted=False)
+        await pilot.pause()
+        assert controller.state.echoes_cut == 1
 
     drive(facade, body)
 
