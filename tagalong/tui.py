@@ -58,7 +58,7 @@ from .commands import (
     match_commands,
     preferred_index,
 )
-from .control.state import SESSION_STATE_FIELDS
+from .control.state import session_state_changes
 from .control.transcript import TranscriptStore
 from .domain import (
     AGENT,
@@ -70,7 +70,7 @@ from .domain import (
     UserTextMessage,
     parse_turn_silence,
 )
-from .presentation import Entry
+from .presentation import Entry, SpeechActivity
 from .speech import (
     DEFAULT_PROVIDER,
     EDGE,
@@ -1871,7 +1871,7 @@ class VoiceCodexApp(App):
         state: SessionState,
         hooks: TuiHooks,
         countdown=None,
-        speech=None,
+        speech: SpeechActivity | None = None,
         transcript: TranscriptStore | None = None,
     ) -> None:
         super().__init__()
@@ -2630,7 +2630,7 @@ class VoiceCodexTUI:
         self,
         state: SessionState | None = None,
         countdown=None,
-        speech=None,
+        speech: SpeechActivity | None = None,
         transcript: TranscriptStore | None = None,
         **hooks,
     ) -> None:
@@ -2684,6 +2684,7 @@ class VoiceCodexTUI:
 
     def _publish_state(self, changed: Mapping[str, object]) -> None:
         publish = self._publish_session_state
+        changed = session_state_changes(changed)
         if publish is not None and changed:
             publish(changed)
 
@@ -3099,8 +3100,7 @@ class VoiceCodexTUI:
             attribute = f"codex_{key}"
             if hasattr(self.state, attribute):
                 setattr(self.state, attribute, value)
-                if attribute in SESSION_STATE_FIELDS:
-                    changed[attribute] = value
+                changed[attribute] = value
         self._publish_state(changed)
         self._call(self.app.refresh_sidebar)
 
@@ -3149,8 +3149,7 @@ class VoiceCodexTUI:
         for key, value in fields.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
-                if key in SESSION_STATE_FIELDS:
-                    changed[key] = value
+                changed[key] = value
         self._publish_state(changed)
         self._call(self.app.refresh_sidebar)
 

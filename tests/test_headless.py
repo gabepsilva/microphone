@@ -85,16 +85,22 @@ def test_headless_close_speaker_accepts_like_finish_turn() -> None:
 
 
 def test_headless_run_polls_speech_until_stopped(monkeypatch) -> None:
-    class StopAfterPoll:
+    class StopsWhenPolled:
         def is_speaking(self) -> bool:
             host.stop()
             return True
 
-    host = HeadlessSession(speech=StopAfterPoll())
-    waits = iter([False, True])
-    monkeypatch.setattr(host._stop, "wait", lambda _timeout: next(waits))
+    host = HeadlessSession(speech=StopsWhenPolled())
+    timeouts: list[float] = []
+
+    def wait(timeout: float) -> bool:
+        timeouts.append(timeout)
+        return host._stop.is_set()
+
+    monkeypatch.setattr(host._stop, "wait", wait)
     host.run()
 
+    assert timeouts == [0.1, 0.1]
     assert host.state.codex_speaking is True
 
 

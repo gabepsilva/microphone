@@ -12,22 +12,12 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
 
+from .control.state import session_state_changes
 from .control.transcript import TranscriptStore
 from .domain import TAGA, VOICE
-from .presentation import Entry
-from .tui import (
-    SESSION_STATE_FIELDS,
-    OrderedDeltaBuffer,
-    SessionState,
-    TuiHooks,
-    entry_is_open,
-)
-
-
-class SpeechActivity(Protocol):
-    def is_speaking(self) -> bool: ...
+from .presentation import Entry, SpeechActivity
+from .tui import OrderedDeltaBuffer, SessionState, TuiHooks, entry_is_open
 
 
 class HeadlessSession:
@@ -75,6 +65,7 @@ class HeadlessSession:
 
     def _publish_state(self, changed: dict[str, object]) -> None:
         publish = self._publish_session_state
+        changed = session_state_changes(changed)
         if publish is not None and changed:
             publish(changed)
 
@@ -335,8 +326,7 @@ class HeadlessSession:
             attribute = f"codex_{key}"
             if hasattr(self.state, attribute):
                 setattr(self.state, attribute, value)
-                if attribute in SESSION_STATE_FIELDS:
-                    changed[attribute] = value
+                changed[attribute] = value
         self._publish_state(changed)
 
     def set_codex_catalog(
@@ -367,8 +357,7 @@ class HeadlessSession:
         for key, value in fields.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
-                if key in SESSION_STATE_FIELDS:
-                    changed[key] = value
+                changed[key] = value
         self._publish_state(changed)
 
     def set_status(self, status: str, live: bool = True) -> None:
