@@ -99,7 +99,9 @@ class FakeRecorder:
     """Stand in for the pw-record process, serving a fixed script of reads."""
 
     def __init__(self, reads, exit_code=None):
+        self.stdin = FakePipe([])
         self.stdout = FakePipe(reads)
+        self.stderr = FakePipe([])
         self._exit_code = exit_code
         self.terminated = False
         self.killed = False
@@ -151,11 +153,40 @@ class FakeTap:
         self.events.append(f"command {samplerate}")
         return ["pw-record", str(samplerate)]
 
+    def process_options(self):
+        return {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+
+    def wait_ready(self, _process, timeout):
+        assert timeout >= 0
+        return (
+            f"recorder exited with code {_process.poll()}"
+            if _process.poll() is not None
+            else None
+        )
+
+    def attach(self, _process):
+        return
+
     def start(self):
         self.events.append("start")
 
     def stop(self):
         self.events.append("stop")
+
+
+class ReadyTap(FakeTap):
+    """A tap that exercises the helper readiness and attach seams."""
+
+    def process_options(self):
+        self.events.append("process options")
+        return {"stdin": subprocess.PIPE, "stderr": subprocess.PIPE}
+
+    def wait_ready(self, _process, timeout):
+        self.events.append(f"ready {timeout}")
+        return
+
+    def attach(self, _process):
+        self.events.append("attach")
 
 
 class RecordedCapture(ApplicationStreamTranscriber):
@@ -169,14 +200,16 @@ class RecordedCapture(ApplicationStreamTranscriber):
 @pytest.fixture
 def capture(monkeypatch):
     """Build a stream transcriber with the recorder, tap, and Moonshine faked."""
+    monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("tagalong.capture.Transcriber", FakeTranscriber)
-    monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
-    def build(reads=(), exit_code=None, **kwargs):
+    def build(reads=(), exit_code=None, tap=None, **kwargs):
         process = FakeRecorder(list(reads), exit_code)
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-        return RecordedCapture(process, "model", "arch", FakeTap(), **kwargs)
+        return RecordedCapture(
+            process, "model", "arch", tap if tap is not None else FakeTap(), **kwargs
+        )
 
     return build
 
@@ -601,6 +634,7 @@ def test_an_empty_queue_yields_only_the_first_chunk() -> None:
 
 
 def test_capture_requires_the_pipewire_tools(monkeypatch) -> None:
+    monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
     with pytest.raises(RuntimeError, match="pw-record is required"):
@@ -631,7 +665,7 @@ def test_the_tap_follows_the_application_only_once_the_recorder_is_up(
 def test_a_recorder_that_exits_immediately_leaves_the_tap_unstarted(capture) -> None:
     monitor = capture(exit_code=1)
 
-    with pytest.raises(RuntimeError, match="Could not capture the audio"):
+    with pytest.raises(RuntimeError, match="recorder exited with code 1"):
         monitor.start()
 
     assert "start" not in monitor.tap.events
@@ -709,6 +743,125 @@ def test_a_recorder_that_exits_immediately_is_reported(capture) -> None:
         monitor.start()
 
     assert monitor.stream.events == ["start", "stop"]
+
+
+def test_a_tap_can_wait_for_a_slow_helper_then_attach_control(capture) -> None:
+    tap = ReadyTap()
+    monitor = capture(tap=tap)
+
+    monitor.start()
+    try:
+        assert tap.events == [
+            "process options",
+            "command 16000",
+            "ready 5.0",
+            "attach",
+            "start",
+        ]
+    finally:
+        monitor.stop()
+
+
+def test_a_helper_startup_error_is_named_and_stops_the_stream(capture) -> None:
+    class DeniedTap(ReadyTap):
+        def wait_ready(self, _process, timeout):
+            self.events.append(f"ready {timeout}")
+            return "TCC denied audio capture"
+
+    monitor = capture(tap=DeniedTap())
+
+    with pytest.raises(RuntimeError, match="TCC denied audio capture"):
+        monitor.start()
+
+    assert monitor.fake_process.terminated
+    assert monitor.fake_process.stdin.closed
+    assert monitor.fake_process.stdout.closed
+    assert monitor.fake_process.stderr.closed
+    assert monitor.stream.events == ["start", "stop"]
+
+
+def test_capture_lifecycle_handles_missing_pipes_and_stop_requests(capture) -> None:
+    monitor = capture()
+
+    monitor._read_audio()
+    monitor.process = types.SimpleNamespace(stdout=None)
+    monitor._read_audio()
+
+    worker_monitor = capture()
+    worker = threading.Thread(target=worker_monitor._process_audio)
+    worker.start()
+    worker_monitor.audio_queue.put(stereo(0))
+    assert worker_monitor.stream.received.wait(WAIT_SECONDS)
+    worker_monitor.audio_queue.put(worker_monitor.stop_item)
+    worker.join(timeout=WAIT_SECONDS)
+    assert worker_monitor.stream.audio == [([0.0], 16000)]
+
+
+def test_stopping_an_already_exited_recorder_skips_termination(capture) -> None:
+    monitor = capture()
+    monitor.process = FakeRecorder([], exit_code=0)
+    monitor.started = True
+
+    monitor.stop()
+
+    assert monitor.process.terminated is False
+    assert monitor.stream.events == ["stop"]
+
+
+def test_stopping_a_recorder_kills_it_after_a_timeout(capture) -> None:
+    class SlowRecorder(FakeRecorder):
+        def __init__(self):
+            super().__init__([], exit_code=None)
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(
+                    "pw-record", timeout if timeout is not None else 0.0
+                )
+            return self._exit_code
+
+    monitor = capture()
+    monitor.process = SlowRecorder()
+    monitor.started = True
+
+    monitor.stop()
+
+    assert monitor.process.killed
+    assert monitor.process.wait_calls == 2
+
+
+def test_startup_cleanup_handles_exited_and_timeout_processes(capture) -> None:
+    class SlowRecorder(FakeRecorder):
+        def __init__(self):
+            super().__init__([], exit_code=None)
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(
+                    "pw-record", timeout if timeout is not None else 0.0
+                )
+            return self._exit_code
+
+    monitor = capture()
+    monitor.process = types.SimpleNamespace(stdout=None, poll=lambda: 1)
+    monitor._stop_process()
+
+    monitor.process = SlowRecorder()
+    monitor._stop_process()
+    assert monitor.process.killed
+
+
+def test_close_handles_a_recorder_without_stdout(capture) -> None:
+    monitor = capture()
+    monitor.process = types.SimpleNamespace(stdout=None)
+
+    monitor.close()
+
+    assert monitor.stream.events == ["close"]
 
 
 def test_starting_twice_does_not_start_a_second_capture(capture) -> None:

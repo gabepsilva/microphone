@@ -93,10 +93,21 @@ FLOORS = {
     # Recorded 2026-07-29 with the session tagging that lets an orphaned
     # helper be recognized and swept.
     "tagalong/session.py": 100.0,
+    # The Linux process identity implementation moved behind the session port
+    # for issue #152; its measured floor is retained explicitly.
+    "tagalong/session_proc.py": 100.0,
     "tagalong/speech.py": 100.0,
     "tagalong/startup.py": 100.0,
     # Recorded 2026-07-28 with the PipeWire stream tap.
     "tagalong/streams.py": 100.0,
+    # The PipeWire implementation moved behind the stream port for issue #152;
+    # keep its measured floor explicit rather than letting it become a new-file
+    # default after the split.
+    "tagalong/streams_pipewire.py": 100.0,
+    # Darwin phase-boundary adapters are fully covered as pure, hardware-free
+    # failure paths; real Core Audio binding coverage belongs to its smoke lane.
+    "tagalong/session_darwin.py": 100.0,
+    "tagalong/streams_coreaudio.py": 100.0,
     # This floor sat at 80 while the measurement moved between runs: five runs
     # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the
     # guard in _play was hit or missed depending on how the synthesis thread

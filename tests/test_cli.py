@@ -279,6 +279,7 @@ def managed_microphone(devices=(), discover=None, open_error=None):
 @pytest.fixture
 def wiring(monkeypatch, tmp_path):
     """Fake every adapter ``main`` reaches for and record what it built."""
+    monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     config = tmp_path / "tagalong.yaml"
     config.write_text("", encoding="utf-8")
     built: dict[str, object] = {}

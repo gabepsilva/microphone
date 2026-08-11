@@ -16,9 +16,15 @@ from types import SimpleNamespace
 
 import pytest
 
+import tagalong.streams as streams
+from tagalong import streams_coreaudio
 from tagalong.streams import (
     ApplicationRefresher,
     ApplicationStream,
+    default_stream_backend,
+    stream_label,
+)
+from tagalong.streams_pipewire import (
     StreamTap,
     application_streams,
     applications,
@@ -28,12 +34,19 @@ from tagalong.streams import (
     nodes_named,
     offered_applications,
     parent_process,
-    require_pipewire,
     spawned_here,
-    stream_label,
+)
+from tagalong.streams_pipewire import (
+    require_stream_capture as require_pipewire,
 )
 
 WAIT_SECONDS = 10
+
+
+@pytest.fixture(autouse=True)
+def use_pipewire_backend(monkeypatch):
+    """Run PipeWire graph tests against their explicit backend on every host."""
+    monkeypatch.setattr(streams, "_DEFAULT_PLATFORM", "linux")
 
 
 def node(
@@ -400,6 +413,75 @@ def test_every_pipewire_tool_present_is_accepted(monkeypatch) -> None:
     assert require_pipewire() is None
 
 
+def test_the_platform_selector_is_injectable() -> None:
+    assert default_stream_backend("linux").__name__.endswith("streams_pipewire")
+    assert default_stream_backend("darwin").__name__.endswith("streams_coreaudio")
+
+
+def test_the_common_port_delegates_to_the_selected_backend(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert streams.graph(run=lambda *_a, **_k: SimpleNamespace(stdout="[]")) == []
+    assert streams.application_streams([]) == []
+    assert streams.applications([]) == []
+    assert streams.offered_applications([]) == []
+    assert streams.require_stream_capture() is None
+
+
+def test_the_unimplemented_darwin_backend_fails_by_name() -> None:
+    assert streams_coreaudio.graph() == []
+    assert streams_coreaudio.application_streams([]) == []
+    assert streams_coreaudio.applications([]) == []
+    assert streams_coreaudio.offered_applications([]) == []
+
+    with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+        streams_coreaudio.require_stream_capture()
+
+
+def test_pipewire_tap_declares_the_descriptor_contract() -> None:
+    tap = StreamTap("Chromium")
+
+    assert tap.process_options() == {
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+
+
+def test_pipewire_tap_reports_startup_and_has_no_attach_channel() -> None:
+    class Running:
+        @staticmethod
+        def poll():
+            return None
+
+    class Exited:
+        @staticmethod
+        def poll():
+            return 7
+
+    tap = StreamTap("Chromium")
+
+    assert tap.wait_ready(Running(), timeout=0) is None
+    assert tap.wait_ready(Exited(), timeout=0) == "recorder exited with code 7"
+    assert tap.attach(object()) is None
+
+
+def test_the_darwin_placeholder_rejects_a_tap_command() -> None:
+    tap = streams_coreaudio.StreamTap()
+    methods = [
+        ("command", (16000,)),
+        ("process_options", ()),
+        ("wait_ready", (None, 5.0)),
+        ("attach", (None,)),
+        ("follow", (None,)),
+        ("start", ()),
+        ("stop", ()),
+    ]
+
+    for name, args in methods:
+        with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+            getattr(tap, name)(*args)
+
+
 def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:
     """Without this the capture node autoconnects and records the microphone."""
     command = StreamTap("Chromium").command(16000)
@@ -689,6 +771,23 @@ def test_an_application_is_offered_as_soon_as_it_plays() -> None:
 
     assert refresher.refresh() is True
     assert [value for _, value in display.offered[-1]] == ["Brave"]
+
+
+def test_the_refresher_reports_and_stops_after_a_discovery_error(capsys) -> None:
+    display = FakeDisplay()
+
+    def fail():
+        raise RuntimeError("Darwin process identity is unavailable")
+
+    refresher = ApplicationRefresher(display, poll=0, dump=fail)
+    refresher.start()
+    assert refresher.worker is not None
+    refresher.worker.join(timeout=WAIT_SECONDS)
+
+    assert refresher.error is not None
+    assert str(refresher.error) == "Darwin process identity is unavailable"
+    assert "Audio stream discovery stopped" in capsys.readouterr().err
+    refresher.stop()
 
 
 def test_an_application_heard_once_stays_offered_while_it_is_quiet() -> None:

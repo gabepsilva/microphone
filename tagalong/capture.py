@@ -22,7 +22,7 @@ import numpy as np
 from moonshine_voice.transcriber import Transcriber, check_error
 
 from .session import tagged_environment
-from .streams import require_pipewire
+from .streams import require_stream_capture
 
 
 def audio_level(samples: np.ndarray) -> float:
@@ -399,11 +399,9 @@ class ApplicationStreamTranscriber:
     the recorder has opened it, so nothing could be linked to it before.
     """
 
-    # The recorder exits rather than blocking when it cannot reach the audio
-    # server at all, so startup waits briefly and checks, instead of
-    # discovering it at the first silent read. A tap with nothing linked yet is
-    # a different thing entirely, and reads as silence on purpose.
-    STARTUP_GRACE_SECONDS = 0.05
+    # The backend owns the short readiness check; this is the upper bound for
+    # a helper that needs a real control channel before it emits PCM.
+    STARTUP_TIMEOUT_SECONDS = 5.0
     # When recognition lags, keep only this much recent far-end audio. Older
     # blocks are dropped so the transcript stays near live speech instead of
     # growing a backlog nobody will wait for.
@@ -417,7 +415,7 @@ class ApplicationStreamTranscriber:
         capture=DEFAULT_CAPTURE,
         level_reporter=None,
     ):
-        require_pipewire()
+        require_stream_capture()
         self.transcriber = Transcriber(
             model_path, model_arch, options=transcriber_options()
         )
@@ -426,6 +424,7 @@ class ApplicationStreamTranscriber:
         self.capture = capture
         self.level_reporter = level_reporter
         self.process = None
+        self._process_pipe_names = {"stdout"}
         self.reader = None
         self.worker = None
         self.audio_queue = queue.Queue(
@@ -488,20 +487,30 @@ class ApplicationStreamTranscriber:
         if self.started:
             return
         self.stream.start()
+        process_options = self.tap.process_options()
+        self._process_pipe_names = {
+            "stdout",
+            *(name for name in process_options if name in {"stdin", "stderr"}),
+        }
         self.process = subprocess.Popen(
             self.tap.command(self.capture.samplerate),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            **process_options,
             # Tagged so a recorder this session leaves behind can be recognized
             # and swept by the next one, whatever it ends up parented to.
             env=tagged_environment(),
         )
-        time.sleep(self.STARTUP_GRACE_SECONDS)
-        if self.process.poll() is not None:
+        startup_error = self.tap.wait_ready(
+            self.process, timeout=self.STARTUP_TIMEOUT_SECONDS
+        )
+        if startup_error is not None:
+            self._stop_process()
             self.stream.stop()
             raise RuntimeError(
-                f"Could not capture the audio of {self.tap.application!r}."
+                f"Could not capture the audio of {self.tap.application!r}: "
+                f"{startup_error}."
             )
+        self.tap.attach(self.process)
         self.tap.start()
         self.worker = threading.Thread(
             target=self._process_audio,
@@ -538,9 +547,30 @@ class ApplicationStreamTranscriber:
         self.stream.stop()
         self.started = False
 
+    def _stop_process(self):
+        """Terminate a helper that failed before the capture threads started."""
+        if self.process is None or self.process.poll() is not None:
+            self._close_process_pipes()
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
+        self._close_process_pipes()
+
+    def _close_process_pipes(self):
+        """Close every stdio pipe requested for the helper process."""
+        if self.process is None:
+            return
+        for name in self._process_pipe_names:
+            pipe = getattr(self.process, name, None)
+            if pipe is not None:
+                pipe.close()
+
     def close(self):
         self.stop()
-        if self.process is not None and self.process.stdout is not None:
-            self.process.stdout.close()
+        self._close_process_pipes()
         self.stream.close()
         self.transcriber.close()

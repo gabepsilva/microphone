@@ -12,6 +12,8 @@ import signal
 
 import pytest
 
+import tagalong.session as session
+from tagalong import session_darwin, session_proc
 from tagalong.session import (
     SESSION_MARKER,
     is_running,
@@ -21,6 +23,38 @@ from tagalong.session import (
     sweep_orphans,
     tagged_environment,
 )
+
+
+@pytest.fixture(autouse=True)
+def use_proc_session_backend(monkeypatch):
+    """Run the Linux ``/proc`` tests against their explicit backend."""
+    monkeypatch.setattr(session, "_DEFAULT_PLATFORM", "linux")
+
+
+def test_the_session_selector_is_injectable():
+    assert session.default_session_backend("linux") is session_proc
+    assert session.default_session_backend("darwin") is session_darwin
+
+
+def test_the_unimplemented_darwin_session_fails_closed():
+    with pytest.raises(RuntimeError, match="Darwin process identity"):
+        session_darwin.session_of(7)
+    with pytest.raises(RuntimeError, match="Darwin process identity"):
+        session_darwin.started_here(7)
+    assert session_darwin.orphans() == []
+    assert session_darwin.sweep_orphans() == 0
+
+
+def test_the_proc_backend_reports_a_missing_process():
+    def refuse(_pid, _signal):
+        raise ProcessLookupError
+
+    assert session_proc.is_running(4242, kill=refuse) is False
+    assert session_proc.is_running(os.getpid()) is True
+
+
+def test_the_common_session_port_accepts_default_backend_arguments():
+    assert session.orphans(own_pid=os.getpid(), running=lambda _pid: True) == []
 
 
 def fake_proc(tmp_path, processes):
