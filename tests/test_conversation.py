@@ -8,8 +8,10 @@ dispatch is exercised against the shapes it will actually see.
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import time
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -482,6 +484,52 @@ class FakeTurn:
 
     def interrupt(self):
         self.interrupted += 1
+
+
+class StreamTimingHarness:
+    def __init__(self):
+        self.now = 0.0
+        self.first_displayed = threading.Event()
+        self.second_displayed = threading.Event()
+        self.done_waiting = threading.Event()
+        self.allow_second = threading.Event()
+        self.allow_done = threading.Event()
+        self.notification_times: list[float] = []
+        self.wait_calls = 0
+
+    def clock(self):
+        return self.now
+
+    def wait(self, notifications, deadline):
+        self.wait_calls += 1
+        if self.wait_calls == 3:
+            self.done_waiting.set()
+            assert self.allow_done.wait(WAIT_SECONDS)
+            if self.clock() >= deadline:
+                raise queue.Empty
+        return notifications.get(timeout=max(0.0, deadline - self.clock()))
+
+    def record_delta(self, original, text):
+        original(text)
+        if text == "Still ":
+            self.first_displayed.set()
+        elif text == "working.":
+            self.second_displayed.set()
+
+    def advance_between_notifications(self):
+        assert self.first_displayed.wait(WAIT_SECONDS)
+        self.now += 0.08
+        self.allow_second.set()
+        assert self.second_displayed.wait(WAIT_SECONDS)
+        assert self.done_waiting.wait(WAIT_SECONDS)
+        self.now += 0.08
+        self.allow_done.set()
+
+
+class RecordingNotificationQueue:
+    def get(self, timeout):
+        self.timeout = timeout
+        return "done", object()
 
 
 class FakeThread:
@@ -1764,17 +1812,33 @@ def test_a_silent_stream_trips_the_bound_and_forks(
 def test_a_slow_but_ticking_stream_does_not_fork(
     monkeypatch, quiet_conversation
 ) -> None:
-    """Silence bound is a gap bound, not a total-duration bound."""
-    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", 0.12)
+    """Each notification resets the bound, even when the whole turn is longer."""
+    bound = 0.12
+    monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", bound)
     conversation = quiet_conversation
     conversation.warmup_pending = False
+    timing = StreamTimingHarness()
+    conversation._clock = timing.clock
+    conversation._wait_for_stream_notification = timing.wait
+
+    original_delta = conversation.fake_display.codex_delta
+    conversation.fake_display.codex_delta = lambda text: timing.record_delta(
+        original_delta, text
+    )
+    coordinator = threading.Thread(
+        target=timing.advance_between_notifications, daemon=True
+    )
+    coordinator.start()
 
     class TickingTurn(FakeTurn):
         def stream(self):
+            timing.notification_times.append(timing.clock())
             yield delta("Still ")
-            time.sleep(0.05)
+            assert timing.allow_second.wait(WAIT_SECONDS)
+            timing.notification_times.append(timing.clock())
             yield delta("working.")
-            time.sleep(0.05)
+            assert timing.allow_done.wait(WAIT_SECONDS)
+            timing.notification_times.append(timing.clock())
             yield turn_completed()
 
     conversation.thread.next_turn = TickingTurn()
@@ -1782,11 +1846,34 @@ def test_a_slow_but_ticking_stream_does_not_fork(
     queued = conversation.requests.get(timeout=WAIT_SECONDS)
 
     conversation._run_codex(queued)
+    coordinator.join(timeout=WAIT_SECONDS)
 
     assert conversation.fake_codex.forked_from is None
     assert conversation.thread.id == "thread-1"
     assert ("codex_delta", "Still ") in conversation.fake_display.calls
     assert ("codex_delta", "working.") in conversation.fake_display.calls
+    assert not coordinator.is_alive()
+    assert timing.notification_times[-1] - timing.notification_times[0] > bound
+    assert all(
+        later - earlier < bound
+        for earlier, later in pairwise(timing.notification_times)
+    )
+
+
+@pytest.mark.parametrize(
+    ("now", "deadline", "expected_timeout"),
+    [(2.5, 3.0, 0.5), (3.5, 3.0, 0.0)],
+)
+def test_stream_wait_uses_remaining_deadline(
+    quiet_conversation, now, deadline, expected_timeout
+) -> None:
+    notifications = RecordingNotificationQueue()
+    quiet_conversation._clock = lambda: now
+
+    kind, _ = quiet_conversation._wait_for_stream_notification(notifications, deadline)
+
+    assert kind == "done"
+    assert notifications.timeout == expected_timeout
 
 
 def test_recovery_fork_failure_uses_the_existing_error_path(

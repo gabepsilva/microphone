@@ -393,6 +393,7 @@ class CodexConversation:
         settings: CodexSettings,
         transcript_display: CodexPresentation,
         tts=None,
+        clock=time.monotonic,
     ):
         load_codex_sdk()
         self.sandbox = Sandbox(settings.sandbox)
@@ -401,6 +402,7 @@ class CodexConversation:
         self.service_tier = settings.service_tier
         self.transcript_display = transcript_display
         self.tts = tts
+        self._clock = clock
         self.requests = queue.Queue()
         self.context_lock = threading.Lock()
         self.settings_lock = threading.Lock()
@@ -876,16 +878,20 @@ class CodexConversation:
             sentence_chunker = SentenceChunker(speech_sink(tts.speak))
         else:
             sentence_chunker = None
-        started = time.monotonic()
+        started = self._clock()
         renderer = CodexTurnRenderer(
             self.transcript_display
             if self._turn_display is None
             else self._turn_display,
             reply_to,
             sentence_chunker,
-            on_first_delta=lambda: self.latency.record(time.monotonic() - started),
+            on_first_delta=lambda: self.latency.record(self._clock() - started),
         )
         return self._consume_stream(turn, renderer)
+
+    def _wait_for_stream_notification(self, notifications, deadline):
+        timeout = max(0.0, deadline - self._clock())
+        return notifications.get(timeout=timeout)
 
     def _consume_stream(self, turn, renderer):
         """Drain ``turn.stream()`` on a helper thread; fork on notification silence.
@@ -916,9 +922,12 @@ class CodexConversation:
         helper = threading.Thread(target=run, name="codex-stream", daemon=True)
         helper.start()
         try:
+            deadline = self._clock() + STREAM_SILENCE_SECONDS
             while True:
                 try:
-                    kind, payload = notifications.get(timeout=STREAM_SILENCE_SECONDS)
+                    kind, payload = self._wait_for_stream_notification(
+                        notifications, deadline
+                    )
                 except queue.Empty:
                     with suppress(Exception):
                         turn.interrupt()
@@ -932,6 +941,7 @@ class CodexConversation:
                 if kind != "event":
                     raise RuntimeError(f"unexpected stream signal: {kind!r}")
                 renderer.handle(payload.payload)
+                deadline = self._clock() + STREAM_SILENCE_SECONDS
         finally:
             # On recovery the helper is still parked in a never-yielding stream;
             # a full-bound join would double the outage. timeout=0 stays inside
