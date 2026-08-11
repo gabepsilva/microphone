@@ -13,7 +13,6 @@ import os
 import shutil
 import subprocess
 import threading
-import time
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -652,17 +651,16 @@ def test_the_darwin_tap_reconciler_writes_json_without_the_ui_lock() -> None:
     control = io.BytesIO()
     tap = streams_coreaudio.StreamTap("Browser", poll=0.001)
     tap.attach(SimpleNamespace(stdin=control))
-    tap.start()
-    try:
-        for _ in range(100):
-            if control.getvalue():
-                break
-            time.sleep(0.001)
-        payload = control.getvalue()
-    finally:
-        tap.stop()
+    tap._send_selection()
+    tap._send_selection()
+    payload = control.getvalue().splitlines()
 
-    assert json.loads(payload.decode()) == {"application": "Browser"}
+    assert [json.loads(line.decode()) for line in payload] == [
+        {"application": "Browser"},
+        {"application": "Browser"},
+    ]
+    tap.stop()
+    assert control.closed
 
 
 def test_the_darwin_tap_reconciler_is_idempotent_and_tolerates_broken_control() -> None:
@@ -683,7 +681,6 @@ def test_the_darwin_tap_reconciler_is_idempotent_and_tolerates_broken_control() 
     tap.control = Broken()
     tap._send_selection()
     tap.control = io.BytesIO()
-    tap._last_sent = "Browser"
     tap._send_selection()
 
 
