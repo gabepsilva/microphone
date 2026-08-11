@@ -1,7 +1,7 @@
 # TagAlong
 
-TagAlong is a Linux desktop assistant that continuously transcribes a
-microphone and an optional PipeWire/PulseAudio output, then presents the
+TagAlong is a Linux and macOS desktop assistant that continuously transcribes
+a microphone and an optional application output, then presents the
 conversation to Codex through its Textual interface.
 
 The assistant you talk to is called **Taga**. Address it by name and it answers;
@@ -39,10 +39,10 @@ starts where the last one left off. Command-line options still override it.
 Muting is deliberately not saved; it is how a session is being used at a
 moment, not how it is configured.
 
-Some runtime features also require operating-system tools: PipeWire
-(`pw-record`, `pw-link`, and `pw-dump`) for capturing the far end, `pactl` for
-naming output sinks, and `ffmpeg`/`ffplay` for spoken responses. They are
-runtime integrations, not Python packages.
+Some runtime features also require operating-system tools: Linux uses PipeWire
+(`pw-record`, `pw-link`, and `pw-dump`) and `pactl` for far-end discovery and
+output naming; both platforms use `ffmpeg`/`ffplay` for spoken responses. They
+are runtime integrations, not Python packages.
 
 Pasting an image into the prompt with `Ctrl-V` reads the OS clipboard: `wl-paste`
 or `xclip` on Linux, and on macOS the system pasteboard through AppleScript —
@@ -120,12 +120,21 @@ the current file and opens a fresh one for the next conversation.
 
 ## Hearing the far end
 
-Audio is captured from one application's own PipeWire playback stream rather
-than from a speaker's monitor. `--audio-stream` names the application — the name
+Audio is captured from one application's own output rather than from a
+speaker's monitor. On Linux, `--audio-stream` names the application — the name
 the desktop shows for it, such as `Chromium` or `ZOOM VoiceEngine` — and the
-session links that application's audio into a capture node of its own while it
-goes on playing to the real speakers, unrouted and unchanged. Nothing has to be
-pointed at a virtual device.
+session links that application's audio into a capture node of its own. On
+macOS 14.2 and newer, the same selection is captured with a private Core Audio
+process tap and aggregate device. In both cases the application keeps playing
+to the real speakers, unrouted and unchanged; nothing has to be pointed at a
+virtual device.
+
+macOS asks for system-audio recording permission the first time a far-end
+selection starts. If permission is unavailable, the selection fails with a
+named capture error while the microphone and the rest of the session remain
+usable. macOS Core Audio owns the private tap and aggregate device inside a
+bounded helper process, so a forced helper exit does not leave a capture device
+for a later session to sweep.
 
 Taga's own speech is a different stream and is never linked, so it cannot be
 transcribed back as the far end. That is a property of the wiring rather than a
@@ -208,15 +217,19 @@ before merging.
 ## Real-environment smoke test
 
 The default suite fakes hardware, processes, and network services so CI stays
-deterministic. On a configured Linux desktop, explicitly exercise those real
+deterministic. On a configured desktop, explicitly exercise those real
 boundaries with:
 
 ```bash
 make smoke-real
 ```
 
-This records a fraction of a second from the default microphone, queries
-PipeWire/PulseAudio outputs and the installed Codex model catalog, and
-synthesizes a short sentence through both Piper and Edge without playing it.
-It may download the default Piper voice and contacts Microsoft's Edge speech
-service. It is intentionally separate from `make ci`.
+On Linux this records a fraction of a second from the default microphone,
+queries PipeWire/PulseAudio outputs, and checks the installed Codex model
+catalog. On macOS it records the microphone, checks Core Audio's process graph,
+and starts a short real process-tap capture when a playing application is
+available. Both platforms synthesize a short sentence through Piper and Edge
+without playing it. The macOS tap requires system-audio permission and a
+currently playing application. The smoke suite may download the default Piper
+voice and contacts Microsoft's Edge speech service; it is intentionally
+separate from `make ci`.

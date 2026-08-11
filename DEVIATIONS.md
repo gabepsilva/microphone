@@ -229,3 +229,18 @@ there is no default that advertises the full catalog. Tests and docs pass
 **Attachment registry.** Remains session-scoped. Same-uid clients share one
 workspace; opaque ids are not a cross-user boundary. Actor-scoped ownership
 waits for a threat model that needs it.
+
+## macOS far-end capture (#152)
+
+macOS does not sweep a Linux-style orphan process list. Core Audio process taps
+and private aggregate devices are owned by the helper process that creates
+them. A forced-kill probe created a private `tagalong_aggregate_<pid>` device,
+killed its owner, and observed no matching device after the owner exited; the
+Darwin `sweep_orphans()` adapter therefore remains an intentional no-op. The
+helper still closes its control pipe and the parent retains the bounded
+terminate/wait/kill fallback.
+
+The macOS smoke path is hardware- and permission-dependent. It is skipped on
+Linux and requires a real playing process plus system-audio permission on
+macOS; deterministic tests cover the selection, readiness, PCM, ancestry, and
+cleanup contracts without faking the Core Audio unit under test.
