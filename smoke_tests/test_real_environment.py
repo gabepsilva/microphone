@@ -114,6 +114,11 @@ def test_core_audio_process_tap_captures_a_real_playing_process() -> None:
         if process is not None and process.poll() is None:
             process.terminate()
             process.wait(timeout=3)
+        if process is not None:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
         if player.poll() is None:
             player.terminate()
             player.wait(timeout=3)
