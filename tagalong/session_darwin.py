@@ -9,8 +9,11 @@ from __future__ import annotations
 
 
 def session_of(_pid, **_kwargs):
-    """macOS cannot identify a helper from its environment yet."""
-    return
+    """Reject process identity checks until the Darwin adapter exists."""
+    raise RuntimeError(
+        "Darwin process identity is not implemented in this build; "
+        "macOS helper ownership requires the next compatibility phase."
+    )
 
 
 def started_here(_pid, **_kwargs):

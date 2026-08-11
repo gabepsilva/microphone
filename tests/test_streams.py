@@ -773,6 +773,23 @@ def test_an_application_is_offered_as_soon_as_it_plays() -> None:
     assert [value for _, value in display.offered[-1]] == ["Brave"]
 
 
+def test_the_refresher_reports_and_stops_after_a_discovery_error(capsys) -> None:
+    display = FakeDisplay()
+
+    def fail():
+        raise RuntimeError("Darwin process identity is unavailable")
+
+    refresher = ApplicationRefresher(display, poll=0, dump=fail)
+    refresher.start()
+    assert refresher.worker is not None
+    refresher.worker.join(timeout=WAIT_SECONDS)
+
+    assert refresher.error is not None
+    assert str(refresher.error) == "Darwin process identity is unavailable"
+    assert "Audio stream discovery stopped" in capsys.readouterr().err
+    refresher.stop()
+
+
 def test_an_application_heard_once_stays_offered_while_it_is_quiet() -> None:
     """A meeting is worth choosing during a pause in it."""
     quiet = [node(1, application="Brave", state="idle", **{"media.name": "Playback"})]

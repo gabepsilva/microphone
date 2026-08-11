@@ -139,6 +139,7 @@ class ApplicationRefresher:
         self.dump = dump
         self.stopping = threading.Event()
         self.worker = None
+        self.error = None
         self.offered = []
         self.heard = set()
 
@@ -167,7 +168,16 @@ class ApplicationRefresher:
 
     def _serve(self):
         while True:
-            self.refresh()
+            try:
+                self.refresh()
+            except RuntimeError as error:
+                self.error = error
+                print(
+                    f"Audio stream discovery stopped: {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
             if self.stopping.wait(self.poll):
                 return
 

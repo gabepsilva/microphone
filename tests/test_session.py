@@ -37,7 +37,8 @@ def test_the_session_selector_is_injectable():
 
 
 def test_the_unimplemented_darwin_session_fails_closed():
-    assert session_darwin.session_of(7) is None
+    with pytest.raises(RuntimeError, match="Darwin process identity"):
+        session_darwin.session_of(7)
     with pytest.raises(RuntimeError, match="Darwin process identity"):
         session_darwin.started_here(7)
     assert session_darwin.orphans() == []
