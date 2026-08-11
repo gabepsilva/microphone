@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 
 from .domain import RESPONSE_POLICIES, resolve_response_policy
 from .streams import graph, offered_applications
@@ -123,9 +124,20 @@ def choose_microphone(requested=None):
     )
 
 
+def sink_routing_available(platform=None):
+    """Whether this platform offers per-application speech output at all.
+
+    macOS has no analogue of a PulseAudio sink to name: routing one
+    application's output lives in the system UI, not in an environment
+    variable a player can be started with. Reporting that plainly is better
+    than inventing Core Audio default-device switching nobody asked for.
+    """
+    return (sys.platform if platform is None else platform) != "darwin"
+
+
 def audio_outputs():
     """Return PulseAudio/PipeWire sinks and their corresponding monitors."""
-    if shutil.which("pactl") is None:
+    if not sink_routing_available() or shutil.which("pactl") is None:
         return []
     try:
         result = subprocess.run(
@@ -184,6 +196,12 @@ def choose_tts_output(requested=None):
     """
     if requested is None:
         return None
+    if not sink_routing_available():
+        raise RuntimeError(
+            "Speech output selection is unavailable on macOS; it has no "
+            "per-application audio sink to name. Choose the output device in "
+            "System Settings > Sound instead."
+        )
     return select_tts_output(audio_outputs(), requested)
 
 

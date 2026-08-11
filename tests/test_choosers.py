@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tagalong import choosers
 from tagalong.choosers import (
     audio_outputs,
     choose_audio_stream,
@@ -31,6 +32,12 @@ from tagalong.choosers import (
 )
 from tagalong.domain import RESPONSE_POLICIES
 from tagalong.streams import ApplicationStream, stream_label
+
+
+@pytest.fixture(autouse=True)
+def use_sink_routing_platform(monkeypatch):
+    """These sinks are a PulseAudio concept; pin Linux so a Mac runs them too."""
+    monkeypatch.setattr(choosers.sys, "platform", "linux")
 
 
 def answer_with(monkeypatch, answers):
@@ -459,3 +466,18 @@ def test_every_policy_is_reachable_by_name_and_by_menu_number(name) -> None:
     # numbering cannot drift away from the mapping it is generated from.
     assert choose_taga_after(name) is policy
     assert choose_taga_after(number) is policy
+
+
+def test_macos_reports_that_it_has_no_speech_sink_to_name(monkeypatch) -> None:
+    """A named sink is a Linux concept; saying so beats "was not found"."""
+    monkeypatch.setattr(choosers.sys, "platform", "darwin")
+
+    assert choosers.audio_outputs() == []
+    assert choosers.choose_tts_output(None) is None
+    with pytest.raises(RuntimeError, match="unavailable on macOS"):
+        choosers.choose_tts_output("Speakers")
+
+
+def test_sink_routing_is_available_off_darwin() -> None:
+    assert choosers.sink_routing_available(platform="linux") is True
+    assert choosers.sink_routing_available(platform="darwin") is False

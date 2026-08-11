@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from openai_codex import Sandbox
 
+from tagalong import choosers as choosers_module
 from tagalong.capture import SoundActivityReporter
 from tagalong.catalog import CodexModelOption, probe_codex_models
 from tagalong.choosers import audio_outputs
@@ -38,6 +39,8 @@ def test_cli_no_longer_offers_the_ansi_ui_switch(monkeypatch, capsys) -> None:
 
 
 def test_audio_outputs_parses_pactl_json(monkeypatch) -> None:
+    # pactl sinks are a Linux concept; pin it so this runs on a Mac too (#152).
+    monkeypatch.setattr(choosers_module.sys, "platform", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pactl")
     payload = [
         {
