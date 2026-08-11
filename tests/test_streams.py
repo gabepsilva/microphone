@@ -418,6 +418,16 @@ def test_the_platform_selector_is_injectable() -> None:
     assert default_stream_backend("darwin").__name__.endswith("streams_coreaudio")
 
 
+def test_the_common_port_delegates_to_the_selected_backend(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert streams.graph(run=lambda *_a, **_k: SimpleNamespace(stdout="[]")) == []
+    assert streams.application_streams([]) == []
+    assert streams.applications([]) == []
+    assert streams.offered_applications([]) == []
+    assert streams.require_stream_capture() is None
+
+
 def test_the_unimplemented_darwin_backend_fails_by_name() -> None:
     assert streams_coreaudio.graph() == []
     assert streams_coreaudio.application_streams([]) == []
@@ -435,6 +445,29 @@ def test_pipewire_tap_declares_the_descriptor_contract() -> None:
         "stdin": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
+
+
+def test_pipewire_tap_reports_startup_and_has_no_attach_channel() -> None:
+    class Running:
+        @staticmethod
+        def poll():
+            return None
+
+    class Exited:
+        @staticmethod
+        def poll():
+            return 7
+
+    tap = StreamTap("Chromium")
+
+    assert tap.wait_ready(Running(), timeout=0) is None
+    assert tap.wait_ready(Exited(), timeout=0) == "recorder exited with code 7"
+    assert tap.attach(object()) is None
+
+
+def test_the_darwin_placeholder_rejects_a_tap_command() -> None:
+    with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+        streams_coreaudio.StreamTap().command(16000)
 
 
 def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:

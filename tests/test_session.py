@@ -43,6 +43,18 @@ def test_the_unimplemented_darwin_session_fails_closed():
     assert session_darwin.sweep_orphans() == 0
 
 
+def test_the_proc_backend_reports_a_missing_process():
+    def refuse(_pid, _signal):
+        raise ProcessLookupError
+
+    assert session_proc.is_running(4242, kill=refuse) is False
+    assert session_proc.is_running(os.getpid()) is True
+
+
+def test_the_common_session_port_accepts_default_backend_arguments():
+    assert session.orphans(own_pid=os.getpid(), running=lambda _pid: True) == []
+
+
 def fake_proc(tmp_path, processes):
     """Build a /proc holding one environ file per process."""
     for pid, environment in processes.items():

@@ -559,6 +559,8 @@ class ApplicationStreamTranscriber:
     def _stop_process(self):
         """Terminate a helper that failed before the capture threads started."""
         if self.process is None or self.process.poll() is not None:
+            if self.process is not None and self.process.stdout is not None:
+                self.process.stdout.close()
             return
         self.process.terminate()
         try:
@@ -566,6 +568,8 @@ class ApplicationStreamTranscriber:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=2)
+        if self.process.stdout is not None:
+            self.process.stdout.close()
 
     def close(self):
         self.stop()

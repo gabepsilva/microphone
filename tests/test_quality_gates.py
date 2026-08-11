@@ -165,6 +165,19 @@ def test_coverage_gate_rejects_a_file_below_its_floor(tmp_path, monkeypatch) -> 
     assert gate.main() == 1
 
 
+def test_coverage_gate_rejects_a_moved_backend_below_its_explicit_floor(
+    tmp_path, monkeypatch
+) -> None:
+    """A moved backend must not silently fall to the new-file floor."""
+    gate = _load_gate("coverage_gate")
+    report = tmp_path / "coverage.json"
+    _write_coverage(report, {"tagalong/streams_pipewire.py": 60.0})
+    monkeypatch.setattr(gate, "COVERAGE_PATH", report)
+    monkeypatch.setattr(gate, "FLOORS", {"tagalong/streams_pipewire.py": 100.0})
+
+    assert gate.main() == 1
+
+
 def test_coverage_gate_rejects_an_untested_new_module(tmp_path, monkeypatch) -> None:
     """A new file must not inherit the monolith's low recorded floor."""
     gate = _load_gate("coverage_gate")

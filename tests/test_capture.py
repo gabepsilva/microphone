@@ -650,7 +650,7 @@ def test_the_tap_follows_the_application_only_once_the_recorder_is_up(
 def test_a_recorder_that_exits_immediately_leaves_the_tap_unstarted(capture) -> None:
     monitor = capture(exit_code=1)
 
-    with pytest.raises(RuntimeError, match="Could not capture the audio"):
+    with pytest.raises(RuntimeError, match="recorder exited with code 1"):
         monitor.start()
 
     assert "start" not in monitor.tap.events
@@ -759,6 +759,7 @@ def test_a_helper_startup_error_is_named_and_stops_the_stream(capture) -> None:
         monitor.start()
 
     assert monitor.fake_process.terminated
+    assert monitor.fake_process.stdout.closed
     assert monitor.stream.events == ["start", "stop"]
 
 
