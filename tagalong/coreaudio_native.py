@@ -48,9 +48,7 @@ class CoreAudioError(RuntimeError):
 def framework():
     """Load Core Audio lazily so Linux can import the process port."""
     if sys.platform != "darwin":
-        raise RuntimeError(
-            "Core Audio process-tap capture requires macOS 14.2 or newer."
-        )
+        raise RuntimeError("Core Audio process-tap capture requires macOS 26 or newer.")
     library = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
     library.AudioObjectGetPropertyDataSize.argtypes = [
         ctypes.c_uint32,

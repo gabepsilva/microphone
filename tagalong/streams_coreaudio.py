@@ -24,7 +24,11 @@ from .streams import ApplicationStream
 CHANNELS = 2
 POLL_SECONDS = 1.0
 HELPER_MODULE = "tagalong.coreaudio_helper"
-MINIMUM_MACOS = (14, 2)
+# Apple's process-tap API is available from macOS 14.2. This floor is higher on
+# purpose: 26.x is the only version this backend has been run on, and the gate
+# claims what was measured rather than what the API docs allow. Lower it to
+# (14, 2) once a real 14.x host has passed the smoke probe in smoke_tests.
+MINIMUM_MACOS = (26, 0)
 READY = "READY"
 
 
@@ -125,13 +129,12 @@ def _macos_version() -> tuple[int, ...]:
 def require_stream_capture():
     """Fail at point of use with the platform's actual capability message."""
     if sys.platform != "darwin":
-        raise RuntimeError(
-            "Core Audio process-tap capture requires macOS 14.2 or newer."
-        )
+        raise RuntimeError("Core Audio process-tap capture requires macOS 26 or newer.")
     if _macos_version() < MINIMUM_MACOS:
         raise RuntimeError(
-            "Core Audio process-tap capture requires macOS 14.2 or newer; "
-            f"this host reports macOS {platform.mac_ver()[0] or 'an unknown version'}."
+            "Core Audio process-tap capture is only verified on macOS 26 or "
+            "newer; this host reports macOS "
+            f"{platform.mac_ver()[0] or 'an unknown version'}."
         )
     try:
         _framework()

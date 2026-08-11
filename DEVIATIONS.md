@@ -244,3 +244,19 @@ The macOS smoke path is hardware- and permission-dependent. It is skipped on
 Linux and requires a real playing process plus system-audio permission on
 macOS; deterministic tests cover the selection, readiness, PCM, ancestry, and
 cleanup contracts without faking the Core Audio unit under test.
+
+**The support floor is macOS 26, not the 14.2 the API allows.** Apple ships
+process taps from macOS 14.2, and this backend is written against that API, so
+14.2 is what the code *could* claim. Every measurement behind it — discovery,
+tap creation, aggregate device, IOProc continuity under Moonshine, TCC grant
+and denial, forced-kill cleanup — was taken on macOS 26.5.2 (25F84), arm64. No
+host between 14.2 and 25.x has ever run it, and the hosted `macos-15` lane is
+portability coverage rather than hardware acceptance: it has no audio device
+and no permission grant, so it cannot exercise the tap at all.
+
+`MINIMUM_MACOS = (26, 0)` therefore records what was verified rather than what
+the documentation permits. Hosts below it are refused by name at the point of
+far-end selection and keep microphone capture, TTS, transport, and the rest of
+the app. Lowering the floor is a one-line change gated on evidence, not on
+argument: run `smoke_tests/test_real_environment.py::test_core_audio_process_tap_captures_a_real_playing_process`
+on a host in the range being claimed, and lower it to that version.
