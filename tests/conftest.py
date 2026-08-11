@@ -8,13 +8,25 @@ so it stays behind a session fixture.
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture
+def tmp_path():
+    """Use a short, private path that fits macOS ``sockaddr_un.sun_path``."""
+    path = Path(tempfile.mkdtemp(prefix="tl-test-", dir="/tmp"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path)
 
 
 @pytest.fixture(scope="session")

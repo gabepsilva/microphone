@@ -4,13 +4,13 @@ SEMGREP_IMAGE := semgrep/semgrep@sha256:bdf7013b2c3634a487671158da77c554f5317423
 PYTHON_SOURCES := tagalong.py tagalong
 
 # Parallelize independent gate recipes by default. Hosted CI already splits the
-# same groups across jobs; this is the local equivalent. A command-line `-jN`
-# (including `-j1` for serial logs) overrides this default. Linux-only via
-# nproc — other platforms must pass -jN explicitly rather than get a silent
-# wrong guess.
-CPU_CORES := $(shell nproc 2>/dev/null)
+# same groups across jobs; this is the local equivalent. Set `JOBS=N`
+# (`JOBS=1` for serial logs) to override this default consistently across the
+# older GNU Make shipped by macOS and current Linux Make. Prefer nproc on Linux
+# and fall back to POSIX getconf (available on macOS).
+CPU_CORES := $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)
 ifeq ($(CPU_CORES),)
-$(error nproc unavailable; TagAlong's parallel make defaults expect Linux. Pass -jN explicitly.)
+$(error unable to detect CPU count; pass -jN explicitly.)
 endif
 # Locally, leave a fifth of the machine to everything else: a gate run that
 # takes every core makes the desktop it is running on unusable. Floored so this
@@ -24,7 +24,8 @@ CI_JOBS := $(shell jobs=$$(( $(CPU_CORES) * 4 / 5 )); test "$$jobs" -ge 1 || job
 else
 CI_JOBS := $(CPU_CORES)
 endif
-MAKEFLAGS += -j$(CI_JOBS)
+JOBS ?= $(CI_JOBS)
+MAKEFLAGS += -j$(JOBS)
 
 # Keep the local gate and its hosted lanes defined from the same lists. The
 # orchestration gate rejects a dropped target or a hosted lane that stops
@@ -49,7 +50,7 @@ DIFF_COVERAGE_MIN ?= 90
 # instead of relying on a reviewer noticing the diff.
 RATCHET_BASE ?= origin/master
 
-.PHONY: format format-check lint types test test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test electron-coverage verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted hooks hook-check smoke-real start start-tui start-ui start-ui-tui
+.PHONY: format format-check lint types test test-coverage macos-test-coverage diff-coverage verify-regression mutation test-integrity context-budget worker-threads ratchet semgrep security-static secrets security shellcheck workflows orchestration catalog electron-actions electron-actions-write electron-install electron-typecheck electron-lint electron-format-check electron-test electron-coverage verify-quick verify-coverage verify-mutation verify-electron verify-security verify ci ci-hosted ci-macos hooks hook-check smoke-real start start-tui start-ui start-ui-tui
 
 format:
 	uv run ruff format .
@@ -70,6 +71,13 @@ test:
 
 test-coverage:
 	uv run pytest -n $(CI_JOBS) --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
+	uv run python tools/coverage_gate.py
+
+# The Semgrep planted-violation tests execute the digest-pinned Linux
+# container and stay in the Linux coverage lane. This lane still measures all
+# application code while leaving container policy to verify-security.
+macos-test-coverage:
+	uv run pytest -n $(CI_JOBS) -m "not container_security" --cov --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
 	uv run python tools/coverage_gate.py
 
 diff-coverage:
@@ -182,6 +190,8 @@ verify: verify-quick verify-coverage verify-mutation verify-electron
 ci: verify security
 
 ci-hosted: verify verify-security
+
+ci-macos: verify-quick macos-test-coverage verify-electron
 
 hooks:
 	uv run pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push

@@ -55,6 +55,7 @@ class FakeStream:
         self.listeners: list[object] = []
         self.events: list[str] = []
         self.received = threading.Event()
+        self.failed = threading.Event()
         self.failure = None
 
     def add_listener(self, listener):
@@ -62,6 +63,7 @@ class FakeStream:
 
     def add_audio(self, samples, samplerate):
         if self.failure is not None:
+            self.failed.set()
             raise self.failure
         self.audio.append((samples, samplerate))
         self.received.set()
@@ -768,6 +770,7 @@ def test_a_transcription_failure_is_reported_without_ending_capture(
     monitor.stream.failure = RuntimeError("model is busy")
     monitor.start()
     try:
+        assert monitor.stream.failed.wait(WAIT_SECONDS)
         monitor.stop()
 
         assert "Audio transcription error: model is busy" in capsys.readouterr().err
