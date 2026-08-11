@@ -2,7 +2,12 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it } from "bun:test";
 import type net from "node:net";
 
-import { SessionEvents, TagAlongClient, socketPath } from "../src/client";
+import {
+  SessionEvents,
+  TagAlongClient,
+  darwinRuntimeRoot,
+  socketPath,
+} from "../src/client";
 import {
   APP_STATE_KEYS,
   applyStateFragment,
@@ -134,10 +139,47 @@ async function waitForSocket(
 
 describe("socketPath", () => {
   it("joins XDG_RUNTIME_DIR and refuses a missing runtime dir", () => {
-    expect(socketPath({ XDG_RUNTIME_DIR: "/run/user/1000" })).toBe(
+    expect(socketPath({ XDG_RUNTIME_DIR: "/run/user/1000" }, "linux")).toBe(
       "/run/user/1000/tagalong/tagalong.sock",
     );
-    expect(() => socketPath({})).toThrow("XDG_RUNTIME_DIR is unset");
+    expect(() => socketPath({}, "linux")).toThrow("XDG_RUNTIME_DIR is unset");
+  });
+
+  it("asks macOS for its own runtime dir instead of refusing", () => {
+    // macOS never sets XDG_RUNTIME_DIR, so refusing would mean no socket at all.
+    expect(socketPath({}, "darwin", () => "/var/folders/x")).toBe(
+      "/var/folders/x/tagalong/tagalong.sock",
+    );
+  });
+
+  it("prefers an explicit XDG_RUNTIME_DIR even on macOS", () => {
+    const unreachable = () => {
+      throw new Error("darwin root consulted while XDG_RUNTIME_DIR was set");
+    };
+    expect(
+      socketPath({ XDG_RUNTIME_DIR: "/run/user/1000" }, "darwin", unreachable),
+    ).toBe("/run/user/1000/tagalong/tagalong.sock");
+  });
+});
+
+describe("darwinRuntimeRoot", () => {
+  it("reads the kernel value rather than $TMPDIR, and strips the trailing slash", () => {
+    // $TMPDIR names the same directory but any caller can repoint it; this
+    // value is the socket's parent, so it has to come from the OS.
+    const calls: Array<[string, string[]]> = [];
+    const root = darwinRuntimeRoot((command, args) => {
+      calls.push([command, args]);
+      return "/var/folders/br/abc/T/\n";
+    });
+
+    expect(root).toBe("/var/folders/br/abc/T");
+    expect(calls).toEqual([["getconf", ["DARWIN_USER_TEMP_DIR"]]]);
+  });
+
+  it("refuses an empty answer rather than joining onto nothing", () => {
+    expect(() => darwinRuntimeRoot(() => "  \n")).toThrow(
+      "macOS reported no per-user runtime directory",
+    );
   });
 });
 

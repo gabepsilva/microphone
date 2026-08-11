@@ -25,11 +25,15 @@ DEV="${DEV:-1}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ELECTRON_DIR="$REPO_ROOT/electron"
 
-# Linux provides XDG_RUNTIME_DIR. macOS instead provides a randomized,
-# per-user TMPDIR (normally mode 0700), which has the security property needed
-# by the local socket. Export it so Python and Electron resolve the same path.
+# Linux provides XDG_RUNTIME_DIR. macOS never does, and is asked for its own
+# per-user 0700 directory instead. Deliberately getconf rather than $TMPDIR:
+# both name the same directory, but $TMPDIR is an environment variable a caller
+# can repoint, and this value is exported as the socket's parent. Mirrors
+# _darwin_runtime_root() in tagalong/transport.py and darwinRuntimeRoot() in
+# electron/src/client.ts -- one rule, three runtimes.
 if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ "$(uname -s)" = "Darwin" ]; then
-    XDG_RUNTIME_DIR="${TMPDIR:?macOS did not provide TMPDIR}"
+    XDG_RUNTIME_DIR="$(getconf DARWIN_USER_TEMP_DIR)"
+    : "${XDG_RUNTIME_DIR:?macOS reported no per-user runtime directory}"
     XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR%/}"
     export XDG_RUNTIME_DIR
 fi

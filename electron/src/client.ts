@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 
@@ -10,10 +11,38 @@ import {
   type TranscriptRow,
 } from "./state";
 
-export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
-  const runtime = env.XDG_RUNTIME_DIR;
+// Mirrors tagalong/transport.py runtime_dir(). macOS never sets
+// XDG_RUNTIME_DIR, so it is asked for its own per-user 0700 directory. Node
+// cannot call confstr, and $TMPDIR / os.tmpdir() name the same directory but
+// are caller-repointable, which is the hole the throw below exists to keep
+// shut. getconf reads the same kernel value the Python side does.
+export type RunCommand = (
+  command: string,
+  args: string[],
+  options: { encoding: "utf8" },
+) => string;
+
+export function darwinRuntimeRoot(
+  run: RunCommand = execFileSync as RunCommand,
+): string {
+  const root = run("getconf", ["DARWIN_USER_TEMP_DIR"], { encoding: "utf8" }).trim();
+  if (!root) {
+    throw new Error("macOS reported no per-user runtime directory");
+  }
+  return root.replace(/\/+$/, "");
+}
+
+export function socketPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  darwinRoot: () => string = darwinRuntimeRoot,
+): string {
+  let runtime = env.XDG_RUNTIME_DIR;
   if (!runtime) {
-    throw new Error("XDG_RUNTIME_DIR is unset; refusing a /tmp socket");
+    if (platform !== "darwin") {
+      throw new Error("XDG_RUNTIME_DIR is unset; refusing a /tmp socket");
+    }
+    runtime = darwinRoot();
   }
   return path.join(runtime, "tagalong", "tagalong.sock");
 }

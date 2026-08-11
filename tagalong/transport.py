@@ -7,16 +7,21 @@ and every accepted connection is checked with kernel-supplied peer credentials
 so a peer from another uid never speaks to the session.
 
 There is no ``/tmp`` fallback. If ``XDG_RUNTIME_DIR`` is unset the server
-refuses to start, rather than listen somewhere any local user can connect.
+refuses to start, rather than listen somewhere any local user can connect. The
+one exception is macOS, which never sets it and is asked for its own per-user
+runtime directory instead — from the kernel, not from ``$TMPDIR``.
 """
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import json
 import math
 import os
 import socket
 import struct
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
@@ -82,12 +87,46 @@ class _Session:
     subscribed: Any = None
 
 
-def runtime_dir(environ: Mapping[str, str] | None = None) -> Path:
-    """``$XDG_RUNTIME_DIR/tagalong`` — missing XDG is a hard error, not ``/tmp``."""
+# macOS never sets XDG_RUNTIME_DIR. Its per-user temp directory has exactly the
+# property this module needs — mode 0700, owned by the user — but it has to come
+# from the OS. $TMPDIR names the same directory and is not a substitute: it is an
+# environment variable any caller can repoint, which is the hole the Linux branch
+# below refuses to open. confstr answers from the kernel instead, and Python does
+# not expose this name in os.confstr_names, so it takes a ctypes call.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+
+
+def _darwin_runtime_root() -> str:
+    """Ask libc for the per-user runtime directory macOS guarantees is ``0700``."""
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.confstr.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]
+    libc.confstr.restype = ctypes.c_size_t
+    size = libc.confstr(_CS_DARWIN_USER_TEMP_DIR, None, 0)
+    if not size:
+        raise TransportError("macOS reported no per-user runtime directory")
+    buffer = ctypes.create_string_buffer(size)
+    if not libc.confstr(_CS_DARWIN_USER_TEMP_DIR, buffer, size):
+        raise TransportError("macOS reported no per-user runtime directory")
+    return buffer.value.decode()
+
+
+def runtime_dir(
+    environ: Mapping[str, str] | None = None,
+    platform: str | None = None,
+    darwin_root=_darwin_runtime_root,
+) -> Path:
+    """The per-user runtime directory, never ``/tmp``.
+
+    ``$XDG_RUNTIME_DIR`` when the platform sets one. macOS does not, so it is
+    asked for its own equivalent rather than being refused; every other
+    platform without XDG is still a hard error.
+    """
     env = os.environ if environ is None else environ
     root = env.get("XDG_RUNTIME_DIR")
     if not root:
-        raise TransportError("XDG_RUNTIME_DIR is unset; refusing a /tmp socket")
+        if (sys.platform if platform is None else platform) != "darwin":
+            raise TransportError("XDG_RUNTIME_DIR is unset; refusing a /tmp socket")
+        root = darwin_root()
     return Path(root) / "tagalong"
 
 

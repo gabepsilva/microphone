@@ -102,7 +102,80 @@ def wired(
 
 def test_runtime_dir_refuses_a_tmp_fallback() -> None:
     with pytest.raises(TransportError, match="XDG_RUNTIME_DIR"):
-        runtime_dir({})
+        runtime_dir({}, platform="linux")
+
+
+def test_macos_gets_its_own_runtime_dir_rather_than_a_refusal() -> None:
+    """macOS never sets XDG, so refusing it would mean no socket at all."""
+    directory = runtime_dir({}, platform="darwin", darwin_root=lambda: "/var/folders/x")
+
+    assert directory == Path("/var/folders/x/tagalong")
+
+
+def test_an_explicit_xdg_wins_on_every_platform(tmp_path: Path) -> None:
+    """The Darwin branch is a fallback for a missing value, not an override."""
+
+    def unreachable() -> str:  # pragma: no cover - asserted never to run
+        raise AssertionError("darwin_root consulted while XDG_RUNTIME_DIR was set")
+
+    directory = runtime_dir(
+        {"XDG_RUNTIME_DIR": str(tmp_path)},
+        platform="darwin",
+        darwin_root=unreachable,
+    )
+
+    assert directory == tmp_path / "tagalong"
+
+
+def test_the_darwin_runtime_root_reads_confstr_not_the_environment(monkeypatch) -> None:
+    """$TMPDIR names the same directory but any caller can repoint it."""
+    calls = []
+
+    class Confstr:
+        argtypes = None
+        restype = None
+
+        def __call__(self, name, buffer, size):
+            calls.append((name, buffer, size))
+            if buffer is None:
+                return 15
+            buffer.value = b"/var/folders/y"
+            return 15
+
+    class Libc:
+        confstr = Confstr()
+
+    libc = Libc()
+    monkeypatch.setattr(transport.ctypes, "CDLL", lambda _path, **_k: libc)
+
+    assert transport._darwin_runtime_root() == "/var/folders/y"
+    assert calls[0][0] == transport._CS_DARWIN_USER_TEMP_DIR
+    assert calls[0][1] is None
+    assert calls[0][2] == 0
+    assert Libc.confstr.restype is transport.ctypes.c_size_t
+
+
+@pytest.mark.parametrize("sizes", [(0, 0), (12, 0)])
+def test_a_confstr_that_reports_nothing_is_an_error_not_a_tmp_socket(
+    monkeypatch, sizes
+) -> None:
+    """A silent failure here would fall back to somewhere unowned."""
+    answers = iter(sizes)
+
+    class Confstr:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _name, _buffer, _size):
+            return next(answers)
+
+    class Libc:
+        confstr = Confstr()
+
+    monkeypatch.setattr(transport.ctypes, "CDLL", lambda _path, **_k: Libc())
+
+    with pytest.raises(TransportError, match="no per-user runtime directory"):
+        transport._darwin_runtime_root()
 
 
 def test_runtime_dir_and_socket_path_live_under_xdg(tmp_path: Path) -> None:
