@@ -507,6 +507,10 @@ class StreamTimingHarness:
             assert self.allow_done.wait(WAIT_SECONDS)
             if self.clock() >= deadline:
                 raise queue.Empty
+        # This mirrors CodexConversation._wait_for_stream_notification so the
+        # harness can advance its fake clock while the real queue is blocked.
+        # test_stream_wait_uses_remaining_deadline pins that arithmetic on the
+        # production helper directly.
         return notifications.get(timeout=max(0.0, deadline - self.clock()))
 
     def record_delta(self, original, text):
@@ -1422,7 +1426,7 @@ def test_a_turn_that_ends_on_a_command_speaks_its_text_exactly_once() -> None:
 
 
 @pytest.fixture
-def quiet_conversation(monkeypatch):
+def build_quiet_conversation(monkeypatch):
     """A conversation whose worker never runs, so turns are driven explicitly.
 
     The speculation lifecycle is about what the queue and the router hold at
@@ -1433,17 +1437,30 @@ def quiet_conversation(monkeypatch):
     codex = FakeCodex()
     monkeypatch.setattr("tagalong.codex.Codex", lambda: codex)
     monkeypatch.setattr(CodexConversation, "_worker", lambda self: None)
-    display = FakeDisplay()
-    built = RecordedConversation(
-        codex,
-        display,
-        CodexSettings(
-            sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
-        ),
-        display,
-    )
-    yield built
-    built.close()
+    built: list[RecordedConversation] = []
+
+    def build(*, clock=time.monotonic):
+        display = FakeDisplay()
+        conversation = RecordedConversation(
+            codex,
+            display,
+            CodexSettings(
+                sandbox="read-only", model="gpt-5.6-luna", reasoning_effort="low"
+            ),
+            display,
+            clock=clock,
+        )
+        built.append(conversation)
+        return conversation
+
+    yield build
+    for conversation in built:
+        conversation.close()
+
+
+@pytest.fixture
+def quiet_conversation(build_quiet_conversation):
+    return build_quiet_conversation()
 
 
 def test_a_prefired_turn_is_queued_without_consuming_the_context(
@@ -1810,15 +1827,14 @@ def test_a_silent_stream_trips_the_bound_and_forks(
 
 
 def test_a_slow_but_ticking_stream_does_not_fork(
-    monkeypatch, quiet_conversation
+    monkeypatch, build_quiet_conversation
 ) -> None:
     """Each notification resets the bound, even when the whole turn is longer."""
     bound = 0.12
     monkeypatch.setattr(codex_module, "STREAM_SILENCE_SECONDS", bound)
-    conversation = quiet_conversation
-    conversation.warmup_pending = False
     timing = StreamTimingHarness()
-    conversation._clock = timing.clock
+    conversation = build_quiet_conversation(clock=timing.clock)
+    conversation.warmup_pending = False
     conversation._wait_for_stream_notification = timing.wait
 
     original_delta = conversation.fake_display.codex_delta
