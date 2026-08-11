@@ -152,7 +152,7 @@ def _bindings() -> tuple[Any, Any, Any]:
 
 
 def _key(value: bytes) -> str:
-    """Decode a Core Audio dictionary key before handing it to Foundation."""
+    """Decode PyObjC bytes or Foundation sees CFData keys and can exit 139."""
     return value.decode("ascii")
 
 

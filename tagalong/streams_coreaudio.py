@@ -155,7 +155,6 @@ class StreamTap:
         self.control = None
         self.stopping = threading.Event()
         self.watcher = None
-        self._last_sent = object()
 
     def command(self, samplerate):
         """Build the helper command without importing macOS bindings."""
@@ -234,8 +233,8 @@ class StreamTap:
                 return
 
     def _send_selection(self):
-        """Send only the latest complete selection, retrying next pass on error."""
-        if self.control is None or self.application == self._last_sent:
+        """Send the latest selection every pass so restarted processes rebind."""
+        if self.control is None:
             return
         payload = json.dumps({"application": self.application}, ensure_ascii=False)
         try:
@@ -243,7 +242,6 @@ class StreamTap:
             self.control.flush()
         except (BrokenPipeError, OSError):
             return
-        self._last_sent = self.application
 
     def stop(self):
         """Stop the reconciler and close stdin so a parent death exits the helper."""
