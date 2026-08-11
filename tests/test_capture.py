@@ -763,6 +763,90 @@ def test_a_helper_startup_error_is_named_and_stops_the_stream(capture) -> None:
     assert monitor.stream.events == ["start", "stop"]
 
 
+def test_capture_lifecycle_handles_missing_pipes_and_stop_requests(capture) -> None:
+    monitor = capture()
+
+    monitor._read_audio()
+    monitor.process = types.SimpleNamespace(stdout=None)
+    monitor._read_audio()
+
+    worker_monitor = capture()
+    worker = threading.Thread(target=worker_monitor._process_audio)
+    worker.start()
+    worker_monitor.audio_queue.put(stereo(0))
+    assert worker_monitor.stream.received.wait(WAIT_SECONDS)
+    worker_monitor.audio_queue.put(worker_monitor.stop_item)
+    worker.join(timeout=WAIT_SECONDS)
+    assert worker_monitor.stream.audio == [([0.0], 16000)]
+
+
+def test_stopping_an_already_exited_recorder_skips_termination(capture) -> None:
+    monitor = capture()
+    monitor.process = FakeRecorder([], exit_code=0)
+    monitor.started = True
+
+    monitor.stop()
+
+    assert monitor.process.terminated is False
+    assert monitor.stream.events == ["stop"]
+
+
+def test_stopping_a_recorder_kills_it_after_a_timeout(capture) -> None:
+    class SlowRecorder(FakeRecorder):
+        def __init__(self):
+            super().__init__([], exit_code=None)
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(
+                    "pw-record", timeout if timeout is not None else 0.0
+                )
+            return self._exit_code
+
+    monitor = capture()
+    monitor.process = SlowRecorder()
+    monitor.started = True
+
+    monitor.stop()
+
+    assert monitor.process.killed
+    assert monitor.process.wait_calls == 2
+
+
+def test_startup_cleanup_handles_exited_and_timeout_processes(capture) -> None:
+    class SlowRecorder(FakeRecorder):
+        def __init__(self):
+            super().__init__([], exit_code=None)
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(
+                    "pw-record", timeout if timeout is not None else 0.0
+                )
+            return self._exit_code
+
+    monitor = capture()
+    monitor.process = types.SimpleNamespace(stdout=None, poll=lambda: 1)
+    monitor._stop_process()
+
+    monitor.process = SlowRecorder()
+    monitor._stop_process()
+    assert monitor.process.killed
+
+
+def test_close_handles_a_recorder_without_stdout(capture) -> None:
+    monitor = capture()
+    monitor.process = types.SimpleNamespace(stdout=None)
+
+    monitor.close()
+
+    assert monitor.stream.events == ["close"]
+
+
 def test_starting_twice_does_not_start_a_second_capture(capture) -> None:
     monitor = capture(reads=[stereo(0)])
     monitor.start()
