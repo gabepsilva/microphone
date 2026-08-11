@@ -70,6 +70,19 @@ def test_framework_fails_closed_off_macos(monkeypatch) -> None:
         coreaudio_native.framework()
 
 
+def test_framework_configures_the_core_audio_property_symbols(monkeypatch) -> None:
+    monkeypatch.setattr(coreaudio_native.sys, "platform", "darwin")
+    library = SimpleNamespace(
+        AudioObjectGetPropertyDataSize=NativeFunction(lambda *_args: 0),
+        AudioObjectGetPropertyData=NativeFunction(lambda *_args: 0),
+    )
+    monkeypatch.setattr(coreaudio_native.ctypes, "CDLL", lambda _path: library)
+
+    assert coreaudio_native.framework() is library
+    assert library.AudioObjectGetPropertyDataSize.restype is ctypes.c_int32
+    assert library.AudioObjectGetPropertyData.restype is ctypes.c_int32
+
+
 def test_property_readers_use_the_injectable_library() -> None:
     library = PropertyLibrary(b"*\x00\x00\x00")
 
