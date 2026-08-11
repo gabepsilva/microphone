@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import selectors
+import shutil
+import subprocess
+import sys
+import time
 
+import pytest
 import sounddevice
 
 from tagalong.catalog import probe_codex_models
@@ -26,11 +32,91 @@ def test_the_default_microphone_records_real_samples() -> None:
     assert recording.shape == (1600, 1)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="PipeWire output smoke test only applies to Linux",
+)
 def test_pipewire_exposes_at_least_one_playback_output() -> None:
     outputs = audio_outputs()
 
     assert outputs, "pactl found no output sink with a monitor"
     assert all(output["name"] and output["monitor"] for output in outputs)
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Core Audio process-tap smoke test only applies to macOS",
+)
+def test_core_audio_process_tap_captures_a_real_playing_process() -> None:
+    from tagalong import streams_coreaudio
+
+    player_path = shutil.which("ffplay")
+    if player_path is None:
+        pytest.skip("ffplay is required to provide a real playing process")
+    player = subprocess.Popen(
+        [
+            player_path,
+            "-nodisp",
+            "-autoexit",
+            "-loglevel",
+            "quiet",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=8",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process = None
+    tap = None
+    try:
+        target = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            target = next(
+                (
+                    obj["application"]
+                    for obj in streams_coreaudio.graph()
+                    if obj.get("pid") == player.pid and obj.get("playing")
+                ),
+                None,
+            )
+            if target is not None:
+                break
+            time.sleep(0.1)
+        assert target is not None, "ffplay did not become a Core Audio output"
+
+        tap = streams_coreaudio.StreamTap(target)
+        process = subprocess.Popen(
+            tap.command(16000),
+            stdout=subprocess.PIPE,
+            **tap.process_options(),
+        )
+        error = tap.wait_ready(process, timeout=5)
+        assert error is None, error
+        tap.attach(process)
+        tap.start()
+        assert process.stdout is not None
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(5), "Core Audio IOProc produced no PCM"
+        finally:
+            selector.close()
+        data = process.stdout.read(3200)
+        assert data
+        assert len(data) % 4 == 0
+    finally:
+        if tap is not None:
+            tap.stop()
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait(timeout=3)
+        if player.poll() is None:
+            player.terminate()
+            player.wait(timeout=3)
 
 
 def test_the_installed_codex_cli_exposes_a_usable_model_catalog() -> None:

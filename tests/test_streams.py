@@ -7,12 +7,15 @@ which of them are this program's own, and which links a relink pass still owes.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -428,14 +431,105 @@ def test_the_common_port_delegates_to_the_selected_backend(monkeypatch) -> None:
     assert streams.require_stream_capture() is None
 
 
-def test_the_unimplemented_darwin_backend_fails_by_name() -> None:
+def test_the_darwin_backend_fails_by_name_off_platform(monkeypatch) -> None:
+    monkeypatch.setattr(streams_coreaudio.sys, "platform", "linux")
+
     assert streams_coreaudio.graph() == []
     assert streams_coreaudio.application_streams([]) == []
     assert streams_coreaudio.applications([]) == []
     assert streams_coreaudio.offered_applications([]) == []
 
-    with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+    with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
         streams_coreaudio.require_stream_capture()
+
+
+def test_the_darwin_backend_checks_version_and_framework(monkeypatch) -> None:
+    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("14.1", "", ""))
+    with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
+        streams_coreaudio.require_stream_capture()
+
+    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("14.2", "", ""))
+    monkeypatch.setattr(streams_coreaudio, "_framework", lambda: None)
+    assert streams_coreaudio.require_stream_capture() is None
+
+    def missing_framework():
+        raise OSError("missing")
+
+    monkeypatch.setattr(streams_coreaudio, "_framework", missing_framework)
+    with pytest.raises(RuntimeError, match="Core Audio process-tap capture needs"):
+        streams_coreaudio.require_stream_capture()
+
+    monkeypatch.setattr(
+        streams_coreaudio.platform,
+        "mac_ver",
+        lambda: ("not-a-version", "", ""),
+    )
+    assert streams_coreaudio._macos_version() == ()
+
+
+def test_darwin_process_objects_are_normalized() -> None:
+    objects = [
+        {
+            "id": 4,
+            "pid": 44,
+            "application": "Browser",
+            "binary": "browser",
+            "playing": True,
+        },
+        {
+            "id": 5,
+            "pid": 55,
+            "application": "Browser",
+            "binary": "browser-helper",
+            "playing": False,
+        },
+    ]
+
+    streams = streams_coreaudio.application_streams(objects, mine=lambda _pid: False)
+
+    assert streams == [
+        ApplicationStream(4, "Browser", "Browser", "browser", True),
+        ApplicationStream(5, "Browser", "Browser", "browser-helper", False),
+    ]
+    assert [
+        stream.application for stream in streams_coreaudio.applications(streams)
+    ] == ["Browser"]
+
+
+def test_darwin_graph_fails_closed_for_native_read_errors() -> None:
+    for error in (
+        streams_coreaudio.CoreAudioError("read", -1),
+        OSError(),
+        RuntimeError(),
+    ):
+
+        def read_objects(error=error):
+            raise error
+
+        assert streams_coreaudio.graph(read_objects=read_objects) == []
+
+
+def test_darwin_stream_normalization_drops_invalid_and_owned_objects() -> None:
+    objects = [
+        None,
+        {"pid": 1, "id": 4, "application": "owned"},
+        {"pid": 2, "id": "not-an-id", "application": "invalid"},
+        {"pid": 3, "id": 6, "application": ""},
+    ]
+
+    assert (
+        streams_coreaudio.application_streams(objects, mine=lambda pid: pid == 1) == []
+    )
+
+
+def test_darwin_helper_bundle_ids_collapse_into_one_application() -> None:
+    assert (
+        streams_coreaudio._application_key("com.google.Chrome.helper.renderer", "", "")
+        == "com.google.Chrome"
+    )
+    assert streams_coreaudio._application_key("com.google.Chrome", "", "") == (
+        "com.google.Chrome"
+    )
 
 
 def test_pipewire_tap_declares_the_descriptor_contract() -> None:
@@ -465,21 +559,146 @@ def test_pipewire_tap_reports_startup_and_has_no_attach_channel() -> None:
     assert tap.attach(object()) is None
 
 
-def test_the_darwin_placeholder_rejects_a_tap_command() -> None:
-    tap = streams_coreaudio.StreamTap()
-    methods = [
-        ("command", (16000,)),
-        ("process_options", ()),
-        ("wait_ready", (None, 5.0)),
-        ("attach", (None,)),
-        ("follow", (None,)),
-        ("start", ()),
-        ("stop", ()),
-    ]
+def test_the_darwin_tap_declares_the_helper_contract() -> None:
+    tap = streams_coreaudio.StreamTap("Browser", executable="python")
 
-    for name, args in methods:
-        with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
-            getattr(tap, name)(*args)
+    assert tap.command(16000) == [
+        "python",
+        "-m",
+        "tagalong.coreaudio_helper",
+        "--samplerate",
+        "16000",
+        "--application",
+        "Browser",
+    ]
+    assert tap.process_options() == {
+        "stdin": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    tap.follow("Other")
+    assert tap.application == "Other"
+    assert streams_coreaudio.StreamTap().command(16000)[-2:] == [
+        "--samplerate",
+        "16000",
+    ]
+    assert "--application" not in streams_coreaudio.StreamTap().command(16000)
+
+
+def test_the_darwin_tap_reads_ready_and_closes_startup_stderr() -> None:
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, "rb")
+    os.write(write_fd, b"READY\n")
+    os.close(write_fd)
+    process = SimpleNamespace(stderr=stderr, poll=lambda: None)
+
+    assert streams_coreaudio.StreamTap().wait_ready(process, timeout=1) is None
+    assert stderr.closed
+
+
+def test_the_darwin_tap_reports_missing_or_failed_readiness() -> None:
+    assert (
+        streams_coreaudio.StreamTap().wait_ready(
+            SimpleNamespace(stderr=None), timeout=1
+        )
+        == "Core Audio helper did not provide a readiness channel"
+    )
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, "rb")
+    os.write(write_fd, b"ERROR TCC denied\n")
+    os.close(write_fd)
+    process = SimpleNamespace(stderr=stderr, poll=lambda: 64)
+
+    assert streams_coreaudio.StreamTap().wait_ready(process, timeout=1) == "TCC denied"
+    assert stderr.closed
+
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, "rb")
+    os.write(write_fd, b"diagnostic\n")
+    os.close(write_fd)
+    process = SimpleNamespace(stderr=stderr, poll=lambda: None)
+
+    assert streams_coreaudio.StreamTap().wait_ready(process, timeout=1) == (
+        "diagnostic"
+    )
+    assert stderr.closed
+
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, "rb")
+    os.close(write_fd)
+    process = SimpleNamespace(stderr=stderr, poll=lambda: None)
+
+    assert streams_coreaudio.StreamTap().wait_ready(process, timeout=1) == (
+        "Core Audio helper exited with code None"
+    )
+    assert stderr.closed
+
+
+def test_the_darwin_tap_names_a_startup_timeout_as_permission_or_hal_failure() -> None:
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, "rb")
+    process = SimpleNamespace(stderr=stderr, poll=lambda: None)
+
+    try:
+        assert "system-audio permission" in streams_coreaudio.StreamTap().wait_ready(
+            process, timeout=0
+        )
+        assert stderr.closed
+    finally:
+        os.close(write_fd)
+
+
+def test_the_darwin_tap_reconciler_writes_json_without_the_ui_lock() -> None:
+    control = io.BytesIO()
+    tap = streams_coreaudio.StreamTap("Browser", poll=0.001)
+    tap.attach(SimpleNamespace(stdin=control))
+    tap.start()
+    try:
+        for _ in range(100):
+            if control.getvalue():
+                break
+            time.sleep(0.001)
+        payload = control.getvalue()
+    finally:
+        tap.stop()
+
+    assert json.loads(payload.decode()) == {"application": "Browser"}
+
+
+def test_the_darwin_tap_reconciler_is_idempotent_and_tolerates_broken_control() -> None:
+    tap = streams_coreaudio.StreamTap("Browser")
+    tap.start()
+    tap.start()
+    tap.stop()
+    tap.stop()
+
+    class Broken:
+        def write(self, _data):
+            raise BrokenPipeError
+
+        def flush(self):
+            raise AssertionError("flush must not run after a broken write")
+
+    tap = streams_coreaudio.StreamTap("Browser")
+    tap.control = Broken()
+    tap._send_selection()
+    tap.control = io.BytesIO()
+    tap._last_sent = "Browser"
+    tap._send_selection()
+
+
+def test_the_darwin_tap_reconciler_waits_for_a_later_pass() -> None:
+    class StopAfterTwoPasses:
+        calls = 0
+
+        def wait(self, _poll):
+            self.calls += 1
+            return self.calls > 1
+
+    tap = streams_coreaudio.StreamTap()
+    stopping = StopAfterTwoPasses()
+    cast(Any, tap).stopping = stopping
+    tap._follow()
+    assert stopping.calls == 2
 
 
 def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:

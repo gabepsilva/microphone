@@ -36,13 +36,73 @@ def test_the_session_selector_is_injectable():
     assert session.default_session_backend("darwin") is session_darwin
 
 
-def test_the_unimplemented_darwin_session_fails_closed():
-    with pytest.raises(RuntimeError, match="Darwin process identity"):
-        session_darwin.session_of(7)
-    with pytest.raises(RuntimeError, match="Darwin process identity"):
-        session_darwin.started_here(7)
+def test_darwin_ancestry_identifies_a_child_without_proc_environment():
+    parents = {42: 7, 7: 1}
+
+    assert (
+        session_darwin.started_here(42, own_pid=1, parent=lambda pid: parents.get(pid))
+        is True
+    )
+    assert (
+        session_darwin.session_of(42, own_pid=1, parent=lambda pid: parents.get(pid))
+        == 1
+    )
+    assert session_darwin.started_here(43, own_pid=1, parent=lambda _pid: None) is False
     assert session_darwin.orphans() == []
     assert session_darwin.sweep_orphans() == 0
+
+
+def test_darwin_parent_lookup_uses_real_libproc_for_this_process():
+    assert session_darwin.parent_process(os.getpid()) is not None
+    assert session_darwin.parent_process(0) is None
+
+
+def test_darwin_session_of_defaults_to_this_process():
+    assert (
+        session_darwin.session_of(
+            os.getpid(), parent=lambda pid: os.getppid() if pid == os.getpid() else None
+        )
+        == os.getpid()
+    )
+
+
+def test_darwin_started_here_rejects_invalid_pids():
+    assert session_darwin.started_here("42") is False
+    assert session_darwin.started_here(0) is False
+
+
+def test_darwin_libproc_and_parent_failures_are_closed(monkeypatch):
+    monkeypatch.setattr(session_darwin.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="libproc"):
+        session_darwin._libproc()
+
+    class Unavailable:
+        def proc_pidinfo(self, *_args):
+            raise OSError("gone")
+
+    class Short:
+        def proc_pidinfo(self, *_args):
+            return session_darwin.PROC_BSDINFO_PPID_OFFSET + 4
+
+    assert session_darwin.parent_process(42, library=Unavailable()) is None
+    assert session_darwin.parent_process(42, library=Short()) is None
+
+
+def test_darwin_ancestry_stops_at_init_when_it_is_not_the_session():
+    parents = {42: 7, 7: 1}
+
+    assert (
+        session_darwin.started_here(42, own_pid=99, parent=lambda pid: parents.get(pid))
+        is False
+    )
+
+    parents = {42: 43, 43: 44, 44: 45}
+    assert (
+        session_darwin.started_here(
+            42, own_pid=99, parent=lambda pid: parents.get(pid), limit=2
+        )
+        is False
+    )
 
 
 def test_the_proc_backend_reports_a_missing_process():
