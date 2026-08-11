@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from tagalong import cli
+from tagalong import transport as transport_module
 from tagalong.catalog import CodexModelOption
 from tagalong.control.transcript import TranscriptStore
 from tagalong.domain import RESPONSE_POLICIES, TurnLatencyEstimator, UserTextMessage
@@ -1121,6 +1122,9 @@ def test_attach_remote_access_leaves_the_tui_running_without_xdg(
     from tagalong.control import Controller
 
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    # Pinned to a platform that has no runtime-dir of its own. macOS supplies
+    # one from the kernel, so there the session does get a socket (#152).
+    monkeypatch.setattr(transport_module.sys, "platform", "linux")
     tui = FakeTUI(SessionState(tts_enabled=True))
     pump, server = cli.attach_remote_access(Controller(), tui)
     try:
