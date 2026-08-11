@@ -108,11 +108,12 @@ FLOORS = {
     # failure paths; real Core Audio binding coverage belongs to its smoke lane.
     "tagalong/session_darwin.py": 100.0,
     "tagalong/streams_coreaudio.py": 100.0,
-    # Native Core Audio ctypes/PyObjC calls are verified by the opt-in real
-    # macOS smoke lane; deterministic coverage records only the import-safe
-    # and conversion paths that do not fake the HAL under test.
-    "tagalong/coreaudio_helper.py": 29.0,
-    "tagalong/coreaudio_native.py": 25.0,
+    # The helper's remaining uncovered lines are the native HAL lifecycle:
+    # framework setup, process-tap/aggregate creation, IOProc registration and
+    # subprocess startup.  Those paths require macOS and are verified by the
+    # opt-in real smoke lane; the deterministic conversion and control paths
+    # must still remain above their measured floor.
+    "tagalong/coreaudio_helper.py": 38.0,
     # This floor sat at 80 while the measurement moved between runs: five runs
     # of the same commit gave 80.99, 81.82, 81.82, 81.82, 81.40, because the
     # guard in _play was hit or missed depending on how the synthesis thread
