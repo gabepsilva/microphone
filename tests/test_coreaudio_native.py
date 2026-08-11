@@ -66,7 +66,7 @@ def test_fourcc_and_core_audio_error_are_named() -> None:
 def test_framework_fails_closed_off_macos(monkeypatch) -> None:
     monkeypatch.setattr(coreaudio_native.sys, "platform", "linux")
 
-    with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
+    with pytest.raises(RuntimeError, match=r"macOS 26"):
         coreaudio_native.framework()
 
 

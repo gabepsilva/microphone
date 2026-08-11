@@ -124,8 +124,10 @@ Audio is captured from one application's own output rather than from a
 speaker's monitor. On Linux, `--audio-stream` names the application — the name
 the desktop shows for it, such as `Chromium` or `ZOOM VoiceEngine` — and the
 session links that application's audio into a capture node of its own. On
-macOS 14.2 and newer, the same selection is captured with a private Core Audio
-process tap and aggregate device. In both cases the application keeps playing
+macOS 26 and newer, the same selection is captured with a private Core Audio
+process tap and aggregate device. Apple's process-tap API dates from macOS
+14.2, but TagAlong only claims the versions it has been run on; on anything
+older the far end fails by name and the rest of the app is unaffected. In both cases the application keeps playing
 to the real speakers, unrouted and unchanged; nothing has to be pointed at a
 virtual device.
 

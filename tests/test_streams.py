@@ -438,17 +438,17 @@ def test_the_darwin_backend_fails_by_name_off_platform(monkeypatch) -> None:
     assert streams_coreaudio.applications([]) == []
     assert streams_coreaudio.offered_applications([]) == []
 
-    with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
+    with pytest.raises(RuntimeError, match=r"macOS 26"):
         streams_coreaudio.require_stream_capture()
 
 
 def test_the_darwin_backend_checks_version_and_framework(monkeypatch) -> None:
     monkeypatch.setattr(streams_coreaudio.sys, "platform", "darwin")
-    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("14.1", "", ""))
-    with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
+    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("25.9", "", ""))
+    with pytest.raises(RuntimeError, match=r"only verified on macOS 26"):
         streams_coreaudio.require_stream_capture()
 
-    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("14.2", "", ""))
+    monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("26.0", "", ""))
     monkeypatch.setattr(streams_coreaudio, "_framework", lambda: None)
     assert streams_coreaudio.require_stream_capture() is None
 
@@ -465,6 +465,24 @@ def test_the_darwin_backend_checks_version_and_framework(monkeypatch) -> None:
         lambda: ("not-a-version", "", ""),
     )
     assert streams_coreaudio._macos_version() == ()
+
+
+def test_a_host_apple_supports_but_we_have_not_run_is_refused(monkeypatch) -> None:
+    """The gate claims measured versions, not the 14.2 the API allows.
+
+    Apple ships process taps from 14.2, and this backend was written against
+    that API. Every measurement behind it was taken on 26.5.2, so 14.2 through
+    25.x are refused by name until a host in that range passes the smoke probe.
+    """
+    monkeypatch.setattr(streams_coreaudio.sys, "platform", "darwin")
+    monkeypatch.setattr(streams_coreaudio, "_framework", lambda: None)
+
+    for version in ("14.2", "15.4", "25.9"):
+        monkeypatch.setattr(
+            streams_coreaudio.platform, "mac_ver", lambda v=version: (v, "", "")
+        )
+        with pytest.raises(RuntimeError, match=rf"this host reports macOS {version}"):
+            streams_coreaudio.require_stream_capture()
 
 
 def test_darwin_process_objects_are_normalized() -> None:
