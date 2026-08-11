@@ -90,6 +90,9 @@ def spawns(monkeypatch):
         (b"  padded  ", "\nffplay broke: padded"),
         (b"", "\nffplay broke."),
         (None, "\nffplay broke."),
+        (b"   ", "\nffplay broke."),
+        (b"codec not found", "\nffplay broke: codec not found"),
+        (b"\xff\xfe bad bytes", "\nffplay broke: �� bad bytes"),
     ],
 )
 def test_a_failing_helper_process_is_explained_with_its_stderr(
