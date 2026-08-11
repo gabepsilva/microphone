@@ -79,6 +79,7 @@ def test_darwin_libproc_configures_the_native_query_shape(monkeypatch):
     monkeypatch.setattr(session_darwin.ctypes, "CDLL", lambda _path: library)
 
     assert session_darwin.parent_process(42) == 7
+    assert session_darwin.parent_process(0) is None
     assert library.proc_pidinfo.restype is session_darwin.ctypes.c_int
 
 
