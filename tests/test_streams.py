@@ -444,6 +444,7 @@ def test_the_darwin_backend_fails_by_name_off_platform(monkeypatch) -> None:
 
 
 def test_the_darwin_backend_checks_version_and_framework(monkeypatch) -> None:
+    monkeypatch.setattr(streams_coreaudio.sys, "platform", "darwin")
     monkeypatch.setattr(streams_coreaudio.platform, "mac_ver", lambda: ("14.1", "", ""))
     with pytest.raises(RuntimeError, match=r"macOS 14\.2"):
         streams_coreaudio.require_stream_capture()

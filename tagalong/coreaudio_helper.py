@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import importlib
 import json
 import os
 import sys
@@ -107,8 +108,8 @@ class LinearResampler:
 def _bindings() -> tuple[Any, Any, Any]:
     """Load Core Audio and configure the C signatures used by this helper."""
     streams_coreaudio.require_stream_capture()
-    import CoreAudio
-    import objc
+    CoreAudio: Any = importlib.import_module("CoreAudio")
+    objc: Any = importlib.import_module("objc")
 
     library = streams_coreaudio._framework()
     library.AudioHardwareCreateProcessTap.argtypes = [

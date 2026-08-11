@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 
 import pytest
 
@@ -52,9 +53,33 @@ def test_darwin_ancestry_identifies_a_child_without_proc_environment():
     assert session_darwin.sweep_orphans() == 0
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS libproc (#152)")
 def test_darwin_parent_lookup_uses_real_libproc_for_this_process():
     assert session_darwin.parent_process(os.getpid()) is not None
     assert session_darwin.parent_process(0) is None
+
+
+def test_darwin_libproc_configures_the_native_query_shape(monkeypatch):
+    class ProcPidInfo:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _pid, _kind, _flavor, data, _size):
+            data[
+                session_darwin.PROC_BSDINFO_PPID_OFFSET : session_darwin.PROC_BSDINFO_PPID_OFFSET
+                + 4
+            ] = (7).to_bytes(4, "little")
+            return session_darwin.PROC_BSDINFO_PPID_OFFSET + 5
+
+    class Library:
+        proc_pidinfo = ProcPidInfo()
+
+    library = Library()
+    monkeypatch.setattr(session_darwin.sys, "platform", "darwin")
+    monkeypatch.setattr(session_darwin.ctypes, "CDLL", lambda _path: library)
+
+    assert session_darwin.parent_process(42) == 7
+    assert library.proc_pidinfo.restype is session_darwin.ctypes.c_int
 
 
 def test_darwin_session_of_defaults_to_this_process():
