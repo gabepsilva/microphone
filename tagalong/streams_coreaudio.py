@@ -47,3 +47,27 @@ class StreamTap:
     def command(self, _samplerate):
         """Raise the same named capability error as the selector."""
         require_stream_capture()
+
+    def process_options(self):
+        """Reject helper startup until the Core Audio adapter exists."""
+        require_stream_capture()
+
+    def wait_ready(self, _process, _timeout):
+        """Reject readiness checks until the Core Audio adapter exists."""
+        require_stream_capture()
+
+    def attach(self, _process):
+        """Reject helper attachment until the Core Audio adapter exists."""
+        require_stream_capture()
+
+    def follow(self, _application):
+        """Reject retargeting until the Core Audio adapter exists."""
+        require_stream_capture()
+
+    def start(self):
+        """Reject tap startup until the Core Audio adapter exists."""
+        require_stream_capture()
+
+    def stop(self):
+        """Reject tap shutdown until the Core Audio adapter exists."""
+        require_stream_capture()

@@ -14,8 +14,11 @@ def session_of(_pid, **_kwargs):
 
 
 def started_here(_pid, **_kwargs):
-    """Fail closed when process ancestry is not available."""
-    return False
+    """Reject process identity checks until the Darwin adapter exists."""
+    raise RuntimeError(
+        "Darwin process identity is not implemented in this build; "
+        "macOS helper ownership requires the next compatibility phase."
+    )
 
 
 def orphans(**_kwargs):

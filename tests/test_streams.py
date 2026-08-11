@@ -466,8 +466,20 @@ def test_pipewire_tap_reports_startup_and_has_no_attach_channel() -> None:
 
 
 def test_the_darwin_placeholder_rejects_a_tap_command() -> None:
-    with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
-        streams_coreaudio.StreamTap().command(16000)
+    tap = streams_coreaudio.StreamTap()
+    methods = [
+        ("command", (16000,)),
+        ("process_options", ()),
+        ("wait_ready", (None, 5.0)),
+        ("attach", (None,)),
+        ("follow", (None,)),
+        ("start", ()),
+        ("stop", ()),
+    ]
+
+    for name, args in methods:
+        with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+            getattr(tap, name)(*args)
 
 
 def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:

@@ -99,7 +99,9 @@ class FakeRecorder:
     """Stand in for the pw-record process, serving a fixed script of reads."""
 
     def __init__(self, reads, exit_code=None):
+        self.stdin = FakePipe([])
         self.stdout = FakePipe(reads)
+        self.stderr = FakePipe([])
         self._exit_code = exit_code
         self.terminated = False
         self.killed = False
@@ -151,6 +153,20 @@ class FakeTap:
         self.events.append(f"command {samplerate}")
         return ["pw-record", str(samplerate)]
 
+    def process_options(self):
+        return {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+
+    def wait_ready(self, _process, timeout):
+        assert timeout >= 0
+        return (
+            f"recorder exited with code {_process.poll()}"
+            if _process.poll() is not None
+            else None
+        )
+
+    def attach(self, _process):
+        return
+
     def start(self):
         self.events.append("start")
 
@@ -187,7 +203,6 @@ def capture(monkeypatch):
     monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("tagalong.capture.Transcriber", FakeTranscriber)
-    monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
     def build(reads=(), exit_code=None, tap=None, **kwargs):
         process = FakeRecorder(list(reads), exit_code)
@@ -759,7 +774,9 @@ def test_a_helper_startup_error_is_named_and_stops_the_stream(capture) -> None:
         monitor.start()
 
     assert monitor.fake_process.terminated
+    assert monitor.fake_process.stdin.closed
     assert monitor.fake_process.stdout.closed
+    assert monitor.fake_process.stderr.closed
     assert monitor.stream.events == ["start", "stop"]
 
 
