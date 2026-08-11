@@ -16,9 +16,15 @@ from types import SimpleNamespace
 
 import pytest
 
+import tagalong.streams as streams
+from tagalong import streams_coreaudio
 from tagalong.streams import (
     ApplicationRefresher,
     ApplicationStream,
+    default_stream_backend,
+    stream_label,
+)
+from tagalong.streams_pipewire import (
     StreamTap,
     application_streams,
     applications,
@@ -28,12 +34,19 @@ from tagalong.streams import (
     nodes_named,
     offered_applications,
     parent_process,
-    require_pipewire,
     spawned_here,
-    stream_label,
+)
+from tagalong.streams_pipewire import (
+    require_stream_capture as require_pipewire,
 )
 
 WAIT_SECONDS = 10
+
+
+@pytest.fixture(autouse=True)
+def use_pipewire_backend(monkeypatch):
+    """Run PipeWire graph tests against their explicit backend on every host."""
+    monkeypatch.setattr(streams, "_DEFAULT_PLATFORM", "linux")
 
 
 def node(
@@ -398,6 +411,30 @@ def test_every_pipewire_tool_present_is_accepted(monkeypatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     assert require_pipewire() is None
+
+
+def test_the_platform_selector_is_injectable() -> None:
+    assert default_stream_backend("linux").__name__.endswith("streams_pipewire")
+    assert default_stream_backend("darwin").__name__.endswith("streams_coreaudio")
+
+
+def test_the_unimplemented_darwin_backend_fails_by_name() -> None:
+    assert streams_coreaudio.graph() == []
+    assert streams_coreaudio.application_streams([]) == []
+    assert streams_coreaudio.applications([]) == []
+    assert streams_coreaudio.offered_applications([]) == []
+
+    with pytest.raises(RuntimeError, match="Core Audio process-tap capture"):
+        streams_coreaudio.require_stream_capture()
+
+
+def test_pipewire_tap_declares_the_descriptor_contract() -> None:
+    tap = StreamTap("Chromium")
+
+    assert tap.process_options() == {
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
 
 
 def test_the_recorder_is_told_not_to_connect_itself_to_anything() -> None:

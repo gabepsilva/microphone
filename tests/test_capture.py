@@ -158,6 +158,21 @@ class FakeTap:
         self.events.append("stop")
 
 
+class ReadyTap(FakeTap):
+    """A tap that exercises the helper readiness and attach seams."""
+
+    def process_options(self):
+        self.events.append("process options")
+        return {"stdin": subprocess.PIPE, "stderr": subprocess.PIPE}
+
+    def wait_ready(self, _process, timeout):
+        self.events.append(f"ready {timeout}")
+        return
+
+    def attach(self, _process):
+        self.events.append("attach")
+
+
 class RecordedCapture(ApplicationStreamTranscriber):
     """A stream transcriber that keeps a handle on its faked recorder."""
 
@@ -169,14 +184,17 @@ class RecordedCapture(ApplicationStreamTranscriber):
 @pytest.fixture
 def capture(monkeypatch):
     """Build a stream transcriber with the recorder, tap, and Moonshine faked."""
+    monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("tagalong.capture.Transcriber", FakeTranscriber)
     monkeypatch.setattr(ApplicationStreamTranscriber, "STARTUP_GRACE_SECONDS", 0)
 
-    def build(reads=(), exit_code=None, **kwargs):
+    def build(reads=(), exit_code=None, tap=None, **kwargs):
         process = FakeRecorder(list(reads), exit_code)
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-        return RecordedCapture(process, "model", "arch", FakeTap(), **kwargs)
+        return RecordedCapture(
+            process, "model", "arch", tap if tap is not None else FakeTap(), **kwargs
+        )
 
     return build
 
@@ -601,6 +619,7 @@ def test_an_empty_queue_yields_only_the_first_chunk() -> None:
 
 
 def test_capture_requires_the_pipewire_tools(monkeypatch) -> None:
+    monkeypatch.setattr("tagalong.streams._DEFAULT_PLATFORM", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
     with pytest.raises(RuntimeError, match="pw-record is required"):
@@ -708,6 +727,38 @@ def test_a_recorder_that_exits_immediately_is_reported(capture) -> None:
     with pytest.raises(RuntimeError, match="Could not capture the audio"):
         monitor.start()
 
+    assert monitor.stream.events == ["start", "stop"]
+
+
+def test_a_tap_can_wait_for_a_slow_helper_then_attach_control(capture) -> None:
+    tap = ReadyTap()
+    monitor = capture(tap=tap)
+
+    monitor.start()
+    try:
+        assert tap.events == [
+            "process options",
+            "command 16000",
+            "ready 5.0",
+            "attach",
+            "start",
+        ]
+    finally:
+        monitor.stop()
+
+
+def test_a_helper_startup_error_is_named_and_stops_the_stream(capture) -> None:
+    class DeniedTap(ReadyTap):
+        def wait_ready(self, _process, timeout):
+            self.events.append(f"ready {timeout}")
+            return "TCC denied audio capture"
+
+    monitor = capture(tap=DeniedTap())
+
+    with pytest.raises(RuntimeError, match="TCC denied audio capture"):
+        monitor.start()
+
+    assert monitor.fake_process.terminated
     assert monitor.stream.events == ["start", "stop"]
 
 
