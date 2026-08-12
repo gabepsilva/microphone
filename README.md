@@ -138,9 +138,11 @@ usable. macOS Core Audio owns the private tap and aggregate device inside a
 bounded helper process, so a forced helper exit does not leave a capture device
 for a later session to sweep.
 
-Taga's own speech is a different stream and is never linked, so it cannot be
-transcribed back as the far end. That is a property of the wiring rather than a
-filter that can miss.
+For a named application, Taga's own speech is a different stream and is never
+selected, so it cannot be transcribed back as the far end. Choosing `All` on
+macOS instead uses a global tap with a runtime exclusion list for Taga's own
+processes; that list is refreshed as the session's speech players change and
+is covered by the opt-in macOS smoke test.
 
 An application only appears in the audio graph once it starts playing, so the
 startup menu lists what is making sound right now. A name given with

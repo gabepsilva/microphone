@@ -18,7 +18,7 @@ def test_startup_config_round_trip(tmp_path) -> None:
         "tts_provider": "piper",
         "piper_voice": "en_US-lessac-medium",
         "edge_voice": "en-US-AndrewNeural",
-        "audio_stream": "ZOOM VoiceEngine",
+        "audio_stream": "__all__",
         "tts_output": None,
         "taga_after": "both",
         "turn_silence": 3.0,

@@ -854,11 +854,14 @@ def test_the_speech_picker_offers_every_provider_and_silence(tui) -> None:
 
 
 def test_the_far_end_picker_offers_silence_before_the_applications(tui) -> None:
-    state = tui.SessionState(audio_streams=[("Brave (playing)", "Brave")])
+    state = tui.SessionState(
+        audio_streams=[("All", "__all__"), ("Brave (playing)", "Brave")]
+    )
     sidebar = tui.Sidebar(state, tui.TuiHooks())
 
     assert sidebar._audio_options() == [
         (tui.NO_THEM_LABEL, tui.NO_THEM),
+        ("All", "__all__"),
         ("Brave (playing)", "Brave"),
     ]
 
@@ -958,6 +961,25 @@ def test_choosing_an_application_asks_the_host_and_adopts_it(tui) -> None:
 
     assert chosen == ["Brave"]
     assert state.audio_stream == "Brave"
+
+
+def test_choosing_all_passes_the_backend_sentinel_unchanged(tui) -> None:
+    chosen: list[str | None] = []
+    state = tui.SessionState(audio_streams=[("All", "__all__")])
+    app = tui.VoiceCodexApp(
+        state,
+        tui.TuiHooks(on_audio_stream=lambda name: chosen.append(name) or True),
+    )
+
+    async def exercise() -> None:
+        async with app.run_test() as pilot:
+            app.query_one("#audio-select", Select).value = "__all__"
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+    assert chosen == ["__all__"]
+    assert state.audio_stream == "__all__"
 
 
 def test_choosing_silence_asks_the_host_to_drop_the_far_end(tui) -> None:

@@ -55,6 +55,7 @@ PROCESS_OBJECT_LIST = coreaudio_native.PROCESS_OBJECT_LIST
 PROCESS_BUNDLE_ID = coreaudio_native.PROCESS_BUNDLE_ID
 PROCESS_PID = coreaudio_native.PROCESS_PID
 PROCESS_RUNNING_OUTPUT = coreaudio_native.PROCESS_RUNNING_OUTPUT
+SUPPORTS_ALL = True
 
 
 def graph(read_objects=_process_objects):

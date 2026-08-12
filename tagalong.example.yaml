@@ -11,7 +11,8 @@ tts_provider: null
 piper_voice: null
 edge_voice: null
 # The application whose audio is transcribed as Audio, by the name the
-# desktop shows for it, or "none". Null keeps the built-in default, none.
+# desktop shows for it, "__all__" for every external application on macOS,
+# or "none". Null keeps the built-in default, none.
 audio_stream: null
 # The sink Taga speaks through. Null uses the system default.
 tts_output: null
