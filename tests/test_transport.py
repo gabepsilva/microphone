@@ -619,10 +619,22 @@ def test_devices_list_returns_inputs_and_applications(
         ],
     )
     monkeypatch.setattr(transport, "graph", lambda: [{"fake": True}])
+    monkeypatch.setattr(transport, "application_streams", lambda objects: objects)
     monkeypatch.setattr(
         transport,
-        "offered_applications",
-        lambda objects: [("Firefox (playing)", "Firefox")],
+        "applications",
+        lambda streams: [
+            SimpleNamespace(
+                application="Firefox",
+                title="",
+                playing=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        transport,
+        "offered_entries",
+        lambda streams, *, accept: [("Firefox (playing)", "Firefox")],
     )
     _, server, client = wired(tmp_path)
     try:
@@ -635,6 +647,44 @@ def test_devices_list_returns_inputs_and_applications(
             ],
             "applications": [{"label": "Firefox (playing)", "name": "Firefox"}],
         }
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_devices_list_reads_the_injected_refresher_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Electron inherits the session catalog, including entries heard before attach."""
+    import tagalong.transport as transport
+    from tagalong.streams import ApplicationRefresher
+
+    monkeypatch.setattr(
+        transport,
+        "input_devices",
+        lambda: [(0, {"name": "Mic", "max_input_channels": 1})],
+    )
+
+    class Published:
+        def __init__(self) -> None:
+            self.offered = [
+                ("Firefox (idle)", "Firefox"),
+                ("Zoom (playing)", "Zoom"),
+            ]
+
+    refresher = cast(ApplicationRefresher, Published())
+    controller = Controller()
+    path = tmp_path / "tagalong.sock"
+    server = LocalServer(controller, path=path, applications=refresher)
+    server.start()
+    client = LocalClient(path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        listed = client.call("devices.list")
+        assert listed["applications"] == [
+            {"label": "Firefox (idle)", "name": "Firefox"},
+            {"label": "Zoom (playing)", "name": "Zoom"},
+        ]
     finally:
         client.close()
         server.stop()

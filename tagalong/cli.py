@@ -771,13 +771,17 @@ def start_capture_channels(controller, tui, actor, microphone, audio_setup):
     return applications
 
 
-def attach_remote_access(controller, host):
+def attach_remote_access(controller, host, applications=None):
     """Subscribe *host* to controller events and open the local socket.
 
     The pump keeps SessionState honest when a second writer changes canonical
     state. The socket is how Electron and MCP become that writer. A missing
     ``XDG_RUNTIME_DIR`` leaves the session running without a socket rather
     than falling back to ``/tmp``.
+
+    *applications* is the session's ``ApplicationRefresher``; when provided,
+    ``devices.list`` reads its published sticky list instead of re-deriving
+    from the graph.
     """
     from .tui import apply_state_fragment
 
@@ -793,7 +797,7 @@ def attach_remote_access(controller, host):
     pump = EventPump(subscription.drain, apply)
     pump.start()
     try:
-        server = LocalServer(controller)
+        server = LocalServer(controller, applications=applications)
         server.start()
     except (TransportError, OSError):
         server = None
@@ -1014,7 +1018,9 @@ def run_live_session(args, selection, parts: LiveSessionParts) -> None:
             "SIGINT/SIGTERM stops the process.",
             file=sys.stderr,
         )
-    run_attached_session(controller, host, conversation, microphone, them)
+    run_attached_session(
+        controller, host, conversation, microphone, them, applications=applications
+    )
     finish_recorded_session(host, recorder, applications)
 
 
@@ -1062,9 +1068,11 @@ def main():
     )
 
 
-def run_attached_session(controller, host, conversation, microphone, audio) -> None:
+def run_attached_session(  # noqa: PLR0913 - session host plus catalog injection
+    controller, host, conversation, microphone, audio, applications=None
+) -> None:
     """Run the host with event subscription and the local socket attached."""
-    pump, server = attach_remote_access(controller, host)
+    pump, server = attach_remote_access(controller, host, applications=applications)
     try:
         run_session(
             host,

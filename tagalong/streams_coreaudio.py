@@ -107,16 +107,6 @@ def applications(streams):
     )
 
 
-def offered_applications(objects, mine=started_here):
-    """Return picker labels and stable application names."""
-    from .streams import stream_label
-
-    return [
-        (stream_label(stream), stream.application)
-        for stream in applications(application_streams(objects, mine=mine))
-    ]
-
-
 def _macos_version() -> tuple[int, ...]:
     """Return the host's numeric macOS version for the process-tap gate."""
     version = platform.mac_ver()[0]

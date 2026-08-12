@@ -24,6 +24,7 @@ from tagalong.streams import (
     ApplicationRefresher,
     ApplicationStream,
     default_stream_backend,
+    offered_entries,
     stream_label,
 )
 from tagalong.streams_pipewire import (
@@ -34,7 +35,6 @@ from tagalong.streams_pipewire import (
     linked_sources,
     node_ports,
     nodes_named,
-    offered_applications,
     parent_process,
     spawned_here,
 )
@@ -426,7 +426,6 @@ def test_the_common_port_delegates_to_the_selected_backend(monkeypatch) -> None:
     assert streams.graph(run=lambda *_a, **_k: SimpleNamespace(stdout="[]")) == []
     assert streams.application_streams([]) == []
     assert streams.applications([]) == []
-    assert streams.offered_applications([]) == []
     assert streams.require_stream_capture() is None
 
 
@@ -436,7 +435,6 @@ def test_the_darwin_backend_fails_by_name_off_platform(monkeypatch) -> None:
     assert streams_coreaudio.graph() == []
     assert streams_coreaudio.application_streams([]) == []
     assert streams_coreaudio.applications([]) == []
-    assert streams_coreaudio.offered_applications([]) == []
 
     with pytest.raises(RuntimeError, match=r"macOS 26"):
         streams_coreaudio.require_stream_capture()
@@ -964,8 +962,21 @@ class FakeDisplay:
 PLAYING = [node(1, application="Brave", state="running", **{"media.name": "Playback"})]
 
 
-def test_the_offered_list_is_labelled_and_paired_with_what_the_tap_follows() -> None:
-    assert offered_applications(PLAYING) == [("Brave: Playback (playing)", "Brave")]
+def test_offered_entries_preserve_order_and_pair_labels_with_names() -> None:
+    streams_list = applications(application_streams(PLAYING))
+
+    assert offered_entries(streams_list, accept=lambda stream: True) == [
+        ("Brave: Playback (playing)", "Brave")
+    ]
+
+
+def test_offered_entries_honor_the_accept_predicate() -> None:
+    quiet = make_stream("speech-dispatcher-dummy", playing=False)
+    active = make_stream("Brave", title="Playback", playing=True)
+
+    assert offered_entries([quiet, active], accept=lambda stream: stream.playing) == [
+        ("Brave: Playback (playing)", "Brave")
+    ]
 
 
 def test_a_long_title_is_cut_rather_than_widening_the_sidebar() -> None:

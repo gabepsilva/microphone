@@ -451,13 +451,3 @@ class StreamTap:
         self.stopping.set()
         self.watcher.join(timeout=5)
         self.watcher = None
-
-
-def offered_applications(objects):
-    """Return the applications this PipeWire backend can offer to the picker."""
-    from .streams import stream_label
-
-    return [
-        (stream_label(stream), stream.application)
-        for stream in applications(application_streams(objects))
-    ]
