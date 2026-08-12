@@ -110,11 +110,7 @@ security-static: semgrep
 	# that into a skip, which --strict also refuses. --no-emit-project leaves
 	# it out at the source. What gets audited is then exactly what CI installs.
 	uv export --all-groups --no-emit-project --no-hashes --quiet -o reports/requirements.txt
-	# uv-managed CPython on macOS copies the interpreter into pip-audit's temp
-	# venv with @rpath relative to that venv. Without the real libpython on the
-	# dyld fallback path, ensurepip SIGABRTs and the audit never runs.
-	DYLD_FALLBACK_LIBRARY_PATH="$(shell dirname $$(dirname $$(readlink $(CURDIR)/.venv/bin/python)))/lib" \
-		uv run pip-audit --strict -r reports/requirements.txt
+	uv run pip-audit --strict -r reports/requirements.txt
 
 secrets:
 	gitleaks detect --source . --log-opts="--all"
