@@ -222,6 +222,7 @@ class CoreAudioTap:
     def __init__(self, samplerate: int, application: str):
         self.samplerate = samplerate
         self.application = application
+        self._session_pid = os.getppid()
         self.process_tap = 0
         self.aggregate_device = 0
         self.io_proc_id = None
@@ -263,15 +264,20 @@ class CoreAudioTap:
     def _object_ids(self, application):
         objects = streams_coreaudio._process_objects(self._library)
         if application == ALL_APPLICATIONS:
-            own_pid = os.getppid()
-            return [
-                obj["id"]
-                for obj in objects
-                if isinstance(obj, dict)
-                and isinstance(obj.get("id"), int)
-                and streams_coreaudio.started_here(obj.get("pid"), own_pid=own_pid)
-            ]
-        return [obj["id"] for obj in objects if obj.get("application") == application]
+            return sorted(
+                [
+                    obj["id"]
+                    for obj in objects
+                    if isinstance(obj, dict)
+                    and isinstance(obj.get("id"), int)
+                    and streams_coreaudio.started_here(
+                        obj.get("pid"), own_pid=self._session_pid
+                    )
+                ]
+            )
+        return sorted(
+            obj["id"] for obj in objects if obj.get("application") == application
+        )
 
     def _rebuild(self):
         object_ids = self._object_ids(self.application)

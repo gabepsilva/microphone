@@ -91,8 +91,8 @@ def _stop_pid(pid: int | None) -> None:
         os.kill(pid, signal.SIGTERM)
 
 
-def _start_all_tap(streams_coreaudio):
-    tap = streams_coreaudio.StreamTap(ALL_APPLICATIONS, poll=0.2)
+def _start_all_tap(streams_coreaudio, poll: float = 0.2):
+    tap = streams_coreaudio.StreamTap(ALL_APPLICATIONS, poll=poll)
     process = subprocess.Popen(
         tap.command(16000),
         stdout=subprocess.PIPE,
@@ -258,25 +258,26 @@ def test_core_audio_all_tap_captures_external_audio_and_excludes_own_audio(
         assert not streams_coreaudio.started_here(detached_pid, own_pid=os.getpid())
         _wait_for_playing_process(streams_coreaudio, detached_pid)
 
-        tap, process = _start_all_tap(streams_coreaudio)
+        tap, process = _start_all_tap(streams_coreaudio, poll=1.0)
 
         external_pcm = _read_tap_pcm(process)
         assert np.mean(np.abs(external_pcm)) > 1000
 
         _stop_pid(detached_pid)
-        time.sleep(1)
+        time.sleep(1.2)
         quiet_pcm = _read_tap_pcm(process)
         quiet_level = float(np.mean(np.abs(quiet_pcm)))
 
+        short_args = [*_FFPLAY_ARGS]
+        short_args[-1] = "sine=frequency=880:duration=0.5"
         self_player = subprocess.Popen(
-            [player_path, *_FFPLAY_ARGS],
+            [player_path, *short_args],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         assert streams_coreaudio.started_here(self_player.pid, own_pid=os.getpid())
-        _wait_for_playing_process(streams_coreaudio, self_player.pid)
-        time.sleep(0.5)
+        self_player.wait(timeout=3)
         self_pcm = _read_tap_pcm(process)
         self_level = float(np.mean(np.abs(self_pcm)))
         assert self_level <= max(128.0, quiet_level * 2 + 64)

@@ -244,6 +244,7 @@ def test_all_tap_uses_global_initializer_and_refreshes_own_exclusions(
     monkeypatch.setattr(helper, "_bindings", lambda: (core_audio, objc, library))
     processes = [
         {"id": 11, "pid": 101},
+        {"id": 15, "pid": 101},
         {"id": 12, "pid": 202},
     ]
     monkeypatch.setattr(
@@ -259,13 +260,18 @@ def test_all_tap_uses_global_initializer_and_refreshes_own_exclusions(
     tap = CoreAudioTap(16000, ALL_APPLICATIONS)
     tap.start()
 
-    assert tap.object_ids == [11]
+    assert tap.object_ids == [11, 15]
     assert FakeDescriptionClass.instances[-1].initializer == "global"
-    assert FakeDescriptionClass.instances[-1].object_ids == [11]
+    assert FakeDescriptionClass.instances[-1].object_ids == [11, 15]
     assert len(library.AudioHardwareCreateProcessTap.calls) == 1
 
     processes.append({"id": 13, "pid": 303})
     tap.reconcile(ALL_APPLICATIONS)
+    assert len(library.AudioHardwareCreateProcessTap.calls) == 1
+
+    processes[:] = [processes[1], processes[0], processes[2], processes[3]]
+    tap.reconcile(ALL_APPLICATIONS)
+    assert tap.object_ids == [11, 15]
     assert len(library.AudioHardwareCreateProcessTap.calls) == 1
 
     processes[:] = [{"id": 14, "pid": 101}]
