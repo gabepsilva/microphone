@@ -1242,7 +1242,7 @@ def test_run_attached_session_stops_the_socket_when_the_tui_exits(
     monkeypatch.setattr(cli, "run_session", boom)
     original = cli.attach_remote_access
 
-    def tracking(controller, tui, applications=None):
+    def tracking(controller, tui, *, applications=None):
         pump, server = original(controller, tui, applications=applications)
         seen["server"] = server
         seen["applications"] = applications

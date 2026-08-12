@@ -631,11 +631,6 @@ def test_devices_list_returns_inputs_and_applications(
             )
         ],
     )
-    monkeypatch.setattr(
-        transport,
-        "offered_entries",
-        lambda streams, *, accept: [("Firefox (playing)", "Firefox")],
-    )
     _, server, client = wired(tmp_path)
     try:
         client.call("initialize", {"client": "electron"})
@@ -665,14 +660,11 @@ def test_devices_list_reads_the_injected_refresher_catalog(
         lambda: [(0, {"name": "Mic", "max_input_channels": 1})],
     )
 
-    class Published:
-        def __init__(self) -> None:
-            self.offered = [
-                ("Firefox (idle)", "Firefox"),
-                ("Zoom (playing)", "Zoom"),
-            ]
-
-    refresher = cast(ApplicationRefresher, Published())
+    refresher = ApplicationRefresher(object())
+    refresher.offered = [
+        ("Firefox (idle)", "Firefox"),
+        ("Zoom (playing)", "Zoom"),
+    ]
     controller = Controller()
     path = tmp_path / "tagalong.sock"
     server = LocalServer(controller, path=path, applications=refresher)

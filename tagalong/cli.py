@@ -771,7 +771,7 @@ def start_capture_channels(controller, tui, actor, microphone, audio_setup):
     return applications
 
 
-def attach_remote_access(controller, host, applications=None):
+def attach_remote_access(controller, host, *, applications=None):
     """Subscribe *host* to controller events and open the local socket.
 
     The pump keeps SessionState honest when a second writer changes canonical
@@ -1069,7 +1069,7 @@ def main():
 
 
 def run_attached_session(  # noqa: PLR0913 - session host plus catalog injection
-    controller, host, conversation, microphone, audio, applications=None
+    controller, host, conversation, microphone, audio, *, applications=None
 ) -> None:
     """Run the host with event subscription and the local socket attached."""
     pump, server = attach_remote_access(controller, host, applications=applications)
