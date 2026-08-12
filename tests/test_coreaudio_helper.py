@@ -21,6 +21,7 @@ from tagalong.coreaudio_helper import (
     LinearResampler,
     sample_time_is_contiguous,
 )
+from tagalong.streams import ALL_APPLICATIONS
 
 
 class NativeSymbol:
@@ -87,7 +88,13 @@ class FakeHAL:
 
 
 class FakeDescription:
+    def initStereoGlobalTapButExcludeProcesses_(self, object_ids):
+        self.initializer = "global"
+        self.object_ids = object_ids
+        return self
+
     def initStereoMixdownOfProcesses_(self, object_ids):
+        self.initializer = "named"
         self.object_ids = object_ids
         return self
 
@@ -105,9 +112,13 @@ class FakeDescription:
 
 
 class FakeDescriptionClass:
-    @staticmethod
-    def alloc():
-        return FakeDescription()
+    instances: ClassVar[list[FakeDescription]] = []
+
+    @classmethod
+    def alloc(cls):
+        instance = FakeDescription()
+        cls.instances.append(instance)
+        return instance
 
 
 class FakeDictionary:
@@ -223,6 +234,60 @@ def test_tap_lifecycle_reconciles_ids_and_cleans_up(monkeypatch) -> None:
     assert library.AudioDeviceStop.calls
     assert library.AudioHardwareDestroyAggregateDevice.calls
     assert library.AudioHardwareDestroyProcessTap.calls
+
+
+def test_all_tap_uses_global_initializer_and_refreshes_own_exclusions(
+    monkeypatch,
+) -> None:
+    library = FakeHAL()
+    core_audio, objc = install_fake_tap_environment(monkeypatch)
+    monkeypatch.setattr(helper, "_bindings", lambda: (core_audio, objc, library))
+    processes = [
+        {"id": 11, "pid": 101},
+        {"id": 12, "pid": 202},
+    ]
+    monkeypatch.setattr(
+        helper.streams_coreaudio, "_process_objects", lambda _library: processes
+    )
+    monkeypatch.setattr(helper.os, "getppid", lambda: 900)
+    monkeypatch.setattr(
+        helper.streams_coreaudio,
+        "started_here",
+        lambda pid, *, own_pid: own_pid == 900 and pid == 101,
+    )
+
+    tap = CoreAudioTap(16000, ALL_APPLICATIONS)
+    tap.start()
+
+    assert tap.object_ids == [11]
+    assert FakeDescriptionClass.instances[-1].initializer == "global"
+    assert FakeDescriptionClass.instances[-1].object_ids == [11]
+    assert len(library.AudioHardwareCreateProcessTap.calls) == 1
+
+    processes.append({"id": 13, "pid": 303})
+    tap.reconcile(ALL_APPLICATIONS)
+    assert len(library.AudioHardwareCreateProcessTap.calls) == 1
+
+    processes[:] = [{"id": 14, "pid": 101}]
+    tap.reconcile(ALL_APPLICATIONS)
+    assert tap.object_ids == [14]
+    assert len(library.AudioHardwareCreateProcessTap.calls) == 2
+    tap.stop()
+
+
+def test_all_tap_allows_an_empty_exclusion_list(monkeypatch) -> None:
+    library = FakeHAL()
+    core_audio, objc = install_fake_tap_environment(monkeypatch)
+    monkeypatch.setattr(helper, "_bindings", lambda: (core_audio, objc, library))
+    monkeypatch.setattr(helper.streams_coreaudio, "_process_objects", lambda _: [])
+
+    tap = CoreAudioTap(16000, ALL_APPLICATIONS)
+    tap.start()
+
+    assert tap.object_ids == []
+    assert FakeDescriptionClass.instances[-1].initializer == "global"
+    assert FakeDescriptionClass.instances[-1].object_ids == []
+    tap.stop()
 
 
 @pytest.mark.parametrize(
@@ -403,8 +468,8 @@ def test_arguments_and_run_retarget_the_helper(monkeypatch) -> None:
     class RunningTap:
         instances: ClassVar[list] = []
 
-        def __init__(self, samplerate, application):
-            self.samplerate = samplerate
+        def __init__(self, _samplerate, application):
+            self.samplerate = _samplerate
             self.application = application
             self.retargeted = []
             self.started = False
@@ -434,6 +499,44 @@ def test_arguments_and_run_retarget_the_helper(monkeypatch) -> None:
     tap = RunningTap.instances[-1]
     assert tap.started
     assert tap.retargeted == ["Other"]
+    assert tap.stopped
+
+
+def test_run_reconciles_all_selection_on_every_control_tick(monkeypatch) -> None:
+    class RunningTap:
+        instances: ClassVar[list] = []
+
+        def __init__(self, _samplerate, application):
+            self.application = application
+            self.retargeted = []
+            self.stopped = False
+            self.instances.append(self)
+
+        def start(self):
+            pass
+
+        def reconcile(self, application):
+            self.retargeted.append(application)
+            self.application = application
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(helper, "CoreAudioTap", RunningTap)
+    monkeypatch.setattr(helper, "_redirect_stderr", lambda: None)
+    monkeypatch.setattr(
+        helper.sys,
+        "stdin",
+        io.StringIO(
+            f'{{"application":"{ALL_APPLICATIONS}"}}\n'
+            f'{{"application":"{ALL_APPLICATIONS}"}}\n'
+        ),
+    )
+    monkeypatch.setattr(helper.sys, "stderr", io.StringIO())
+
+    assert helper.run(["--samplerate", "16000", "--application", ALL_APPLICATIONS]) == 0
+    tap = RunningTap.instances[-1]
+    assert tap.retargeted == [ALL_APPLICATIONS, ALL_APPLICATIONS]
     assert tap.stopped
 
 

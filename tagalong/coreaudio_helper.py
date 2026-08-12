@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from . import streams_coreaudio
+from .streams import ALL_APPLICATIONS
 
 
 class AudioBuffer(ctypes.Structure):
@@ -241,6 +242,7 @@ class CoreAudioTap:
 
     def reconcile(self, application: str | None):
         """Retarget only when the process-object set changed."""
+        previous_application = self.application
         self.application = application
         if not application:
             self.object_ids = []
@@ -248,7 +250,7 @@ class CoreAudioTap:
             return
         object_ids = self._object_ids(application)
         current = getattr(self, "object_ids", None)
-        if current == object_ids:
+        if previous_application == application and current == object_ids:
             return
         self._destroy_audio()
         self.object_ids = object_ids
@@ -259,15 +261,21 @@ class CoreAudioTap:
         self._destroy_audio()
 
     def _object_ids(self, application):
-        return [
-            obj["id"]
-            for obj in streams_coreaudio._process_objects(self._library)
-            if obj.get("application") == application
-        ]
+        objects = streams_coreaudio._process_objects(self._library)
+        if application == ALL_APPLICATIONS:
+            own_pid = os.getppid()
+            return [
+                obj["id"]
+                for obj in objects
+                if isinstance(obj, dict)
+                and isinstance(obj.get("id"), int)
+                and streams_coreaudio.started_here(obj.get("pid"), own_pid=own_pid)
+            ]
+        return [obj["id"] for obj in objects if obj.get("application") == application]
 
     def _rebuild(self):
         object_ids = self._object_ids(self.application)
-        if not object_ids:
+        if not object_ids and self.application != ALL_APPLICATIONS:
             raise RuntimeError(
                 f"no active Core Audio process was found for {self.application!r}"
             )
@@ -276,9 +284,13 @@ class CoreAudioTap:
 
     def _create_audio(self, object_ids):
         CoreAudio, objc, library = self._CoreAudio, self._objc, self._library
-        description = CoreAudio.CATapDescription.alloc().initStereoMixdownOfProcesses_(
-            object_ids
-        )
+        description_class = CoreAudio.CATapDescription.alloc()
+        if self.application == ALL_APPLICATIONS:
+            description = description_class.initStereoGlobalTapButExcludeProcesses_(
+                object_ids
+            )
+        else:
+            description = description_class.initStereoMixdownOfProcesses_(object_ids)
         description.setPrivate_(True)
         description.setMuteBehavior_(CoreAudio.CATapUnmuted)
         description.setName_(f"tagalong_tap_{os.getpid()}")
@@ -486,7 +498,7 @@ def run(argv=None) -> int:
                 continue
             request = json.loads(line)
             application = request.get("application")
-            if application != tap.application:
+            if application == ALL_APPLICATIONS or application != tap.application:
                 tap.reconcile(application)
         return 0
     except Exception as error:
