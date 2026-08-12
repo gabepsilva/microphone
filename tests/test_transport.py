@@ -610,6 +610,7 @@ def test_devices_list_returns_inputs_and_applications(
 ) -> None:
     import tagalong.transport as transport
 
+    monkeypatch.setattr(transport, "supports_all", lambda: False)
     monkeypatch.setattr(
         transport,
         "input_devices",
@@ -642,6 +643,38 @@ def test_devices_list_returns_inputs_and_applications(
             ],
             "applications": [{"label": "Firefox (playing)", "name": "Firefox"}],
         }
+    finally:
+        client.close()
+        server.stop()
+
+
+def test_devices_list_fallback_includes_global_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tagalong.transport as transport
+
+    monkeypatch.setattr(
+        transport,
+        "input_devices",
+        lambda: [(0, {"name": "Mic", "max_input_channels": 1})],
+    )
+    monkeypatch.setattr(transport, "graph", lambda: [{"fake": True}])
+    monkeypatch.setattr(transport, "application_streams", lambda objects: objects)
+    monkeypatch.setattr(
+        transport,
+        "applications",
+        lambda streams: [
+            SimpleNamespace(application="Firefox", title="", playing=True)
+        ],
+    )
+    monkeypatch.setattr(transport, "supports_all", lambda: True)
+    _, server, client = wired(tmp_path)
+    try:
+        client.call("initialize", {"client": "electron"})
+        assert client.call("devices.list")["applications"] == [
+            {"label": "All", "name": "__all__"},
+            {"label": "Firefox (playing)", "name": "Firefox"},
+        ]
     finally:
         client.close()
         server.stop()

@@ -58,6 +58,7 @@ CHANNEL_ORDER = ("FL", "MONO", "FR")
 # to be someone else's. Taga's speech plays through a direct child, so one
 # step would do; the rest is slack for a player that wraps itself in a shell.
 ANCESTRY_LIMIT = 8
+SUPPORTS_ALL = False
 
 
 def _info(obj):

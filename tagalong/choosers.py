@@ -18,6 +18,7 @@ from .streams import (
     applications,
     graph,
     offered_entries,
+    supports_all,
 )
 
 
@@ -235,6 +236,7 @@ def choose_audio_stream(requested=None):
     offered = offered_entries(
         applications(application_streams(graph())),
         accept=lambda stream: stream.playing,
+        include_all=supports_all(),
     )
     note = None
     if not offered:

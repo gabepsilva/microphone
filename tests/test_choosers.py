@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tagalong import choosers
+from tagalong import choosers, streams
 from tagalong.choosers import (
     audio_outputs,
     choose_audio_stream,
@@ -38,6 +38,7 @@ from tagalong.streams import ApplicationStream, stream_label
 def use_sink_routing_platform(monkeypatch):
     """These sinks are a PulseAudio concept; pin Linux so a Mac runs them too."""
     monkeypatch.setattr(choosers.sys, "platform", "linux")
+    monkeypatch.setattr(streams, "_DEFAULT_PLATFORM", "linux")
 
 
 def answer_with(monkeypatch, answers):
@@ -278,6 +279,10 @@ def test_no_audio_application_is_accepted_in_any_case(requested) -> None:
     assert select_audio_stream(requested) is None
 
 
+def test_global_audio_application_is_taken_without_decoding_to_none() -> None:
+    assert select_audio_stream("__all__") == "__all__"
+
+
 def test_a_named_application_is_taken_without_checking_the_graph() -> None:
     """An application that is not playing yet still has to be selectable."""
     assert select_audio_stream("ZOOM VoiceEngine") == "ZOOM VoiceEngine"
@@ -353,6 +358,21 @@ def test_the_startup_chooser_offers_only_playing_applications(
     assert choose_audio_stream() == "Chromium"
     # Menu numbering: 0=None, 1=Chromium; ZOOM is idle and absent.
     assert answers == ["Select an application (0-1): "]
+
+
+def test_startup_chooser_offers_global_capture_before_named_applications(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(choosers, "supports_all", lambda: True)
+    monkeypatch.setattr("tagalong.choosers.graph", list)
+    monkeypatch.setattr(
+        "tagalong.choosers.application_streams", lambda objects: STREAMS
+    )
+    monkeypatch.setattr("tagalong.choosers.applications", lambda streams: list(streams))
+    answers = answer_with(monkeypatch, ["1"])
+
+    assert choose_audio_stream() == "__all__"
+    assert answers == ["Select an application (0-2): "]
 
 
 def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(

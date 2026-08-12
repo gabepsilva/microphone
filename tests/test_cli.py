@@ -1958,7 +1958,7 @@ def test_starting_the_channel_twice_serves_it_once() -> None:
 
 @pytest.mark.parametrize(
     ("application", "recorded"),
-    [(None, "none"), ("Brave", "Brave")],
+    [(None, "none"), ("Brave", "Brave"), ("__all__", "__all__")],
 )
 def test_a_chosen_application_is_saved_the_way_the_parser_reads_it_back(
     application, recorded

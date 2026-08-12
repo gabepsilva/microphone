@@ -138,9 +138,16 @@ usable. macOS Core Audio owns the private tap and aggregate device inside a
 bounded helper process, so a forced helper exit does not leave a capture device
 for a later session to sweep.
 
-Taga's own speech is a different stream and is never linked, so it cannot be
+Taga's own speech is a different stream and is never selected, so it cannot be
 transcribed back as the far end. That is a property of the wiring rather than a
 filter that can miss.
+
+Capturing every application at once is not offered. A Core Audio global tap can
+do it, but its exclusion list names audio objects that do not exist until a
+process starts playing, so Taga's own speech is captured before it can be left
+out. The implementation and the probe that measured it are in the tree, behind
+a capability flag that is off; see `SUPPORTS_ALL` in
+`tagalong/streams_coreaudio.py`.
 
 An application only appears in the audio graph once it starts playing, so the
 startup menu lists what is making sound right now. A name given with
