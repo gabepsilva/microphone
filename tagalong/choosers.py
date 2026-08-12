@@ -13,7 +13,12 @@ import subprocess
 import sys
 
 from .domain import RESPONSE_POLICIES, resolve_response_policy
-from .streams import graph, offered_applications
+from .streams import (
+    application_streams,
+    applications,
+    graph,
+    offered_entries,
+)
 
 
 def input_devices():
@@ -227,7 +232,10 @@ def choose_audio_stream(requested=None):
     if requested is not None:
         return select_audio_stream(requested)
 
-    offered = offered_applications(graph())
+    offered = offered_entries(
+        applications(application_streams(graph())),
+        accept=lambda stream: stream.playing,
+    )
     note = None
     if not offered:
         note = (

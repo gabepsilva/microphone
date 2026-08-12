@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Protocol
@@ -34,8 +35,6 @@ class StreamCaptureBackend(Protocol):
     def application_streams(self, objects, *args, **kwargs): ...
 
     def applications(self, streams, *args, **kwargs): ...
-
-    def offered_applications(self, objects, *args, **kwargs): ...
 
     def require_stream_capture(self, *args, **kwargs): ...
 
@@ -97,11 +96,6 @@ def applications(streams, *args, **kwargs):
     return _backend().applications(streams, *args, **kwargs)
 
 
-def offered_applications(objects, *args, **kwargs):
-    """Return picker labels and stable application names."""
-    return _backend().offered_applications(objects, *args, **kwargs)
-
-
 def require_stream_capture(*args, **kwargs):
     """Raise a named platform error when far-end capture is unavailable."""
     return _backend().require_stream_capture(*args, **kwargs)
@@ -126,6 +120,23 @@ def stream_label(stream: ApplicationStream) -> str:
     if len(title) > TITLE_LIMIT:
         title = f"{title[: TITLE_LIMIT - 1]}…"
     return f"{stream.application}: {title} ({state})"
+
+
+def offered_entries(
+    streams: Iterable[ApplicationStream],
+    *,
+    accept: Callable[[ApplicationStream], bool],
+) -> list[tuple[str, str]]:
+    """Build picker ``(label, name)`` pairs for streams that pass *accept*.
+
+    Session surfaces pass a sticky ``heard`` check; the pre-session chooser
+    passes ``playing``. Ordering of *streams* is preserved.
+    """
+    return [
+        (stream_label(stream), stream.application)
+        for stream in streams
+        if accept(stream)
+    ]
 
 
 class ApplicationRefresher:
@@ -155,11 +166,9 @@ class ApplicationRefresher:
         """Re-read the graph, reporting only changed applications."""
         streams = applications(application_streams(self.dump()))
         self.heard.update(stream.application for stream in streams if stream.playing)
-        offered = [
-            (stream_label(stream), stream.application)
-            for stream in streams
-            if stream.application in self.heard
-        ]
+        offered = offered_entries(
+            streams, accept=lambda stream: stream.application in self.heard
+        )
         if offered == self.offered:
             return False
         self.offered = offered

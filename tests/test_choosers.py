@@ -316,26 +316,57 @@ def test_a_stream_is_labelled_by_application_title_and_whether_it_plays(
 
 @pytest.mark.parametrize(
     ("answer", "expected"),
-    [("0", None), ("1", "Chromium"), ("2", "ZOOM VoiceEngine")],
+    [("0", None), ("1", "Chromium")],
 )
 def test_choosing_an_audio_application_maps_each_menu_entry(
     monkeypatch, answer, expected
 ) -> None:
     monkeypatch.setattr("tagalong.choosers.graph", list)
     monkeypatch.setattr(
-        "tagalong.choosers.offered_applications",
-        lambda objects: [(stream_label(s), s.application) for s in STREAMS],
+        "tagalong.choosers.application_streams",
+        lambda objects: STREAMS,
+    )
+    monkeypatch.setattr(
+        "tagalong.choosers.applications",
+        lambda streams: list(streams),
     )
     answer_with(monkeypatch, [answer])
 
     assert choose_audio_stream() == expected
 
 
+def test_the_startup_chooser_offers_only_playing_applications(
+    monkeypatch,
+) -> None:
+    """Idle registered processes stay out of the pre-session menu."""
+    monkeypatch.setattr("tagalong.choosers.graph", list)
+    monkeypatch.setattr(
+        "tagalong.choosers.application_streams",
+        lambda objects: STREAMS,
+    )
+    monkeypatch.setattr(
+        "tagalong.choosers.applications",
+        lambda streams: list(streams),
+    )
+    answers = answer_with(monkeypatch, ["1"])
+
+    assert choose_audio_stream() == "Chromium"
+    # Menu numbering: 0=None, 1=Chromium; ZOOM is idle and absent.
+    assert answers == ["Select an application (0-1): "]
+
+
 def test_a_silent_machine_says_what_to_do_instead_of_offering_nothing(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr("tagalong.choosers.graph", list)
-    monkeypatch.setattr("tagalong.choosers.offered_applications", lambda objects: [])
+    monkeypatch.setattr(
+        "tagalong.choosers.application_streams",
+        lambda objects: [],
+    )
+    monkeypatch.setattr(
+        "tagalong.choosers.applications",
+        lambda streams: [],
+    )
     answer_with(monkeypatch, ["0"])
 
     assert choose_audio_stream() is None

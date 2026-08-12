@@ -1242,18 +1242,26 @@ def test_run_attached_session_stops_the_socket_when_the_tui_exits(
     monkeypatch.setattr(cli, "run_session", boom)
     original = cli.attach_remote_access
 
-    def tracking(controller, tui):
-        pump, server = original(controller, tui)
+    def tracking(controller, tui, *, applications=None):
+        pump, server = original(controller, tui, applications=applications)
         seen["server"] = server
+        seen["applications"] = applications
         return pump, server
 
     monkeypatch.setattr(cli, "attach_remote_access", tracking)
+    refresher = object()
     with pytest.raises(RuntimeError, match="session ended"):
         cli.run_attached_session(
-            controller, FakeTUI(SessionState()), Conversation(), None, None
+            controller,
+            FakeTUI(SessionState()),
+            Conversation(),
+            None,
+            None,
+            applications=refresher,
         )
     server = seen["server"]
     assert isinstance(server, LocalServer)
+    assert seen["applications"] is refresher
     assert not server.path.exists()
     # Session teardown stops the coalesce pump (Controller.close).
     assert (

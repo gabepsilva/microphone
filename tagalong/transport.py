@@ -45,7 +45,13 @@ from .control import (
 from .control.actions import PROTOCOL_VERSION
 from .discovery import list_commands
 from .piper_voices import speech_catalog as piper_speech_catalog
-from .streams import graph, offered_applications
+from .streams import (
+    ApplicationRefresher,
+    application_streams,
+    applications,
+    graph,
+    offered_entries,
+)
 
 _CRED_FORMAT = "3i"
 _XUCRED_FORMAT = "@IIh2xI"
@@ -251,9 +257,11 @@ class LocalServer:
         *,
         path: Path | None = None,
         environ: Mapping[str, str] | None = None,
+        applications: ApplicationRefresher | None = None,
     ) -> None:
         self._controller = controller
         self._path = path if path is not None else socket_path(environ)
+        self._applications = applications
         self._stop = threading.Event()
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -569,11 +577,15 @@ class LocalServer:
             }
             for index, device in discovered
         ]
-        applications = [
-            {"label": label, "name": name}
-            for label, name in offered_applications(graph())
-        ]
-        return _result(rpc_id, {"inputs": inputs, "applications": applications})
+        if self._applications is not None:
+            offered = self._applications.offered
+        else:
+            offered = offered_entries(
+                applications(application_streams(graph())),
+                accept=lambda stream: True,
+            )
+        listed = [{"label": label, "name": name} for label, name in offered]
+        return _result(rpc_id, {"inputs": inputs, "applications": listed})
 
     def _rpc_dispatch(
         self,
