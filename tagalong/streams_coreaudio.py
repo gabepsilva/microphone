@@ -55,6 +55,16 @@ PROCESS_OBJECT_LIST = coreaudio_native.PROCESS_OBJECT_LIST
 PROCESS_BUNDLE_ID = coreaudio_native.PROCESS_BUNDLE_ID
 PROCESS_PID = coreaudio_native.PROCESS_PID
 PROCESS_RUNNING_OUTPUT = coreaudio_native.PROCESS_RUNNING_OUTPUT
+# The global tap below works, but it cannot exclude this session's own speech
+# in time. A tap's exclusion list names AudioObjectIDs, and a player has no
+# audio object until it registers an output, so the id cannot be in the list
+# at the moment the first samples are already flowing. Measured on macOS
+# 26.5.2: a 0.5s player Taga started itself came through the far-end channel
+# at 685.3 mean absolute PCM against a 128.0 silence floor, with the baseline
+# at 0.0. See smoke_tests/test_real_environment.py and #162. Flipping this to
+# True re-offers the option on every surface; do not do that until a probe
+# shows self-exclusion holding for a player shorter than one control tick.
+SUPPORTS_ALL = False
 
 
 def graph(read_objects=_process_objects):

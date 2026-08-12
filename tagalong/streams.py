@@ -30,6 +30,8 @@ class ApplicationStream:
 class StreamCaptureBackend(Protocol):
     """The platform-specific operations the shared application layer needs."""
 
+    SUPPORTS_ALL: bool
+
     def graph(self, *args, **kwargs): ...
 
     def application_streams(self, objects, *args, **kwargs): ...
@@ -96,6 +98,11 @@ def applications(streams, *args, **kwargs):
     return _backend().applications(streams, *args, **kwargs)
 
 
+def supports_all() -> bool:
+    """Whether the selected backend can capture every external application."""
+    return _backend().SUPPORTS_ALL
+
+
 def require_stream_capture(*args, **kwargs):
     """Raise a named platform error when far-end capture is unavailable."""
     return _backend().require_stream_capture(*args, **kwargs)
@@ -109,6 +116,8 @@ class StreamTap:
 
 
 TITLE_LIMIT = 32
+ALL_APPLICATIONS = "__all__"
+ALL_APPLICATIONS_LABEL = "All"
 
 
 def stream_label(stream: ApplicationStream) -> str:
@@ -126,17 +135,21 @@ def offered_entries(
     streams: Iterable[ApplicationStream],
     *,
     accept: Callable[[ApplicationStream], bool],
+    include_all: bool = False,
 ) -> list[tuple[str, str]]:
     """Build picker ``(label, name)`` pairs for streams that pass *accept*.
 
     Session surfaces pass a sticky ``heard`` check; the pre-session chooser
-    passes ``playing``. Ordering of *streams* is preserved.
+    passes ``playing``. The backend capability entry is independent of the
+    stream predicate and is always placed before named applications.
     """
-    return [
+    offered = [(ALL_APPLICATIONS_LABEL, ALL_APPLICATIONS)] if include_all else []
+    offered.extend(
         (stream_label(stream), stream.application)
         for stream in streams
         if accept(stream)
-    ]
+    )
+    return offered
 
 
 class ApplicationRefresher:
@@ -167,7 +180,9 @@ class ApplicationRefresher:
         streams = applications(application_streams(self.dump()))
         self.heard.update(stream.application for stream in streams if stream.playing)
         offered = offered_entries(
-            streams, accept=lambda stream: stream.application in self.heard
+            streams,
+            accept=lambda stream: stream.application in self.heard,
+            include_all=supports_all(),
         )
         if offered == self.offered:
             return False

@@ -21,6 +21,8 @@ import pytest
 import tagalong.streams as streams
 from tagalong import streams_coreaudio
 from tagalong.streams import (
+    ALL_APPLICATIONS,
+    ALL_APPLICATIONS_LABEL,
     ApplicationRefresher,
     ApplicationStream,
     default_stream_backend,
@@ -426,7 +428,18 @@ def test_the_common_port_delegates_to_the_selected_backend(monkeypatch) -> None:
     assert streams.graph(run=lambda *_a, **_k: SimpleNamespace(stdout="[]")) == []
     assert streams.application_streams([]) == []
     assert streams.applications([]) == []
+    assert streams.supports_all() is False
     assert streams.require_stream_capture() is None
+
+
+def test_core_audio_does_not_advertise_global_capture() -> None:
+    """The global tap exists but cannot exclude our own speech in time.
+
+    Asserted rather than left implicit because flipping this one flag re-offers
+    the option on every surface; the smoke probe in ``smoke_tests`` is what has
+    to pass before it changes.
+    """
+    assert streams_coreaudio.SUPPORTS_ALL is False
 
 
 def test_the_darwin_backend_fails_by_name_off_platform(monkeypatch) -> None:
@@ -977,6 +990,14 @@ def test_offered_entries_honor_the_accept_predicate() -> None:
     assert offered_entries([quiet, active], accept=lambda stream: stream.playing) == [
         ("Brave: Playback (playing)", "Brave")
     ]
+
+
+def test_offered_entries_put_global_capture_before_named_applications() -> None:
+    streams_list = applications(application_streams(PLAYING))
+
+    assert offered_entries(
+        streams_list, accept=lambda stream: False, include_all=True
+    ) == [(ALL_APPLICATIONS_LABEL, ALL_APPLICATIONS)]
 
 
 def test_a_long_title_is_cut_rather_than_widening_the_sidebar() -> None:

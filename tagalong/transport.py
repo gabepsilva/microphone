@@ -51,6 +51,7 @@ from .streams import (
     applications,
     graph,
     offered_entries,
+    supports_all,
 )
 
 _CRED_FORMAT = "3i"
@@ -583,6 +584,7 @@ class LocalServer:
             offered = offered_entries(
                 applications(application_streams(graph())),
                 accept=lambda stream: True,
+                include_all=supports_all(),
             )
         listed = [{"label": label, "name": name} for label, name in offered]
         return _result(rpc_id, {"inputs": inputs, "applications": listed})
