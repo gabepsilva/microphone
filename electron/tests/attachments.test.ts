@@ -127,15 +127,17 @@ describe("base64FromBytes", () => {
 
   it("matches the native single-shot encode on a 5 MiB input", () => {
     // The size class #139 F5 measured at ~346 ms through the old loop.
-    // Build the expected value with Buffer rather than a second fromCharCode
-    // pass: under coverage the duplicated 5 MiB string walk exceeds bun's
-    // default 5 s timeout and blocks an otherwise-green pre-push gate.
     const input = new Uint8Array(5 * MIB);
     for (let index = 0; index < input.length; index += 1) {
       input[index] = (index * 7 + 3) % 256;
     }
-    expect(base64FromBytes(input)).toBe(Buffer.from(input).toString("base64"));
-  }, 30_000);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let index = 0; index < input.length; index += chunk) {
+      binary += String.fromCharCode(...input.subarray(index, index + chunk));
+    }
+    expect(base64FromBytes(input)).toBe(btoa(binary));
+  });
 });
 
 describe("DraftAttachments", () => {
