@@ -141,8 +141,9 @@ for a later session to sweep.
 For a named application, Taga's own speech is a different stream and is never
 selected, so it cannot be transcribed back as the far end. Choosing `All` on
 macOS instead uses a global tap with a runtime exclusion list for Taga's own
-processes; that list is refreshed as the session's speech players change and
-is covered by the opt-in macOS smoke test.
+processes; that list is refreshed as the session's speech players change. The
+opt-in macOS smoke test checks both sides with a separately parented external
+player and a TagAlong-owned child player.
 
 An application only appears in the audio graph once it starts playing, so the
 startup menu lists what is making sound right now. A name given with

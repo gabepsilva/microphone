@@ -100,7 +100,7 @@ def applications(streams, *args, **kwargs):
 
 def supports_all() -> bool:
     """Whether the selected backend can capture every external application."""
-    return bool(getattr(_backend(), "SUPPORTS_ALL", False))
+    return _backend().SUPPORTS_ALL
 
 
 def require_stream_capture(*args, **kwargs):
