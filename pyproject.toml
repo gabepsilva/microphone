@@ -10,10 +10,10 @@ dependencies = [
     # Textual for display markdown; declared here so TTS cleaning does not
     # depend on a transitive import staying put.
     "markdown-it-py==4.2.0",
-    "moonshine-voice==0.1.0",
-    "numpy==2.5.1",
+    "moonshine-voice==0.1.2",
+    "numpy==2.5.2",
     "openai-codex==0.144.4",
-    "piper-tts==1.6.0",
+    "piper-tts==1.6.1",
     "pyobjc-framework-CoreAudio==12.2.1; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa==12.2.1; sys_platform == 'darwin'",
     "rich==15.0.0",
