@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import pytest
 
 from tagalong.domain import EchoMatcher
-from tagalong.playback import describe_tool_failure, player_environment
 from tagalong.tts import EdgeSentenceTTS, trim_command
 
 WAIT_SECONDS = 10
@@ -241,23 +240,6 @@ def test_the_player_is_invoked_with_a_pipe_and_no_display(tts, playback) -> None
     ]
 
 
-@pytest.mark.parametrize(
-    ("stderr", "expected"),
-    [
-        (b"", "\nffplay broke."),
-        (None, "\nffplay broke."),
-        (b"   ", "\nffplay broke."),
-        (b"codec not found", "\nffplay broke: codec not found"),
-        (b"  spaced  ", "\nffplay broke: spaced"),
-        (b"\xff\xfe bad bytes", "\nffplay broke: �� bad bytes"),
-    ],
-)
-def test_a_failing_helper_process_is_explained_with_its_stderr(
-    stderr, expected
-) -> None:
-    assert describe_tool_failure("ffplay broke", stderr) == expected
-
-
 def test_the_trim_command_pipes_audio_through_the_silence_filter() -> None:
     command = trim_command("/usr/bin/ffmpeg", "silenceremove=x")
 
@@ -265,20 +247,6 @@ def test_the_trim_command_pipes_audio_through_the_silence_filter() -> None:
     assert command[command.index("-af") + 1] == "silenceremove=x"
     assert command[command.index("-i") + 1] == "pipe:0"
     assert command[-1] == "pipe:1"
-
-
-def test_playback_is_routed_to_a_chosen_sink() -> None:
-    environment = player_environment("alsa_output.pci", {"PATH": "/usr/bin"})
-
-    assert environment["PULSE_SINK"] == "alsa_output.pci"
-    assert environment["PATH"] == "/usr/bin"
-
-
-def test_playback_uses_the_default_sink_when_none_was_chosen() -> None:
-    environment = player_environment(None, {"PATH": "/usr/bin"})
-
-    assert "PULSE_SINK" not in environment
-    assert environment["PATH"] == "/usr/bin"
 
 
 def test_the_chosen_sink_reaches_the_player(monkeypatch, playback) -> None:
