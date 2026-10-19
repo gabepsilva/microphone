@@ -5,19 +5,19 @@ description = "An always-on local assistant that hears both sides of your meetin
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "edge-tts==7.2.8",
+    "edge-tts==7.3.1",
     # Direct: speech render walks CommonMark tokens. Already pulled by Rich /
     # Textual for display markdown; declared here so TTS cleaning does not
     # depend on a transitive import staying put.
     "markdown-it-py==4.2.0",
-    "moonshine-voice==0.1.0",
-    "numpy==2.5.1",
-    "openai-codex==0.144.4",
-    "piper-tts==1.6.0",
+    "moonshine-voice==0.1.5",
+    "numpy==2.5.4",
+    "openai-codex==0.163.0",
+    "piper-tts==1.8.0",
     "pyobjc-framework-CoreAudio==12.2.1; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa==12.2.1; sys_platform == 'darwin'",
     "rich==15.0.0",
-    "sounddevice==0.5.5",
+    "sounddevice==0.5.6",
     "textual==8.2.8",
 ]
 
@@ -42,7 +42,7 @@ packages = ["tagalong"]
 
 [dependency-groups]
 dev = [
-    "actionlint-py==1.7.12.24",
+    "actionlint-py==1.7.12.25",
     "bandit>=1.9,<2",
     "diff-cover>=10.4.1,<11",
     "mutmut>=3,<4",
@@ -53,7 +53,7 @@ dev = [
     # Parallel collection/execution for make test / make ci. Mutmut opts out
     # below: forking workers per mutant is slower than serial short runs.
     "pytest-xdist>=3,<4",
-    "ruff>=0.16.0,<0.17",
+    "ruff>=0.16.0,<0.18",
     "ty>=0.0.14,<0.1",
 ]
 
